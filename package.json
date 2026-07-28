@@ -1,0 +1,21 @@
+{
+  "name": "jarvis-demo",
+  "version": "1.0.0",
+  "description": "Talk to Claude Code out loud. Chrome speech-to-text -> claude -p headless -> Fish Audio TTS, with a reactive orb. No Anthropic API key - runs on your existing Claude subscription.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jdrurka/jarvis-demo.git"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
