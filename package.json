@@ -1,7 +1,7 @@
 {
   "name": "jarvis-demo",
-  "version": "1.0.0",
-  "description": "Talk to Claude Code out loud. Chrome speech-to-text -> claude -p headless -> Fish Audio TTS, with a reactive orb. No Anthropic API key - runs on your existing Claude subscription.",
+  "version": "1.1.0",
+  "description": "Talk to Claude Code out loud, then ask it to build something. Chrome speech-to-text -> claude -p headless -> Fish Audio TTS, with a reactive orb; spoken requests can spawn a real build with file tools and open the finished artifact. No Anthropic API key - runs on your existing Claude subscription.",
   "type": "module",
   "license": "MIT",
   "engines": {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getVisibilityToggle } from "../public/visibility-policy.js";
 
-test("maps filming visibility keys when push-to-talk is inactive", () => {
+test("maps visibility keys when push-to-talk is inactive", () => {
   assert.equal(getVisibilityToggle("t", false), "caption");
   assert.equal(getVisibilityToggle("T", false), "caption");
   assert.equal(getVisibilityToggle("h", false), "interface");
