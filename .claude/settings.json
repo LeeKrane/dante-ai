@@ -1,0 +1,64 @@
+{
+  "enabledPlugins": {
+    "taste-skill@taste-skill": false,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": false,
+    "impeccable@impeccable": false
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/superpowers-advisory.sh\"",
+            "shell": "bash",
+            "async": false
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)",
+      "Bash(node --test)",
+      "Bash(node --test:*)",
+      "Bash(node -e:*)",
+      "Bash(node --check:*)",
+      "Bash(codegraph explore:*)",
+      "Bash(codegraph status:*)",
+      "Bash(codegraph index:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(command cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(sed -n:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(od:*)",
+      "Bash(realpath:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(which:*)",
+      "Bash(diff:*)",
+      "Bash(jq:*)",
+      "Bash(mktemp:*)"
+    ],
+    "deny": [
+      "Read(builds/**)",
+      "Grep(builds/**)",
+      "Read(.codegraph/**)",
+      "Grep(.codegraph/**)"
+    ]
+  }
+}
