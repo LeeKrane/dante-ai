@@ -116,7 +116,7 @@ test("returns a fresh result object every call, so a caller's edit cannot leak",
   const first = parseAction(null);
   first.reply = "mutated";
   first.action = { primitive: "leaked", params: {} };
-  assert.deepEqual(parseAction(undefined), { reply: "", action: null });
+  assert.deepEqual(parseAction(undefined), { reply: "", action: null, memory: null });
 });
 
 test("strips quotes around values so a quoted primitive still dispatches", () => {
@@ -189,10 +189,59 @@ test("rejects pathological input promptly instead of backtracking", () => {
 
 test("never throws on malformed or non-string input", () => {
   for (const bad of [null, undefined, 42, {}, [], true, () => {}]) {
-    assert.deepEqual(parseAction(bad), { reply: "", action: null });
+    assert.deepEqual(parseAction(bad), { reply: "", action: null, memory: null });
   }
-  assert.deepEqual(parseAction(""), { reply: "", action: null });
-  assert.deepEqual(parseAction("[]"), { reply: "[]", action: null });
-  assert.deepEqual(parseAction("[ACTION:BUILD]"), { reply: "", action: null });
-  assert.deepEqual(parseAction("[ACTION:BUILD ===]"), { reply: "", action: null });
+  assert.deepEqual(parseAction(""), { reply: "", action: null, memory: null });
+  assert.deepEqual(parseAction("[]"), { reply: "[]", action: null, memory: null });
+  assert.deepEqual(parseAction("[ACTION:BUILD]"), { reply: "", action: null, memory: null });
+  assert.deepEqual(parseAction("[ACTION:BUILD ===]"), { reply: "", action: null, memory: null });
+});
+
+test("returns clean speech, a dispatchable action, and captured preferences when both tags appear", () => {
+  const { reply, action, memory } = parseAction(
+    "On it, sir. [MEMORY:SET palette=dark] [ACTION:BUILD primitive=landing-page subject=coffee]",
+  );
+  assert.equal(reply, "On it, sir.");
+  assert.deepEqual(action, { primitive: "landing-page", params: { subject: "coffee" } });
+  assert.deepEqual(memory, { palette: "dark" });
+});
+
+test("merges preferences across multiple memory tags, with the later tag winning on a duplicate key", () => {
+  const { reply, memory } = parseAction(
+    "Noted. [MEMORY:SET palette=dark tone=formal] [MEMORY:SET palette=light]",
+  );
+  assert.equal(reply, "Noted.");
+  assert.deepEqual(memory, { palette: "light", tone: "formal" });
+});
+
+test("keeps a quoted value whole in a memory tag", () => {
+  const { memory } = parseAction('Noted. [MEMORY:SET tone="confident, understated"]');
+  assert.deepEqual(memory, { tone: "confident, understated" });
+});
+
+test("returns no memory when a memory tag carries no pairs", () => {
+  const { reply, memory } = parseAction("Noted. [MEMORY:SET]");
+  assert.equal(reply, "Noted.");
+  assert.equal(memory, null);
+});
+
+test("leaves a tag in an unknown namespace untouched in the spoken reply", () => {
+  const { reply, action, memory } = parseAction("Sure. [NOTE:foo bar=1] Done.");
+  assert.equal(reply, "Sure. [NOTE:foo bar=1] Done.");
+  assert.equal(action, null);
+  assert.equal(memory, null);
+});
+
+test("returns no action when only a memory tag is present", () => {
+  const { action, memory } = parseAction("Noted. [MEMORY:SET palette=dark]");
+  assert.equal(action, null);
+  assert.deepEqual(memory, { palette: "dark" });
+});
+
+test("matches the memory tag name regardless of case", () => {
+  const lower = parseAction("Noted. [memory:set palette=dark]");
+  assert.deepEqual(lower.memory, { palette: "dark" });
+
+  const mixed = parseAction("Noted. [Memory:Set Palette=dark]");
+  assert.deepEqual(mixed.memory, { palette: "dark" });
 });
