@@ -2,6 +2,7 @@ import { isFatalSpeechError } from "./stt-policy.js";
 import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
+import { canStartListening, stateAfterClip } from "./playback-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
@@ -177,6 +178,11 @@ let audioCtx;
 let analyser = null;
 let freqBins = null;
 let timeBins = null;
+// The clip currently audible, and the state it was going to hand the orb to.
+// Kept because a source node cannot be stopped without a reference to it, which
+// is the whole reason Jarvis used to be impossible to interrupt.
+let playbackSource = null;
+let playbackHandoff = null;
 
 // ---- WebSocket ----
 const ws = new WebSocket(`ws://${location.host}`);
@@ -305,7 +311,14 @@ if (SR) {
 }
 
 function startListening() {
-  if (!rec || holding || state === "thinking" || state === "speaking") return;
+  if (!canStartListening(state, holding, Boolean(rec))) return;
+  // Whatever is being said is now beside the point. The handoff this clip
+  // carried is deliberately DROPPED here: setState("listening") happens two
+  // lines down, and applying the handoff first would flip the orb through
+  // "working", which starts the build HUD and then tears it down again on the
+  // very next setState. The cancel button, which sets nothing afterwards, is
+  // where a handoff is honoured.
+  stopPlayback();
   holding = true;
   finalText = "";
   audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -344,11 +357,44 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListening(); } });
 
 // ---- Playback (analyser drives the reactive orb) ----
+
+// stopPlayback() -> the handoff the cancelled clip was carrying, or null.
+//
+// `onended` is detached BEFORE stop(), because stop() fires it: left attached,
+// the ended path and whoever cancelled would both set the state, and which one
+// won would come down to timing. Returns null when nothing is playing, so every
+// caller can call it without checking first.
+function stopPlayback() {
+  const source = playbackSource;
+  if (!source) return null;
+  const handoff = playbackHandoff;
+  playbackSource = null;
+  playbackHandoff = null;
+  source.onended = null;
+  try { source.stop(); } catch { /* already ended between the check and here */ }
+  analyser = null;
+  level = 0;
+  dbg("playback cancelled");
+  return handoff;
+}
+
 async function playAudio(b64, nextState) {
   audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") await audioCtx.resume();
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const buf = await audioCtx.decodeAudioData(bytes.buffer);
+
+  // The button went down while this clip was being fetched and decoded. Playing
+  // it now would talk over the person holding it — but the build it may have
+  // dispatched is already running, so the handoff is honoured even though the
+  // voice is never heard. Checked before any node is built, so nothing is left
+  // wired up to a source that will never start.
+  if (holding) {
+    dbg("audio dropped: the button is held");
+    if (nextState) setState(stateAfterClip(nextState));
+    return;
+  }
+
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
   const an = audioCtx.createAnalyser();
@@ -358,16 +404,21 @@ async function playAudio(b64, nextState) {
   analyser = an;
   freqBins = new Uint8Array(an.frequencyBinCount);
   timeBins = new Uint8Array(an.fftSize);
+  playbackSource = src;
+  playbackHandoff = nextState || null;
   setState("speaking");
   dbg(`playing ${buf.duration.toFixed(1)}s`);
   src.onended = () => {
+    playbackSource = null;
+    playbackHandoff = null;
     analyser = null;
     level = 0;
     dbg("playback ended");
     // A clip can hand the orb to a state instead of ending the turn: the build
     // confirmation lands in "working" so the HUD picks up exactly when the voice
-    // stops. Anything without a handoff returns to idle as usual.
-    setState(nextState || "idle");
+    // stops. Anything without a handoff — or with one the orb does not know —
+    // returns to idle as usual.
+    setState(stateAfterClip(nextState));
   };
   src.start();
 }

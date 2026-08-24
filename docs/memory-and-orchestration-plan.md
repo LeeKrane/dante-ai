@@ -408,13 +408,16 @@ pattern: no DOM, no imports, everything a unit test can reach. `app.js` has no t
 cannot get one, so every decision that can be phrased as a function lives here.
 
 - `ORB_STATES` — the five orb states, as a Set.
-- `shouldInterruptPlayback(state, playing)` — a record press has to cancel a clip before it can
-  listen over it.
 - `canStartListening(state, holding, hasRecognizer)` — `thinking` stays blocked (no clip is
   playing yet, so there is nothing to interrupt, only a pending turn to confuse); `speaking` no
   longer is, which is the whole point of the stage.
-- `stateAfterCancel(handoff)` — the clip's `nextState` handoff arrives off the wire, so it is
-  validated against `ORB_STATES` rather than trusted straight into `setState`.
+- `stateAfterClip(handoff)` — where the orb lands when a clip stops, however it stopped. The
+  handoff arrives off the wire, so it is validated against `ORB_STATES` rather than trusted
+  straight into `setState`.
+
+A third predicate for "should this press cancel a clip first?" was planned and then dropped:
+`stopPlayback()` already returns null when nothing is playing, so the caller can call it
+unconditionally and the predicate would only ever have restated `Boolean(playbackSource)`.
 
 In `app.js`: a module-scope `playbackSource` beside `analyser`/`freqBins`/`timeBins`
 (`:177-180`), and a `stopPlayback()` next to `playAudio` that detaches `onended` **before**
@@ -438,7 +441,7 @@ Visibility is driven by `playbackSource`, not by `state`, because the button's h
 itself is `shouldShowCancel(playing, chromeHidden)` in `playback-policy.js` so that it is tested
 rather than buried in an untestable file.
 
-The click handler is `setState(stateAfterCancel(stopPlayback()))` followed by `cancelBtn.blur()`.
+The click handler is `setState(stateAfterClip(stopPlayback()))` followed by `cancelBtn.blur()`.
 The blur matters: the window `keydown` handler treats Space as push-to-talk (`app.js:336-344`),
 and a button still holding focus would try to activate on the same keypress.
 
