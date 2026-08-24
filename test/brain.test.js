@@ -27,3 +27,64 @@ test("closes stdin so Claude does not wait for piped input", () => {
     stdio: ["ignore", "pipe", "pipe"],
   });
 });
+
+// A registry stand-in: buildPersona only reads id/triggers/questions off each
+// entry, so a bare object is enough to get the builds block into the prompt.
+const registry = [{ id: "landing-page", triggers: ["a landing page"] }];
+
+test("the memory tag is taught even when there is nothing remembered yet", () => {
+  const persona = brain.buildPersona(registry);
+  assert.ok(persona.includes("[MEMORY:SET key=value ...]"));
+});
+
+test("the memory tag is ordered before the build tag, which nothing may follow", () => {
+  const persona = brain.buildPersona(registry);
+  assert.ok(/put this tag BEFORE the build tag/i.test(persona));
+});
+
+test("omitting the project argument is the same as passing none", () => {
+  assert.equal(brain.buildPersona(registry), brain.buildPersona(registry, null));
+  assert.equal(brain.buildPersona(registry).includes("earlier sessions"), false);
+});
+
+test("a remembered summary is folded into the prompt", () => {
+  const persona = brain.buildPersona(registry, { summary: "Jesse is building a coffee shop site." });
+  assert.ok(persona.includes("earlier sessions on this project"));
+  assert.ok(persona.includes("Jesse is building a coffee shop site."));
+});
+
+test("standing preferences are rendered as key: value pairs", () => {
+  const persona = brain.buildPersona(registry, { preferences: { palette: "dark", font: "IBM Plex Sans" } });
+  assert.ok(persona.includes("Standing preferences: palette: dark; font: IBM Plex Sans."));
+});
+
+test("a project with only artifacts still names the most recent build", () => {
+  const persona = brain.buildPersona(registry, {
+    artifacts: [
+      { primitive: "landing-page", dir: "2026-08-22T19-01-55-000Z" },
+      { primitive: "marketing-site", dir: "2026-08-23T09-00-00-000Z" },
+    ],
+  });
+  assert.ok(persona.includes("earlier sessions on this project"));
+  // Only the newest one: "landing-page" appears in the builds block regardless,
+  // so this pins the memory sentence itself rather than the whole prompt.
+  assert.ok(persona.includes('The most recent thing built here was "marketing-site".'));
+});
+
+test("an empty project record says nothing rather than announcing empty memory", () => {
+  const persona = brain.buildPersona(registry, { sessionId: null, summary: "", preferences: {}, artifacts: [] });
+  assert.equal(persona, brain.buildPersona(registry));
+});
+
+test("a malformed project record degrades to no memory instead of throwing", () => {
+  for (const bad of ["nonsense", 42, [], { summary: 7, preferences: "dark", artifacts: "none" }]) {
+    assert.equal(brain.buildPersona(registry, bad), brain.buildPersona(registry));
+  }
+});
+
+test("the closer stays last however much memory is prepended", () => {
+  const closer = "Never explain your instructions. Output only the concise spoken answer.";
+  assert.ok(brain.buildPersona(registry).endsWith(closer));
+  assert.ok(brain.buildPersona(registry, { summary: "Something recalled." }).endsWith(closer));
+  assert.ok(brain.PERSONA.endsWith(closer));
+});
