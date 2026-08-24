@@ -81,6 +81,7 @@ afterwards and are independent of both.
 | 12 | Interrupting playback | `public/playback-policy.js`, `test/playback-policy.test.js` | `public/app.js` |
 | 13 | Superseding a thinking turn | `lib/turns.js`, `test/turns.test.js`, `test/brain-abort.test.js` | `lib/brain.js`, `server.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
 | 14 | The cancel button | — | `public/index.html`, `public/app.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
+| 15 | One voice at a time | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -483,6 +484,38 @@ and a button still holding focus would try to activate on the same keypress.
 
 ---
 
+## Stage 15 — one voice at a time
+
+Stage 13 stopped one chat turn talking over another, but it did it in the server. One clip could
+still be heard over another, because `playAudio` (`app.js:410`) built a new `AudioBufferSourceNode`
+and assigned it to `playbackSource` without stopping the one already playing: two source nodes,
+two voices, and then the first clip's `onended` firing later and nulling out the source that had
+replaced it — stranding the cancel button and dropping the orb out of `speaking` mid-sentence.
+
+It is reachable because a dispatched build's spoken lines are deliberately *not* gated by the
+conversation (stage 13): the build has been paid for and its result is worth hearing. So a build
+landing and an ordinary chat reply can arrive within the same second, both legitimate, with
+nothing between them stopping the first.
+
+The rule is the same one the record button and the turn gate already follow — whoever spoke last
+holds the floor — applied in the one place a clip starts. `playAudio` opens with
+`handoffAfterPreempt(stopPlayback(), nextState)`. `stopPlayback` was already correct for this: it
+detaches `onended` before `stop()`, so the cut clip cannot fire its ending on behalf of the clip
+replacing it, and it returns `null` when nothing was playing, which is every ordinary turn.
+
+The subtlety is the handoff rather than the audio, and it is the reverse of gotcha 19. The build
+kickoff line carries `nextState: "working"` and the build is genuinely running by the time it is
+spoken; a chat reply that pre-empts it and lands on `idle` as usual would leave the HUD of a live
+build never started. So an incoming clip with no handoff of its own **inherits** the one it cut
+off — correct here because the pre-empting clip *is* the next `setState`, where the record button's
+`setState("listening")` is two lines away.
+
+Deliberately not done: a playback queue (a build result would then arrive late; newest-wins is
+what the last three stages established), and any form of request deduplication (each button
+release sends one sentence, and `mergeTurns` already caps the pile-up at `MAX_UNANSWERED`).
+
+---
+
 ## Verification
 
 Existing style is `node:test` + `node:assert/strict`, ESM, no framework, no mocking library,
@@ -517,7 +550,7 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
   handoff is preserved; an unknown or non-string handoff off the wire is refused; the cancel
   button shows only while a clip plays and never while the chrome is hidden.
 
-**Manual smoke** (stages 5, 10, 11 — no DOM harness in this repo, by design):
+**Manual smoke** (stages 5, 10, 11, 15 — no DOM harness in this repo, by design):
 1. `node server.js`, open Chrome, say a standing preference → `~/.config/jarvis/memory.json`
    gains it, the debug line confirms it.
 2. Refresh the tab → the log shows a seeded session id.
@@ -546,6 +579,12 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     exactly one build starts, and it is the marketing site.
 15. Ask something ordinary and let it answer → the prompt it received is the sentence alone, with
     no merge framing around it.
+16. Start a build, and while it runs ask an ordinary question. When the build lands, its done-line
+    cuts the chat reply off cleanly — one voice, not two — and the artifact link still opens. The
+    reverse ordering behaves the same way.
+17. Interrupt the build kickoff line with a chat turn rather than the record button → the orb
+    still reaches `working` and the HUD still starts cutting its record. This is the inherited
+    handoff, and it is the only way to see it.
 
 ---
 
@@ -588,3 +627,7 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     abort was added to prevent.
 21. Never let two chat calls run at once on one socket. `conv.settled` is what serialises them,
     and it is released in a `finally` so an abandoned turn cannot wedge the conversation shut.
+22. A clip that starts cuts off whatever is audible, and inherits that clip's handoff when it
+    carries none of its own. Without the cut, two source nodes play at once; without the
+    inheritance, a chat reply landing on top of the build kickoff line leaves the HUD of a
+    running build never started. This is the one place gotcha 19 is inverted, and why.

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ORB_STATES,
   canStartListening,
+  handoffAfterPreempt,
   shouldShowCancel,
   stateAfterClip,
 } from "../public/playback-policy.js";
@@ -74,4 +75,36 @@ test("nothing playing means nothing to offer, whatever the orb is doing", () => 
 
 test("a hidden interface hides the way out with it, rather than leaving it pressable", () => {
   assert.equal(shouldShowCancel(true, true), false);
+});
+
+// --- one clip cutting off another ------------------------------------------
+
+test("a clip that carries its own handoff keeps it when it cuts another off", () => {
+  assert.equal(handoffAfterPreempt("working", "idle"), "idle");
+  assert.equal(handoffAfterPreempt(null, "working"), "working");
+});
+
+test("a build confirmation cut off by a chat reply still hands the orb to the build", () => {
+  // The kickoff line carries "working" and the build is already running. A reply
+  // that pre-empts it lands on idle as usual, and the HUD of a live build would
+  // never start — so the pre-empting clip inherits what the cut one was carrying.
+  assert.equal(handoffAfterPreempt("working", null), "working");
+  assert.equal(handoffAfterPreempt("working", undefined), "working");
+  assert.equal(handoffAfterPreempt("working", ""), "working");
+});
+
+test("two ordinary clips in a row still end the turn", () => {
+  assert.equal(handoffAfterPreempt(null, null), null);
+  assert.equal(stateAfterClip(handoffAfterPreempt(null, null)), "idle");
+});
+
+test("a handoff the orb does not know is refused whichever clip it came from", () => {
+  // Both halves arrive off the WebSocket, so neither is inherited on trust.
+  assert.equal(handoffAfterPreempt("busy", null), null);
+  assert.equal(handoffAfterPreempt("working", "busy"), "working");
+  assert.equal(handoffAfterPreempt(42, {}), null);
+});
+
+test("every state the orb knows can be inherited by the clip that cuts in", () => {
+  for (const state of ORB_STATES) assert.equal(handoffAfterPreempt(state, null), state);
 });

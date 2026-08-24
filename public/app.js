@@ -2,7 +2,12 @@ import { isFatalSpeechError } from "./stt-policy.js";
 import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
-import { canStartListening, shouldShowCancel, stateAfterClip } from "./playback-policy.js";
+import {
+  canStartListening,
+  handoffAfterPreempt,
+  shouldShowCancel,
+  stateAfterClip,
+} from "./playback-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
@@ -408,6 +413,15 @@ async function playAudio(b64, nextState) {
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const buf = await audioCtx.decodeAudioData(bytes.buffer);
 
+  // Whatever is audible now is cut off. Two clips really can land together — a
+  // build's spoken result is deliberately not gated by the conversation, so a
+  // done-line and a chat reply can arrive in the same second — and without this
+  // both source nodes start and both are heard. stopPlayback detaches onended
+  // before stop(), so the clip being cut cannot fire its ending on behalf of the
+  // one replacing it. It returns null when nothing was playing, which is every
+  // ordinary turn.
+  const handoff = handoffAfterPreempt(stopPlayback(), nextState);
+
   // The button went down while this clip was being fetched and decoded. Playing
   // it now would talk over the person holding it — but the build it may have
   // dispatched is already running, so the handoff is honoured even though the
@@ -415,7 +429,7 @@ async function playAudio(b64, nextState) {
   // wired up to a source that will never start.
   if (holding) {
     dbg("audio dropped: the button is held");
-    if (nextState) setState(stateAfterClip(nextState));
+    if (handoff) setState(stateAfterClip(handoff));
     return;
   }
 
@@ -429,7 +443,7 @@ async function playAudio(b64, nextState) {
   freqBins = new Uint8Array(an.frequencyBinCount);
   timeBins = new Uint8Array(an.fftSize);
   playbackSource = src;
-  playbackHandoff = nextState || null;
+  playbackHandoff = handoff;
   refreshCancel();
   setState("speaking");
   dbg(`playing ${buf.duration.toFixed(1)}s`);
@@ -444,7 +458,7 @@ async function playAudio(b64, nextState) {
     // confirmation lands in "working" so the HUD picks up exactly when the voice
     // stops. Anything without a handoff — or with one the orb does not know —
     // returns to idle as usual.
-    setState(stateAfterClip(nextState));
+    setState(stateAfterClip(handoff));
   };
   src.start();
 }

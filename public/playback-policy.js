@@ -37,6 +37,29 @@ export function stateAfterClip(handoff) {
   return ORB_STATES.has(handoff) ? handoff : "idle";
 }
 
+// handoffAfterPreempt(cut, incoming) -> the handoff the clip now starting carries.
+//
+// A clip that arrives while another is audible cuts it off: whoever spoke last
+// holds the floor, which is the same rule the record button (stage 12) and the
+// turn gate (stage 13) already follow. Two clips really can land together — a
+// build's spoken result is deliberately not gated by the turn that superseded
+// the conversation, so a done-line and a chat reply can arrive in the same
+// second, and both are legitimate.
+//
+// The subtlety is the handoff, not the audio. The build kickoff line carries
+// "working" and the build is genuinely running by the time it is spoken; a reply
+// that pre-empts it and lands on idle as usual would leave the HUD of a live
+// build never started. So an incoming clip with no handoff of its own inherits
+// the one it cut off. This is the opposite of what the record button does with a
+// handoff, and deliberately: there setState follows two lines later, whereas the
+// pre-empting clip IS the next setState.
+//
+// Both values arrive off the WebSocket, so neither is inherited on trust.
+export function handoffAfterPreempt(cut, incoming) {
+  if (ORB_STATES.has(incoming)) return incoming;
+  return ORB_STATES.has(cut) ? cut : null;
+}
+
 // shouldShowCancel(playing, chromeHidden)
 //
 // The button offers to stop a clip, so it appears exactly while a clip is
