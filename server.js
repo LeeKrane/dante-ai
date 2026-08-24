@@ -4,12 +4,15 @@ import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig } from "./lib/config.js";
-import { ask, buildPersona } from "./lib/brain.js";
+import { ask, askResilient, buildPersona } from "./lib/brain.js";
 import { speak } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
+import {
+  loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
+} from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, "public");
@@ -42,11 +45,27 @@ const cfg = loadFishConfig(); // throws early if Fish key missing
 // naming the file, rather than a silence in the middle of a conversation.
 const registry = await loadRegistry();
 
+// What earlier runs left behind. One server serves one project, so the whole
+// store is keyed by the directory it was started in. Read once here; every
+// write below goes through saveStore, which is atomic.
+const memoryStore = loadStore();
+const PROJECT_KEY = process.cwd();
+
 // The assistant can only ask for a build it has been told exists, so the persona
 // is derived from the registry that was just loaded rather than written by hand.
 // Without this the chat model runs on the no-builds default and politely refuses
 // every build request, which looks like a broken model rather than a miswiring.
-const persona = buildPersona(registry);
+// It also carries what is remembered about this project, which is why it is a
+// `let`: the prompt is rebuilt whenever memory changes. Without refreshPersona
+// the whole memory feature would appear to work and only take effect after a
+// restart, with nothing anywhere reporting why. Caveat: a --resume'd CLI session
+// keeps the system prompt it started with, so a refreshed persona is guaranteed
+// to reach the model on the next cold start rather than on the next turn.
+let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY));
+
+function refreshPersona() {
+  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY));
+}
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 
@@ -283,6 +302,17 @@ async function build(send, primitive, params, preamble = "") {
   log(`build finish primitive=${primitive.id} ok=${outcome.ok} ${ms}ms dir=${dir}`);
 
   if (outcome.ok) {
+    // The basename, never the absolute path: it is the same token the /builds/
+    // route uses, and it keeps a home directory out of a file whose contents are
+    // read back into a system prompt on every future turn.
+    recordArtifact(memoryStore, PROJECT_KEY, {
+      primitive: primitive.id,
+      dir,
+      outputContract: primitive.outputContract,
+    });
+    saveStore(memoryStore);
+    refreshPersona();
+
     await say(send, primitive.doneLine(params));
     // Served by the /builds/ route above. Encoded because a primitive's output
     // contract is a filename, and filenames are allowed to contain spaces.
@@ -313,6 +343,50 @@ async function build(send, primitive, params, preamble = "") {
   // rather than into the spoken line.
   send({ type: "error", message: outcome.log ? `${trouble} Full log: ${outcome.log}` : trouble });
   send({ type: "state", value: "idle" });
+}
+
+// ---------------------------------------------------------------------------
+// End-of-session summary
+// ---------------------------------------------------------------------------
+
+// Its own bookkeeping voice, deliberately not the JARVIS persona: the spoken
+// rules -- forty words, no lists, address Jesse as sir -- would shape a note
+// nobody is ever going to hear into something shorter and vaguer than the next
+// session needs.
+const SUMMARY_PERSONA =
+  "You are keeping notes in a voice assistant's memory file, for your own use in a later " +
+  "session. In two or three plain sentences, record what this conversation was about and what " +
+  "is worth carrying forward: what was built, what was asked for, what was decided. Write it " +
+  "as notes, not as speech. No greeting, no persona, no markdown, no questions.";
+
+// Below this a conversation is "what's the weather" and a summary is worse than
+// nothing -- it would overwrite a real one from earlier in the day.
+const SUMMARY_MIN_TURNS = 3;
+
+// Module scope, not per-socket: a page that reloads in a loop would otherwise
+// start a summary process per reload, each one a real CLI invocation.
+let summarizing = false;
+
+// Fire and forget by design. Nothing is awaited, nothing is sent to the socket
+// (it is closing or gone), and every error is swallowed into the log -- a failed
+// note is not worth a visible failure, and there is nobody left to tell.
+function summarizeOnClose(sessionId, turns) {
+  if (!sessionId || turns < SUMMARY_MIN_TURNS || summarizing) return;
+  summarizing = true;
+
+  ask("Summarize this conversation for your own notes.", sessionId, { persona: SUMMARY_PERSONA })
+    .then(({ reply }) => {
+      if (!reply) return;
+      // The session id this call returns is deliberately thrown away. Storing it
+      // would put "Summarize this conversation for your own notes" at the head
+      // of whatever gets resumed next.
+      touchProject(memoryStore, PROJECT_KEY, { summary: reply });
+      saveStore(memoryStore);
+      refreshPersona();
+      log(`memory summary saved (${reply.length} chars)`);
+    })
+    .catch((e) => log("memory summary skipped:", e.message || e))
+    .finally(() => { summarizing = false; });
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +430,14 @@ wss.on("connection", (ws) => {
   // so it cannot outlive the socket. `pending` is the question waiting on an
   // answer. The one-build-at-a-time guard is deliberately NOT here: it counts
   // builds on the machine, and two tabs are two of these closures.
-  const conv = { pending: null };
+  const conv = { pending: null, turns: 0 };
+
+  // Read fresh from the store rather than from a boot-time snapshot: a second
+  // tab opened mid-conversation has to join the session that is current now, not
+  // the one that existed when the server started.
+  const remembered = getProject(memoryStore, PROJECT_KEY)?.sessionId;
+  if (remembered) sessions.set(ws, remembered);
+
   log("client connected");
   ws.on("message", async (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
@@ -378,12 +459,37 @@ wss.on("connection", (ws) => {
 
       send({ type: "state", value: "thinking" });
       const tb = Date.now();
-      const { reply: spoken, sessionId } = await ask(msg.text, sessions.get(ws), { persona });
+      // askResilient, not ask: a remembered session id can have expired since it
+      // was written, and the first turn after a page load is exactly where that
+      // shows up. It retries once from cold rather than failing the turn.
+      const { reply: spoken, sessionId, recovered } =
+        await askResilient(msg.text, sessions.get(ws), { persona });
       const bms = Date.now() - tb;
+      if (recovered) log("brain recovered from an unresumable session id");
       sessions.set(ws, sessionId);
-      // The model may append a machine-readable tag asking for a build. Split it
-      // off first: the tag is for dispatch, never for the voice.
-      const { reply, action } = parseAction(spoken);
+      conv.turns += 1;
+      // Persisted every turn, because this id is what the next page load resumes
+      // from -- and after a recovery it is what replaces the dead one.
+      touchProject(memoryStore, PROJECT_KEY, { sessionId });
+      saveStore(memoryStore);
+      // The model may append machine-readable tags: one asking for a build, one
+      // recording a standing preference. Split them off first -- a tag is for
+      // dispatch, never for the voice.
+      const { reply, action, memory } = parseAction(spoken);
+
+      // Applied before dispatch, with nothing awaited in between: "make it dark
+      // from now on and build me a landing page" has to have the preference on
+      // disk before the build starts reading it. The two tags are independent;
+      // both apply. applyMemoryTag does its own sanitizing and capping, so what
+      // it returns is only what actually survived.
+      if (memory) {
+        const saved = applyMemoryTag(memoryStore, PROJECT_KEY, memory);
+        if (saved) {
+          saveStore(memoryStore);
+          refreshPersona();
+          log(`memory set ${JSON.stringify(saved)}`);
+        }
+      }
       log(`brain ok ${bms}ms session=${sessionId} reply=${JSON.stringify(reply)}` +
           (action ? ` action=${JSON.stringify(action.primitive)}` : ""));
       send({ type: "debug", stage: "brain", ms: bms, msg: `claude: "${reply}"` });
@@ -399,6 +505,15 @@ wss.on("connection", (ws) => {
         log("brain returned no speakable text");
       }
     } catch (e) {
+      // Narrowed to sessionExhausted on purpose: a dead session must not survive
+      // as a stored id, or the next tab resumes it and fails the same way. Any
+      // other failure -- a Fish outage, say -- must not cost the conversation
+      // its context.
+      if (e.sessionExhausted) {
+        sessions.delete(ws);
+        touchProject(memoryStore, PROJECT_KEY, { sessionId: null });
+        saveStore(memoryStore);
+      }
       log("ERROR:", e.message || e);
       send({ type: "debug", stage: "error", msg: String(e.message || e) });
       send({ type: "error", message: String(e.message || e) });
@@ -406,6 +521,9 @@ wss.on("connection", (ws) => {
     }
   });
   ws.on("close", () => {
+    // Read before the delete: this map is the only handle on the id, and the
+    // summary below still needs it.
+    const sessionId = sessions.get(ws);
     sessions.delete(ws);
     conv.pending = null;
     // A build already running is left to finish: it has been paid for and its
@@ -413,6 +531,7 @@ wss.on("connection", (ws) => {
     // afterwards, and send() is a no-op once the socket is gone, so a progress
     // update arriving late has nowhere to go rather than something to break.
     log("client disconnected");
+    summarizeOnClose(sessionId, conv.turns);
   });
 });
 
