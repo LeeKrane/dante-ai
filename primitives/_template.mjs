@@ -38,6 +38,43 @@ export default {
   // The line spoken when the build succeeds. Same params as systemPrompt.
   doneLine: (params) => `Your ${params.subject} thing is ready.`,
 
+  // Optional. The line spoken as the build STARTS, before the HUD takes over.
+  // Omit it and the assistant says something generic instead.
+  startLine: (params) => `Starting your ${params.subject} thing now, sir.`,
+
   // Hard ceiling on the build, in milliseconds. Past this it is stopped.
   timeoutMs: 300000,
+
+  // Optional. Leave it out and the build is one session, given the whole
+  // directory and judged on `outputContract` above — which is what most
+  // primitives want.
+  //
+  // Declare it and the build becomes a chain: one session per step, in order,
+  // all sharing one directory, one log and one settings file, so a later step
+  // reads what an earlier one wrote. Every field below is required per step and
+  // nothing is inherited from the primitive — especially not `allowedTools`,
+  // because a planning step has no business holding the tools a building step
+  // needs.
+  //
+  // Two rules the loader enforces, both of which are silent disasters
+  // otherwise: the LAST step's `outputContract` must equal the primitive's own
+  // (that file is what decides whether the whole build succeeded), and if every
+  // step states a `timeoutShareMs`, they must add up to no more than
+  // `timeoutMs`.
+  //
+  // steps: [
+  //   {
+  //     id: "plan",
+  //     systemPrompt: (params) => `Plan a thing about ${params.subject}. Write plan.md.`,
+  //     allowedTools: ["Write"],
+  //     outputContract: "plan.md",
+  //     timeoutShareMs: 60000, // optional; omit it to mean "whatever is left"
+  //   },
+  //   {
+  //     id: "build",
+  //     systemPrompt: () => "Read plan.md and build it. Write index.html.",
+  //     allowedTools: ["Write", "Edit", "Read"],
+  //     outputContract: "index.html",
+  //   },
+  // ],
 };

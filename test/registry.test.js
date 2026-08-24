@@ -419,3 +419,223 @@ test("returned primitives do not share mutable state with later loads", async ()
   assert.equal(second.get("landing-page").triggers.includes("mutated"), false);
   assert.equal(second.get("landing-page").questions[0].ask, "What's the landing page for?");
 });
+
+// --- steps ------------------------------------------------------------------
+
+// A primitive that runs as a chain. The last step's contract has to match the
+// primitive's own, which is what makes the chain's success the primitive's.
+function steppedPrimitive(overrides = {}) {
+  return validPrimitive({
+    timeoutMs: 300000,
+    steps: [
+      {
+        id: "plan",
+        systemPrompt: () => "write a plan",
+        allowedTools: ["Write"],
+        outputContract: "plan.md",
+      },
+      {
+        id: "build",
+        systemPrompt: () => "build it",
+        allowedTools: ["Write", "Edit", "Read"],
+        outputContract: "index.html",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+test("accepts a primitive that declares a chain of steps", () => {
+  assert.equal(validatePrimitive(steppedPrimitive(), "chain.mjs"), true);
+});
+
+test("rejects steps that are not an array", () => {
+  assert.throws(() => validatePrimitive(validPrimitive({ steps: "plan" }), "bad.mjs"), /steps/);
+});
+
+test("rejects an empty steps array, which would spawn nothing and call it a success", () => {
+  assert.throws(
+    () => validatePrimitive(validPrimitive({ steps: [] }), "bad.mjs"),
+    (err) => /steps/.test(err.message) && /empty/.test(err.message),
+  );
+});
+
+test("rejects a step that is not an object", () => {
+  assert.throws(
+    () => validatePrimitive(steppedPrimitive({ steps: ["plan"] }), "bad.mjs"),
+    /steps\[0\]/,
+  );
+});
+
+test("rejects a step with no usable id", () => {
+  for (const id of [undefined, "", "  ", 7]) {
+    const steps = [{ id, systemPrompt: () => "x", allowedTools: ["Write"], outputContract: "index.html" }];
+    assert.throws(
+      () => validatePrimitive(validPrimitive({ steps }), "bad.mjs"),
+      /steps\[0\]\.id/,
+      `id ${JSON.stringify(id)} should be refused`,
+    );
+  }
+});
+
+test("rejects two steps sharing an id, which would name the same log separator twice", () => {
+  const steps = [
+    { id: "plan", systemPrompt: () => "x", allowedTools: ["Write"], outputContract: "plan.md" },
+    { id: "plan", systemPrompt: () => "y", allowedTools: ["Write"], outputContract: "index.html" },
+  ];
+  assert.throws(
+    () => validatePrimitive(validPrimitive({ steps }), "bad.mjs"),
+    (err) => /steps\[1\]\.id/.test(err.message) && /plan/.test(err.message),
+  );
+});
+
+test("rejects a step with no systemPrompt function", () => {
+  const steps = steppedPrimitive().steps;
+  delete steps[0].systemPrompt;
+  assert.throws(() => validatePrimitive(validPrimitive({ steps }), "bad.mjs"), /steps\[0\]\.systemPrompt/);
+});
+
+test("a step must declare its own tools rather than inherit the primitive's", () => {
+  const steps = steppedPrimitive().steps;
+  delete steps[0].allowedTools;
+  assert.throws(
+    () => validatePrimitive(validPrimitive({ steps }), "bad.mjs"),
+    /steps\[0\]\.allowedTools/,
+  );
+});
+
+test("rejects unusable entries in a step's tool and MCP lists", () => {
+  const withTools = (allowedTools) => steppedPrimitive({
+    steps: [{ id: "only", systemPrompt: () => "x", allowedTools, outputContract: "index.html" }],
+  });
+  assert.throws(() => validatePrimitive(withTools([""]), "bad.mjs"), /steps\[0\]\.allowedTools\[0\]/);
+  assert.throws(() => validatePrimitive(withTools([42]), "bad.mjs"), /steps\[0\]\.allowedTools\[0\]/);
+
+  const withMcp = steppedPrimitive({
+    steps: [{ id: "only", systemPrompt: () => "x", allowedTools: ["Write"], outputContract: "index.html", mcp: [""] }],
+  });
+  assert.throws(() => validatePrimitive(withMcp, "bad.mjs"), /steps\[0\]\.mcp\[0\]/);
+});
+
+test("rejects a step whose output contract reaches outside the build directory", () => {
+  for (const outputContract of ["", "/etc/hosts", "../escaped.html"]) {
+    const steps = [{ id: "only", systemPrompt: () => "x", allowedTools: ["Write"], outputContract }];
+    assert.throws(
+      () => validatePrimitive(validPrimitive({ steps }), "bad.mjs"),
+      /steps\[0\]\.outputContract/,
+      `${JSON.stringify(outputContract)} should be refused`,
+    );
+  }
+});
+
+test("the last step must promise the same file the primitive does", () => {
+  const stepped = steppedPrimitive();
+  stepped.steps[stepped.steps.length - 1].outputContract = "verify.txt";
+  assert.throws(
+    () => validatePrimitive(stepped, "bad.mjs"),
+    (err) => /verify\.txt/.test(err.message) && /index\.html/.test(err.message),
+  );
+});
+
+test("rejects a timeout share that is not a positive number of milliseconds", () => {
+  for (const timeoutShareMs of [0, -1, "1000", Infinity, NaN]) {
+    const stepped = steppedPrimitive();
+    stepped.steps[0].timeoutShareMs = timeoutShareMs;
+    assert.throws(
+      () => validatePrimitive(stepped, "bad.mjs"),
+      /steps\[0\]\.timeoutShareMs/,
+      `${timeoutShareMs} should be refused`,
+    );
+  }
+});
+
+test("accepts timeout shares that fit inside the primitive's own ceiling", () => {
+  const stepped = steppedPrimitive({ timeoutMs: 10000 });
+  stepped.steps[0].timeoutShareMs = 4000;
+  stepped.steps[1].timeoutShareMs = 6000;
+  assert.equal(validatePrimitive(stepped, "chain.mjs"), true);
+});
+
+test("rejects timeout shares that add up to more than the build is allowed, naming both numbers", () => {
+  const stepped = steppedPrimitive({ timeoutMs: 10000 });
+  stepped.steps[0].timeoutShareMs = 7000;
+  stepped.steps[1].timeoutShareMs = 6000;
+  assert.throws(
+    () => validatePrimitive(stepped, "bad.mjs"),
+    (err) => err.message.includes("13000") && err.message.includes("10000"),
+  );
+});
+
+test("a step that leaves its share unstated means whatever is left, so the sum is not checked", () => {
+  const stepped = steppedPrimitive({ timeoutMs: 10000 });
+  stepped.steps[0].timeoutShareMs = 9999999;
+  assert.equal(validatePrimitive(stepped, "chain.mjs"), true);
+});
+
+// --- output contracts and startLine -----------------------------------------
+
+test("rejects an output contract that is absolute or climbs out of the build directory", () => {
+  for (const outputContract of ["/etc/hosts", "../escaped.html", ".."]) {
+    assert.throws(
+      () => validatePrimitive(validPrimitive({ outputContract }), "bad.mjs"),
+      /outputContract/,
+      `${outputContract} should be refused`,
+    );
+  }
+});
+
+test("startLine is optional but must be a function when it is there", () => {
+  assert.equal(validatePrimitive(validPrimitive({ startLine: () => "off we go" }), "ok.mjs"), true);
+  assert.throws(
+    () => validatePrimitive(validPrimitive({ startLine: "off we go" }), "bad.mjs"),
+    /startLine/,
+  );
+});
+
+// --- defaults ---------------------------------------------------------------
+
+test("a primitive with no steps has none, rather than an empty chain", async () => {
+  await withTempPrimitives(
+    { "poster.mjs": primitiveSource(`{
+      id: "poster",
+      systemPrompt: () => "x",
+      allowedTools: ["Write"],
+      outputContract: "index.html",
+      doneLine: () => "done",
+      timeoutMs: 1000,
+    }`) },
+    async (dirUrl) => {
+      const registry = await loadRegistry(dirUrl);
+      // run() branches on truthiness, so [] would take the chain path and
+      // spawn nothing at all.
+      assert.equal(registry.get("poster").steps, undefined);
+    },
+  );
+});
+
+test("a loaded chain is a copy, so one caller cannot corrupt every later load", async () => {
+  await withTempPrimitives(
+    { "chain.mjs": primitiveSource(`{
+      id: "chain",
+      systemPrompt: () => "x",
+      allowedTools: ["Write"],
+      outputContract: "index.html",
+      doneLine: () => "done",
+      timeoutMs: 1000,
+      steps: [
+        { id: "plan", systemPrompt: () => "p", allowedTools: ["Write"], outputContract: "plan.md" },
+        { id: "build", systemPrompt: () => "b", allowedTools: ["Write"], outputContract: "index.html" },
+      ],
+    }`) },
+    async (dirUrl) => {
+      const first = await loadRegistry(dirUrl);
+      first.get("chain").steps[0].id = "vandalised";
+      first.get("chain").steps.push({ id: "extra" });
+
+      // The module cache hands back the same object on the second import.
+      const second = await loadRegistry(dirUrl);
+      assert.equal(second.get("chain").steps.length, 2);
+      assert.equal(second.get("chain").steps[0].id, "plan");
+    },
+  );
+});
