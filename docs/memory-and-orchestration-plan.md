@@ -82,6 +82,7 @@ afterwards and are independent of both.
 | 13 | Superseding a thinking turn | `lib/turns.js`, `test/turns.test.js`, `test/brain-abort.test.js` | `lib/brain.js`, `server.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
 | 14 | The cancel button | — | `public/index.html`, `public/app.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
 | 15 | One voice at a time | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
+| 16 | Holding the floor through synthesis | — | `lib/turns.js`, `test/turns.test.js`, `server.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -516,6 +517,43 @@ release sends one sentence, and `mergeTurns` already caps the pile-up at `MAX_UN
 
 ---
 
+## Stage 16 — holding the floor through synthesis
+
+Stage 13 handed the floor to whoever spoke last, but it only held it for as long as the model was
+thinking. `conv.abort` was set just before `askResilient` and cleared in the `finally` immediately
+after it, so the merge window was exactly the duration of the CLI call and nothing more.
+Everything after it — parsing the reply, Fish synthesizing it (about a second of real latency),
+sending the clip — was unguarded. A sentence arriving there got a wholly separate turn, and its
+answer simply queued behind the first one.
+
+From the person's side those two windows are indistinguishable. The orb is amber either way, and
+nothing has been heard either way. The same gesture landed on one side or the other of a race they
+cannot see.
+
+Two changes close it, both small:
+
+- `say()` takes an optional `stillCurrent` predicate and checks it after the Fish fetch returns.
+  An overtaken clip is never sent — the turn gate from stage 13 is what it asks. The caption sent
+  before the fetch is deliberately left standing: it is overwritten a moment later by the person's
+  own words as they are transcribed, and blanking it would clear what they had already said. Every
+  build line omits the predicate, because a dispatched build is deliberately not gated by the
+  conversation.
+- `conv.unanswered` is settled when the reply is **spoken**, not when it is produced, and by
+  `dropAnswered(list, count)` rather than `length = 0`. The count is read in the same tick as
+  `mergeTurns` reads the list, so it names exactly the sentences that call was asked about. This
+  is the whole reason it cannot be a wholesale clear: a sentence said during synthesis is pushed
+  onto the very list being cleared, and emptying it would answer that sentence never.
+
+The action path settles on dispatch rather than on speech: the build is running from that moment
+whatever is said next, so the request that started it is done even though the kickoff line is
+still in synthesis.
+
+What this does **not** cover, deliberately: barging in once the clip is audible. That is stage 12,
+the previous turn really was answered, and it is already in the model's session context. Merging
+there would re-answer a question the person has heard the answer to.
+
+---
+
 ## Verification
 
 Existing style is `node:test` + `node:assert/strict`, ESM, no framework, no mocking library,
@@ -585,6 +623,11 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 17. Interrupt the build kickoff line with a chat turn rather than the record button → the orb
     still reaches `working` and the HUD still starts cutting its record. This is the inherited
     handoff, and it is the only way to see it.
+18. Ask something, wait for the orb to stay amber a beat longer than the model needs, and speak
+    again while the log shows the reply already produced but Fish still synthesizing → the log
+    reads `clip dropped … superseded while it was being synthesized`, one clip is heard, and it
+    answers both. Then repeat with a two-second pause between the sentences → two ordinary,
+    separate replies, both spoken, no merge framing in either prompt.
 
 ---
 
@@ -631,3 +674,10 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     carries none of its own. Without the cut, two source nodes play at once; without the
     inheritance, a chat reply landing on top of the build kickoff line leaves the HUD of a
     running build never started. This is the one place gotcha 19 is inverted, and why.
+23. Never settle `conv.unanswered` with `length = 0`. A sentence said while the reply is being
+    synthesized is pushed onto that same list, and clearing it wholesale answers that sentence
+    never. `dropAnswered(list, count)` takes off only what the reply addressed, and the count is
+    read in the same tick as `mergeTurns` reads the list.
+24. A reply that exists is not a reply that has been heard. The floor is held until the clip is
+    sent, not until the call returns — `say()`'s `stillCurrent` guard is what enforces it, and
+    build lines omit it on purpose.

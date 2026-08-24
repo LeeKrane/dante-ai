@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig } from "./lib/config.js";
 import { ask, askResilient, buildPersona } from "./lib/brain.js";
-import { createTurnGate, mergeTurns } from "./lib/turns.js";
+import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import { speak } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -154,15 +154,32 @@ const server = createServer(async (req, res) => {
 // hand off to a state rather than end a turn: the build confirmation is followed
 // by the HUD, and sending `working` alongside the audio would race playback --
 // the clip's own end would then fire idle and tear the HUD down mid-build.
-async function say(send, text, nextState) {
+// `stillCurrent` is how a chat reply survives being overtaken mid-breath. Fish
+// takes about a second, and a reply that exists is not a reply that has been
+// heard: someone watching an amber orb cannot tell the difference between the
+// model still thinking and the voice still being synthesized, so the same gesture
+// -- pressing record -- lands on either side of a race they cannot see. Checked
+// after the fetch, so an overtaken clip is never sent. Returns whether it spoke.
+// Omitted by every build line: those are deliberately not gated by the
+// conversation, because a dispatched build has been paid for.
+async function say(send, text, nextState, stillCurrent) {
   send({ type: "reply_text", text });
   const t = Date.now();
   const audio = await speak(text, cfg);
   const ms = Date.now() - t;
   log(`tts ok ${ms}ms ${audio.length}b`);
+  // The caption above is left standing on purpose. It is overwritten a moment
+  // later by the person's own words as they are transcribed, and blanking it
+  // here would clear whatever they had already said.
+  if (stillCurrent && !stillCurrent()) {
+    log(`clip dropped after ${ms}ms: superseded while it was being synthesized`);
+    send({ type: "debug", stage: "tts", ms, msg: "clip dropped, superseded" });
+    return false;
+  }
   send({ type: "debug", stage: "tts", ms, msg: `fish ${audio.length} bytes` });
   send({ type: "state", value: "speaking" });
   send({ type: "audio", format: cfg.format, data: audio.toString("base64"), nextState });
+  return true;
 }
 
 // Two things the assistant has to say in one breath sound like conversation;
@@ -490,13 +507,18 @@ wss.on("connection", (ws) => {
       conv.settled = new Promise((done) => { release = done; });
       await previous;
 
+      // Read in the same tick as the list itself, so it counts exactly the
+      // sentences this call was asked about and nothing that arrives behind it.
+      const asked = mergeTurns(conv.unanswered);
+      const answering = conv.unanswered.length;
+
       let spoken, sessionId, recovered;
       try {
         // askResilient, not ask: a remembered session id can have expired since it
         // was written, and the first turn after a page load is exactly where that
         // shows up. It retries once from cold rather than failing the turn.
         ({ reply: spoken, sessionId, recovered } = await askResilient(
-          mergeTurns(conv.unanswered),
+          asked,
           sessions.get(ws),
           { persona, signal: controller.signal },
         ));
@@ -540,10 +562,6 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Answered, so nothing is outstanding any more. Cleared here rather than
-      // before the call, because a turn abandoned halfway has to leave what it
-      // was asked behind for the one that superseded it.
-      conv.unanswered.length = 0;
       log(`brain ok ${bms}ms session=${sessionId} reply=${JSON.stringify(reply)}` +
           (action ? ` action=${JSON.stringify(action.primitive)}` : ""));
       send({ type: "debug", stage: "brain", ms: bms, msg: `claude: "${reply}"` });
@@ -551,11 +569,25 @@ wss.on("connection", (ws) => {
       // handed down as a preamble and fused onto the question (or the kickoff)
       // so the whole turn is one utterance. Speaking it here would add a second
       // clip and a synthesis gap to every build request.
+      //
+      // What was asked comes off the list once the reply has actually been
+      // spoken, not when it was produced. A turn abandoned halfway -- whether the
+      // call was killed or the clip was overtaken during synthesis -- has to leave
+      // what it was asked behind for the call that supersedes it, and only the
+      // sentences this reply addressed come off, so one said during synthesis is
+      // still waiting afterwards.
       if (action) {
+        // Dispatch is the commitment: the build is running from here, whatever is
+        // said next, so the request that started it is settled even though the
+        // kickoff line is still being synthesized.
+        dropAnswered(conv.unanswered, answering);
         await dispatchAction(send, conv, action, reply);
       } else if (reply) {
-        await say(send, reply);
+        if (await say(send, reply, undefined, () => gate.isCurrent(token))) {
+          dropAnswered(conv.unanswered, answering);
+        }
       } else {
+        dropAnswered(conv.unanswered, answering);
         log("brain returned no speakable text");
       }
     } catch (e) {

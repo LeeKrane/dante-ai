@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MAX_UNANSWERED, createTurnGate, mergeTurns } from "../lib/turns.js";
+import { MAX_UNANSWERED, createTurnGate, dropAnswered, mergeTurns } from "../lib/turns.js";
 
 test("one sentence reaches the model exactly as it was said", () => {
   // No framing, no quotes, not even a trim: an ordinary turn has to be
@@ -59,4 +59,39 @@ test("a token from another gate never holds the floor", () => {
   assert.equal(gate.isCurrent(0), false);
   assert.equal(gate.isCurrent(undefined), false);
   assert.equal(gate.isCurrent(null), false);
+});
+
+test("answering a turn takes only the sentences that turn answered off the list", () => {
+  const unanswered = ["what time is it in Tokyo"];
+  dropAnswered(unanswered, 1);
+  assert.deepEqual(unanswered, []);
+});
+
+test("a sentence that arrived while the reply was being synthesized is not swallowed", () => {
+  // The whole reason this is a splice rather than length = 0: the reply settles
+  // the two sentences it was asked about, and the third was said a moment later,
+  // in the second Fish spends synthesizing. Clearing the list would answer it never.
+  const unanswered = ["one", "two", "said during synthesis"];
+  dropAnswered(unanswered, 2);
+  assert.deepEqual(unanswered, ["said during synthesis"]);
+});
+
+test("a reply that settled nothing leaves the list alone", () => {
+  const unanswered = ["one"];
+  dropAnswered(unanswered, 0);
+  assert.deepEqual(unanswered, ["one"]);
+});
+
+test("a count that is not a whole positive number is refused rather than acted on", () => {
+  const unanswered = ["one", "two"];
+  for (const count of [-1, 1.5, NaN, null, undefined, "2"]) {
+    dropAnswered(unanswered, count);
+    assert.deepEqual(unanswered, ["one", "two"], String(count));
+  }
+});
+
+test("a count past the end of the list clears it rather than throwing", () => {
+  const unanswered = ["one"];
+  dropAnswered(unanswered, 9);
+  assert.deepEqual(unanswered, []);
 });
