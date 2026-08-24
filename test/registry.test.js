@@ -639,3 +639,45 @@ test("a loaded chain is a copy, so one caller cannot corrupt every later load", 
     },
   );
 });
+
+// --- the real chained primitive ---------------------------------------------
+
+test("loads the real marketing-site primitive as a three-step chain", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const site = registry.get("marketing-site");
+
+  assert.ok(site, "marketing-site should be registered");
+  assert.deepEqual(site.steps.map((s) => s.id), ["plan", "build-pages", "verify"]);
+  // The last step's contract is what the whole build is judged on.
+  assert.equal(site.steps[site.steps.length - 1].outputContract, site.outputContract);
+  // The planning step must not be holding the tools that write the site.
+  assert.deepEqual(site.steps[0].allowedTools, ["Write"]);
+});
+
+test("every marketing-site step prompt renders before anything has been built", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const site = registry.get("marketing-site");
+  // What the FIRST step is handed. Rendering a later step's prompt with it is
+  // artificial on purpose: a prompt that reaches into previous.artifact.length,
+  // or any other property of a thing that is null on step one, throws inside
+  // buildSpawnArgs and rejects the whole build rather than failing it.
+  const params = {
+    subject: "a coffee roaster",
+    vibe: "warm",
+    previous: { dir: "/tmp/build", id: null, artifact: null },
+  };
+
+  for (const step of site.steps) {
+    const prompt = step.systemPrompt(params);
+    assert.equal(typeof prompt, "string", `${step.id} should render a string`);
+    assert.ok(prompt.trim().length > 0, `${step.id} rendered an empty prompt`);
+  }
+  assert.ok(site.systemPrompt(params).includes("a coffee roaster"));
+});
+
+test("the marketing-site steps fit inside the time the build is allowed", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const site = registry.get("marketing-site");
+  const total = site.steps.reduce((sum, s) => sum + s.timeoutShareMs, 0);
+  assert.ok(total <= site.timeoutMs, `${total}ms of steps in a ${site.timeoutMs}ms build`);
+});

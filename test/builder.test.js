@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSpawnArgs, configuredMcpServers, run, stepSpec } from "../lib/builder.js";
+import marketingSite from "../primitives/marketing-site.mjs";
 
 // The command line is unit-tested directly. run() is tested against small fake
 // CLIs written to a temp dir: real spawning, real streams, real exit codes and
@@ -599,4 +600,25 @@ test("a step with no time left is not started, because it could only overrun fur
 test("a single-shot build reports no failed step at all, as it always has", async () => {
   const r = await run(primitive, { subject: "coffee" }, null, { bin: fake.success, root: root() });
   assert.equal("failedStep" in r, false);
+});
+
+test("the real marketing-site primitive runs end to end as three sessions", async () => {
+  const seen = [];
+  const r = await run(marketingSite, { subject: "a coffee roaster", vibe: "warm" }, (line) => seen.push(line), {
+    bin: fake.chain,
+    root: root(),
+  });
+
+  assert.equal(r.ok, true);
+  assert.equal(r.failedStep, null);
+  assert.equal(r.artifact, join(r.dir, "index.html"));
+  assert.deepEqual(
+    seen.filter((e) => e.kind === "step").map((e) => e.step),
+    ["plan", "build-pages", "verify"],
+  );
+  // The build step is told where the plan is, by absolute path, because it runs
+  // in a cold session that never saw the step that wrote it.
+  const calls = await callsIn(r.dir);
+  assert.equal(calls.length, 3);
+  assert.ok(calls[1].includes(join(r.dir, "plan.md")), calls[1]);
 });
