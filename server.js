@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig } from "./lib/config.js";
-import { ask, askResilient, buildPersona } from "./lib/brain.js";
+import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
@@ -66,6 +66,29 @@ let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY));
 
 function refreshPersona() {
   persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY));
+}
+
+// One CLI for the whole server rather than a fresh one per sentence. Two thirds
+// of what a turn used to cost was the process rather than the question: about
+// 1080 ms to get a request out and about 550 ms to shut down with the answer
+// already in hand. Measured through this server, three turns in a row: 1908 ms,
+// then 739 ms, then 777 ms.
+//
+// Built lazily and let go whenever the last tab closes, which is both how the
+// summary below gets the session to itself and how a refreshed persona ever
+// reaches the model -- a running CLI keeps the system prompt it was spawned with,
+// exactly as a --resume'd one does, so the caveat above is unchanged rather than
+// made worse.
+let brain = null;
+function brainSession() {
+  if (!brain) {
+    brain = createBrainSession({
+      persona,
+      resume: getProject(memoryStore, PROJECT_KEY)?.sessionId || null,
+    });
+    log("brain session spawned");
+  }
+  return brain;
 }
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -566,7 +589,7 @@ wss.on("connection", (ws) => {
         ({ reply: spoken, sessionId, recovered } = await askResilient(
           asked,
           sessions.get(ws),
-          { persona, signal: controller.signal },
+          { session: brainSession(), persona, signal: controller.signal },
         ));
       } finally {
         if (conv.abort === controller) conv.abort = null;
@@ -667,6 +690,18 @@ wss.on("connection", (ws) => {
     // afterwards, and send() is a no-op once the socket is gone, so a progress
     // update arriving late has nowhere to go rather than something to break.
     log("client disconnected");
+    // The summary resumes this session id in a process of its own, and the warm
+    // CLI is still holding it -- two processes on one session is the race the
+    // per-turn abort was built to avoid, arriving here by a different road. With
+    // the last tab gone the conversation is over anyway, so the CLI is let go
+    // first and the summary gets the session to itself. The next turn pays one
+    // boot, at the one moment nobody is waiting on it.
+    const others = [...wss.clients].filter((c) => c !== ws && c.readyState === 1).length;
+    if (others === 0 && brain) {
+      brain.close();
+      brain = null;
+      log("brain session closed (no clients left)");
+    }
     summarizeOnClose(sessionId, conv.turns);
   });
 });

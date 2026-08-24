@@ -86,6 +86,7 @@ afterwards and are independent of both.
 | 17 | No tools, no MCP, for a chat turn | — | `lib/brain.js`, `test/brain.test.js` |
 | 18 | Fish starts sending before the clip is done | — | `lib/tts.js`, `test/tts.test.js` |
 | 19 | Play the reply as it arrives | — | `lib/tts.js`, `test/tts.test.js`, `public/clip-stream.js`, `test/clip-stream.test.js`, `server.js`, `public/index.html`, `public/app.js` |
+| 20 | One warm CLI instead of a cold one per turn | — | `lib/brain.js`, `test/brain-session.test.js`, `server.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -678,6 +679,75 @@ would actually start, which on that path is still the last chunk rather than the
 
 ---
 
+## Stage 20 — one warm CLI instead of a cold one per turn
+
+The startup and teardown in the table at the top are per-**process** costs, not per-turn costs:
+about 1080 ms to get a request out and about 550 ms to shut down with the answer already in hand,
+against a fork that takes 3 ms. One long-lived CLI pays them once.
+
+`--input-format stream-json` in, `--output-format stream-json` out: one JSON object per line each
+way, prompts written to stdin, events read off stdout. `--verbose` is not optional — the CLI
+refuses stream-json output without it.
+
+Measured end to end through the real server, real CLI, real Fish, three turns in one connection:
+
+| turn | model | first sound |
+|---|---|---|
+| 1 | 3347 ms | 3790 ms |
+| 2 | 1129 ms | **1505 ms** |
+| 3 | 873 ms | **1630 ms** |
+
+Turn 3 answered "what did I ask you first" with "You asked me to say hello, sir" — same session id
+throughout, so nothing about memory or context changed.
+
+### The trade, measured rather than assumed
+
+A sentence written to stdin while a turn is running is **queued, not interrupting.** There is no
+way to tell a shared process to forget a turn, so the SIGTERM abort the cold path uses cannot exist
+here.
+
+What survives is the promise the server actually makes — a superseded answer is never spoken —
+by a different route. `ask()` rejects immediately on abort, and the abandoned turn stays in the
+pending list as a **tombstone**: its answer still arrives and is still consumed, so it is
+discarded rather than handed to the turn waiting behind it. Get that wrong and every answer after
+an interruption belongs to the wrong question, silently. Verified against the real CLI with the
+sentences 600 ms apart: one clip, answering the second question, `turn superseded` in the log.
+
+Net: an interrupted turn is about 800 ms slower, every ordinary turn about 1700 ms faster.
+
+### What is deliberately left cold
+
+- **`lib/builder.js`.** Builds run for minutes; a process each is noise, and it reads MCP slots
+  from the user's global config in a way this stage would break.
+- **`summarizeOnClose`.** Different persona, and nobody is waiting on it.
+
+That second one is a hazard rather than an omission: the summary resumes the session id in a
+process of its own, and the warm CLI is still holding it — two processes on one session, which is
+the race the per-turn abort exists to avoid, arriving by a different road. So the CLI is let go
+when the **last** tab disconnects, before the summary runs. The conversation is over at that point
+anyway, and the next turn pays one boot at the one moment nobody is waiting on it.
+
+Letting it go there is also what keeps the persona caveat from getting worse. A running CLI holds
+the system prompt it was spawned with, exactly as a `--resume`'d one does, so `refreshPersona()`
+reaches the model on the next fresh session — which is what it already did.
+
+### Gotchas
+
+29. **A turn written to a warm CLI mid-turn is queued, not interrupting.** Abort is a local
+    rejection plus a tombstone, never a signal. The tombstone is load-bearing: without it the
+    orphan's answer resolves the turn behind it.
+30. **`system/init` arrives once per turn, not once per process.** Waiting for it before writing a
+    prompt hangs; treating it as the end of a turn answers the wrong sentence. Only the terminal
+    `result` event ends a turn.
+31. **A write to a dead child raises EPIPE on the stream rather than throwing at the call site**,
+    and an unhandled one takes the whole server down. `proc.stdin.on("error", () => {})` is why the
+    server survives a CLI that was killed between turns.
+32. **The child is respawned lazily rather than eagerly.** A CLI killed between turns costs
+    nothing at all — verified by `SIGKILL`ing it mid-conversation, after which the next turn
+    answered in 1838 ms and the one after it was back to 760 ms, with the session id unchanged.
+
+---
+
 ## Verification
 
 Existing style is `node:test` + `node:assert/strict`, ESM, no framework, no mocking library,
@@ -764,6 +834,10 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 21. Then force the fallback — `MediaSource.isTypeSupported = () => false` in the console before
     speaking — and repeat the first three of those. The log says `buffering mp3 whole`, and the
     behaviour should be indistinguishable from before this stage apart from the wait.
+22. Hold four or five turns in one sitting and watch the log: `brain session spawned` once, then
+    `brain ok` times around 800 ms rather than 2500 ms. Close every tab and confirm
+    `brain session closed (no clients left)`, then reopen one and confirm it picks the conversation
+    back up.
 
 ---
 
