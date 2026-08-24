@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTtsRequest } from "../lib/tts.js";
+import { buildTtsRequest, speakStream } from "../lib/tts.js";
 
 const cfg = { apiKey: "k", voiceId: "v", model: "s2.1-pro-free", format: "mp3", speed: 1.1 };
 
@@ -25,4 +25,79 @@ test("fish is asked to start sending before the clip is finished", () => {
   // so today that is worth about 250 ms; the rest of it is what a streaming
   // client spends, and it cannot spend it unless the bytes are already in flight.
   assert.equal(buildTtsRequest("hello", cfg).body.latency, "balanced");
+});
+
+// --- streaming the clip out as it arrives -----------------------------------
+
+// A stand-in for the Fish response. `body` is an async iterable of chunks, which
+// is what undici hands back, so the loop under test is the real one.
+function fakeFetch(chunks, { ok = true, status = 200, detail = "" } = {}) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    return {
+      ok,
+      status,
+      text: async () => detail,
+      body: (async function* () { for (const c of chunks) yield Buffer.from(c); })(),
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test("a streamed clip reaches the caller in pieces rather than as one buffer at the end", () => {
+  const seen = [];
+  const fetch = fakeFetch(["one", "two", "three"]);
+  return speakStream("hello", cfg, (c) => seen.push(c.toString()), { fetch }).then(() => {
+    assert.deepEqual(seen, ["one", "two", "three"]);
+  });
+});
+
+test("a streamed clip is sent with exactly the request the buffered call uses", async () => {
+  const fetch = fakeFetch(["x"]);
+  await speakStream("hello", cfg, () => {}, { fetch });
+  const { url, init } = fetch.calls[0];
+  const expected = buildTtsRequest("hello", cfg);
+  assert.equal(url, expected.url);
+  assert.equal(init.method, "POST");
+  assert.deepEqual(init.headers, expected.headers);
+  assert.deepEqual(JSON.parse(init.body), expected.body);
+});
+
+test("a streamed clip reports how many bytes went through it", async () => {
+  // The one thing the caller cannot count for itself once the buffer is gone,
+  // and the log line has said it since before there was a stream.
+  const fetch = fakeFetch(["abc", "de"]);
+  assert.equal(await speakStream("hello", cfg, () => {}, { fetch }), 5);
+});
+
+test("a refused streaming request throws exactly as the buffered one does", async () => {
+  const fetch = fakeFetch([], { ok: false, status: 402, detail: "out of credit" });
+  await assert.rejects(
+    () => speakStream("hello", cfg, () => {}, { fetch }),
+    /Fish TTS 402: out of credit/,
+  );
+});
+
+test("a clip with no bytes in it completes rather than hanging", async () => {
+  // Fish can answer 200 with nothing. The caller has already told the browser a
+  // clip is coming, so this has to return and let it be ended.
+  const fetch = fakeFetch([]);
+  assert.equal(await speakStream("hello", cfg, () => {}, { fetch }), 0);
+});
+
+test("a streaming request carries the abort signal it was given", async () => {
+  // What makes an overtaken clip stop being synthesized rather than merely go
+  // unsent. Nothing else in the request changes.
+  const fetch = fakeFetch(["x"]);
+  const abort = new AbortController();
+  await speakStream("hello", cfg, () => {}, { fetch, signal: abort.signal });
+  assert.equal(fetch.calls[0].init.signal, abort.signal);
+});
+
+test("a streaming request with no signal does not invent one", async () => {
+  const fetch = fakeFetch(["x"]);
+  await speakStream("hello", cfg, () => {}, { fetch });
+  assert.equal("signal" in fetch.calls[0].init, false);
 });

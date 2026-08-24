@@ -85,6 +85,7 @@ afterwards and are independent of both.
 | 16 | Holding the floor through synthesis | — | `lib/turns.js`, `test/turns.test.js`, `server.js` |
 | 17 | No tools, no MCP, for a chat turn | — | `lib/brain.js`, `test/brain.test.js` |
 | 18 | Fish starts sending before the clip is done | — | `lib/tts.js`, `test/tts.test.js` |
+| 19 | Play the reply as it arrives | — | `lib/tts.js`, `test/tts.test.js`, `public/clip-stream.js`, `test/clip-stream.test.js`, `server.js`, `public/index.html`, `public/app.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -607,6 +608,76 @@ audio quality, and that is much harder to see once the streaming client is built
 
 ---
 
+## Stage 19 — play the reply as it arrives
+
+Stage 18 put the first byte on the wire at 450 ms and then threw the head start away:
+`speak()` did `await res.arrayBuffer()` and `decodeAudioData` needs the complete clip anyway.
+This spends it. Measured through the real server with a fake CLI and the real Fish, on a
+three-sentence reply: **first audio byte at 779 ms after the sentence was sent, where the whole
+clip used to land at 2259 ms.** Fifty-five chunks, 100,727 bytes, same audio.
+
+Four pieces:
+
+- **`lib/tts.js`** gains `speakStream(text, cfg, onChunk, opts)` beside `speak()`, which stays for
+  any caller that wants the whole buffer. `opts.fetch` and `opts.signal` are the injectable
+  overrides — the same seam as `opts.bin` and `opts.root` elsewhere, and what makes the loop
+  testable with no network.
+- **`server.js`** `say()` sends `audio_start` / `audio_chunk` / `audio_end`, each carrying a
+  per-process clip id.
+- **`public/clip-stream.js`** + **`test/clip-stream.test.js`** — the append queue, and the only
+  part of this with a rule in it. Tested against a fake sink with no DOM.
+- **`public/app.js`** and a hidden `<audio>` in **`public/index.html`** — a MediaSource per clip
+  behind one media element, with the whole-buffer path kept as a fallback.
+
+### What moved, and what deliberately did not
+
+**The stage-16 guard now fires at the first byte instead of at the last, and aborts.** A reply
+overtaken during synthesis was previously synthesized in full and then thrown away; now the
+request is aborted and Fish stops. Measured: `clip dropped after 406ms`, against roughly 1900 ms
+before.
+
+**After that first byte the clip is committed and streams to the end.** This is the real change in
+what "superseded" means. Before, a clip was either heard in full or never heard at all, and the
+guard sat in that gap. Now the gap is 450 ms wide, and after it the person is *hearing* the reply —
+so interrupting is barge-in, which stages 12 and 15 already answer, and re-checking the guard
+mid-clip would only cut a sentence in half. Measured with the sentences 1200 ms apart: clip 1
+streams to completion under id 1 while clip 2 starts under id 2, the two interleaving over the
+same socket, and the browser drops every chunk whose id is not the one it is receiving.
+
+**`stopPlayback()` keeps its shape, its return value and both of its contracts** (gotchas 18 and
+22). The streaming clip is duck-typed to the `AudioBufferSourceNode` it was always handed —
+`onended` detachable, `stop()` final — so the record button, the cancel button and the pre-emption
+rule are untouched by any of this. Its one addition is `dropIncoming()`: silence now has to cover
+what is on its way as well as what is coming out, a case the whole-buffer path never had because
+an unfinished clip had not been sent at all.
+
+**The fallback is not optional.** There is no browser in this environment, so nothing on the client
+can be verified end to end from a test run. If `MediaSource` is missing or
+`isTypeSupported("audio/mpeg")` is false, the chunks accumulate and go through `decodeAudioData`
+exactly as before — including keeping the pre-emption and the held-button drop at the moment sound
+would actually start, which on that path is still the last chunk rather than the first.
+
+### Gotchas
+
+25. **`createMediaElementSource` may be called once per element for the life of the page**, and it
+    re-routes the element away from the speakers into the graph. The element, its source node and
+    its analyser are built once by `ensureGraph()` and never torn down; the MediaSource behind the
+    element is what is swapped per clip. Building the graph per clip silently kills all audio from
+    the second clip onward.
+26. **`appendBuffer` throws while a previous append is in flight**, and `updateend` is the only
+    signal that one has finished — so chunks queue and drain one at a time. `endOfStream()` throws
+    for the same reason and truncates the reply if it is called with bytes still queued, which is
+    why the end of a clip is a third state in `createAppendQueue` rather than a final chunk.
+27. **A clip's chunks keep arriving after it has been cut off.** The server commits to a whole clip
+    the moment it sends the first byte of it, so the id on every message is what keeps a dead
+    clip's tail out of the live clip's SourceBuffer. Not a race to eliminate — it is the tail of a
+    promise already made.
+28. **A socket that closes mid-clip strands the media element**, waiting for bytes that will never
+    come, with the orb speaking and Stop still offered. `ws.onclose` calls `stopPlayback()` for the
+    same reason it retires the HUD. The whole-buffer path could not fail this way.
+
+---
+
 ## Verification
 
 Existing style is `node:test` + `node:assert/strict`, ESM, no framework, no mocking library,
@@ -684,6 +755,15 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 19. Hold a normal conversation and listen to the voice itself. `balanced` mode changes how Fish
     synthesizes, not merely when it sends, and the only test for whether it still sounds like
     Jarvis is a person hearing it. Prosody, pace and the ends of sentences are what to listen for.
+20. Everything on this list again, because progressive playback replaces the path all of it ran
+    through. Specifically: a normal reply starts speaking about a second and a half sooner than it
+    used to; a reply cut off by the record button stops dead and does not resume; a reply cut off
+    by **Stop** does the same and the button disappears; a build kickoff line pre-empted by a chat
+    turn still leaves the orb in `working` with the HUD cutting its record; and `h` mid-clip hides
+    the chrome without touching the audio.
+21. Then force the fallback — `MediaSource.isTypeSupported = () => false` in the console before
+    speaking — and repeat the first three of those. The log says `buffering mp3 whole`, and the
+    behaviour should be indistinguishable from before this stage apart from the wait.
 
 ---
 

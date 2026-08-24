@@ -1,6 +1,7 @@
 import { isFatalSpeechError } from "./stt-policy.js";
 import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
+import { createAppendQueue } from "./clip-stream.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
 import {
   canStartListening,
@@ -17,6 +18,7 @@ const cancelBtn = document.getElementById("cancel");
 const canvas = document.getElementById("orb");
 const ctx = canvas.getContext("2d");
 const dbgEl = document.getElementById("dbg");
+const audioEl = document.getElementById("clip");
 const progEl = document.getElementById("progress");
 const artifactEl = document.getElementById("artifact");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -191,6 +193,9 @@ let timeBins = null;
 // is the whole reason Jarvis used to be impossible to interrupt.
 let playbackSource = null;
 let playbackHandoff = null;
+// The clip being received off the wire, which is not always the clip being
+// heard: without MediaSource nothing is audible until the last chunk has landed.
+let incoming = null;
 
 // ---- WebSocket ----
 const ws = new WebSocket(`ws://${location.host}`);
@@ -200,6 +205,10 @@ ws.onclose = () => {
   // A build in flight now has no way to report its ending, so the HUD is retired
   // rather than left cutting a record nothing will ever finish.
   buildHud.finish();
+  // Same reasoning for a clip: it is streamed, so the end of it is a message like
+  // any other and a socket that closes mid-clip would leave the element waiting
+  // for bytes forever, with the orb speaking and the Stop button still offered.
+  stopPlayback();
   setCaption("connection closed — restart the server and refresh", "error");
 };
 ws.onerror = () => dbg("ws: error");
@@ -239,10 +248,26 @@ ws.onmessage = async (ev) => {
     level = 0;
     setState("idle");
   }
-  else if (msg.type === "audio") {
-    dbg(`audio: ~${Math.round((msg.data.length * 3) / 4 / 1024)}kb received`);
+  // A clip arrives in three parts because Fish sends it in pieces: the header
+  // that says one is coming, the pieces, and the word that there are no more.
+  // Every one of them carries the clip's id, and a piece whose id is not the one
+  // being received is dropped — the server commits to a whole clip once it has
+  // sent a byte of it, so a clip cut off mid-sentence keeps arriving after the
+  // one that replaced it has started.
+  else if (msg.type === "audio_start") {
     try {
-      await playAudio(msg.data, msg.nextState);
+      await startClip(msg);
+    } catch (e) {
+      setCaption("⚠ audio: " + (e.message || e), "error");
+      dbg(`audio start failed: ${e.message || e}`);
+      level = 0;
+      setState("idle");
+    }
+  }
+  else if (msg.type === "audio_chunk") pushClipChunk(msg);
+  else if (msg.type === "audio_end") {
+    try {
+      await endClip(msg);
     } catch (e) {
       setCaption("⚠ audio: " + (e.message || e), "error");
       dbg(`audio decode failed: ${e.message || e}`);
@@ -393,6 +418,11 @@ function refreshCancel() {
 }
 
 function stopPlayback() {
+  // Silence covers what is on its way as well as what is coming out. Without
+  // this a clip still arriving would play in full a second later, over whoever
+  // cut it off — the case the old whole-buffer path never had, because a clip
+  // that had not finished synthesizing had not been sent at all.
+  dropIncoming();
   const source = playbackSource;
   if (!source) return null;
   const handoff = playbackHandoff;
@@ -407,26 +437,198 @@ function stopPlayback() {
   return handoff;
 }
 
-async function playAudio(b64, nextState) {
+// mp3 is the only format Fish is asked for and the only one MediaSource takes.
+// Anything else falls back to decoding the whole clip, which works for all of them.
+const STREAM_MIME = { mp3: "audio/mpeg" };
+
+// createMediaElementSource may be called only ONCE per element for the life of
+// the page, and it re-routes the element away from the speakers and into the
+// graph. So the element, its source node and its analyser are built once and
+// never torn down; the MediaSource behind the element is what is swapped per
+// clip. Building this per clip silently kills all audio on the second one.
+let mediaGraph = null;
+function ensureGraph() {
+  if (mediaGraph) return mediaGraph;
+  const node = audioCtx.createMediaElementSource(audioEl);
+  const an = audioCtx.createAnalyser();
+  an.fftSize = 512;
+  an.smoothingTimeConstant = 0.78;
+  node.connect(an);
+  an.connect(audioCtx.destination);
+  mediaGraph = { analyser: an };
+  return mediaGraph;
+}
+
+// What both paths do when a clip stops of its own accord. A clip can hand the
+// orb to a state instead of ending the turn: the build confirmation lands in
+// "working" so the HUD picks up exactly when the voice stops. Anything without a
+// handoff — or with one the orb does not know — returns to idle as usual.
+function clipEnded(handoff) {
+  playbackSource = null;
+  playbackHandoff = null;
+  refreshCancel();
+  analyser = null;
+  level = 0;
+  dbg("playback ended");
+  setState(stateAfterClip(handoff));
+}
+
+function dropIncoming() {
+  if (!incoming) return;
+  if (incoming.queue) incoming.queue.stop();
+  incoming = null;
+}
+
+// The media element outlives every clip, so its events are routed to whichever
+// clip is current rather than re-bound per clip. stopPlayback clears
+// playbackSource BEFORE pausing, so a cancelled clip cannot fire its ending on
+// behalf of the one replacing it — the same reason it detaches onended first.
+audioEl?.addEventListener("ended", () => {
+  if (playbackSource?.onended) playbackSource.onended();
+});
+audioEl?.addEventListener("error", () => {
+  // Only a streaming clip owns the element. A decode failure on the buffered
+  // path throws where it is awaited and is reported there.
+  if (!playbackSource?.media) return;
+  dbg(`audio element error: ${audioEl.error?.message || audioEl.error?.code || "unknown"}`);
+  playbackSource.onended?.();
+});
+
+// endOfStream throws on a MediaSource that is no longer open, which is exactly
+// the state a clip cut off mid-sentence leaves behind.
+function endStream(media) {
+  if (media.readyState !== "open") return;
+  try { media.endOfStream(); } catch (e) { dbg(`audio end: ${e.message || e}`); }
+}
+
+async function startClip(msg) {
   audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+  const mime = STREAM_MIME[msg.format];
+  if (!mime || typeof MediaSource === "undefined" || !MediaSource.isTypeSupported(mime)) {
+    // No progressive playback in this browser. Collect the clip and decode it
+    // whole, which is what this always did. Deliberately does NOT pre-empt or
+    // check the button yet: on this path those decisions still belong at the
+    // moment sound would actually start, which is a chunk or two from now.
+    dropIncoming();
+    incoming = { id: msg.id, nextState: msg.nextState, chunks: [] };
+    dbg(`audio: buffering ${msg.format} whole (no MediaSource)`);
+    return;
+  }
+
+  // Whatever is audible now is cut off, and whatever was still arriving is
+  // abandoned with it. Two clips really can land together — a build's spoken
+  // result is deliberately not gated by the conversation, so a done-line and a
+  // chat reply can arrive in the same second — and without this both are heard.
+  // It returns null when nothing was playing, which is every ordinary turn.
+  const handoff = handoffAfterPreempt(stopPlayback(), msg.nextState);
+
+  // The button went down while this clip was being synthesized. Playing it now
+  // would talk over the person holding it — but the build it may have dispatched
+  // is already running, so the handoff is honoured even though the voice is never
+  // heard. Checked before anything is wired up, so nothing is left attached to a
+  // clip that will never play.
+  if (holding) {
+    dbg("audio dropped: the button is held");
+    if (handoff) setState(stateAfterClip(handoff));
+    return;
+  }
+
+  const { analyser: an } = ensureGraph();
+  const media = new MediaSource();
+  const url = URL.createObjectURL(media);
+  const queue = createAppendQueue({
+    onEnd: () => endStream(media),
+    onError: (e) => { dbg(`audio append failed: ${e.message || e}`); endStream(media); },
+  });
+
+  // Duck-typed to match the AudioBufferSourceNode stopPlayback has always been
+  // handed: `onended` detachable, `stop()` final, both meaning what they meant
+  // before. Keeping that shape is what leaves stopPlayback, the cancel button and
+  // the record button untouched by progressive playback.
+  const clip = {
+    media,
+    onended: null,
+    stop() {
+      queue.stop();
+      audioEl.pause();
+      // Pausing alone leaves the MediaSource attached, and the next clip needs
+      // the element free to take a new one.
+      audioEl.removeAttribute("src");
+      audioEl.load();
+      URL.revokeObjectURL(url);
+    },
+  };
+
+  media.addEventListener("sourceopen", () => {
+    // The URL is a handle to the MediaSource, not the data; it is revoked as soon
+    // as the element has taken it, and revoking twice is a no-op.
+    URL.revokeObjectURL(url);
+    let sink;
+    try { sink = media.addSourceBuffer(mime); }
+    catch (e) { dbg(`audio: ${e.message || e}`); queue.stop(); return; }
+    queue.attach(sink);
+  }, { once: true });
+
+  audioEl.src = url;
+  incoming = { id: msg.id, queue };
+  playbackSource = clip;
+  playbackHandoff = handoff;
+  clip.onended = () => clipEnded(handoff);
+  analyser = an;
+  freqBins = new Uint8Array(an.frequencyBinCount);
+  timeBins = new Uint8Array(an.fftSize);
+  refreshCancel();
+  setState("speaking");
+  dbg("playing as it arrives");
+  // Autoplay is allowed: the record button that started this turn was the
+  // gesture. The catch is for the clip being torn down before it ever started.
+  audioEl.play().catch((e) => dbg(`audio play: ${e.message || e}`));
+}
+
+function pushClipChunk(msg) {
+  // An id that is not the one being received belongs to a clip that has been cut
+  // off. The server commits to a whole clip the moment it sends the first byte,
+  // so its tail keeps arriving after the clip replacing it has started.
+  if (!incoming || msg.id !== incoming.id) return;
+  const bytes = Uint8Array.from(atob(msg.data), (c) => c.charCodeAt(0));
+  if (incoming.queue) incoming.queue.push(bytes);
+  else incoming.chunks.push(bytes);
+}
+
+async function endClip(msg) {
+  if (!incoming || msg.id !== incoming.id) return;
+  const clip = incoming;
+  incoming = null;
+  if (clip.queue) { clip.queue.finish(); return; }
+  await playBuffered(clip.chunks, clip.nextState);
+}
+
+// The fallback, and the path this took for every clip before Fish was asked to
+// send as it synthesizes. decodeAudioData needs the complete buffer, which is
+// the whole reason MediaSource exists above.
+async function playBuffered(chunks, nextState) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  dbg(`audio: ~${Math.round(total / 1024)}kb received`);
+  audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") await audioCtx.resume();
+
+  if (!total) {
+    // Fish answers 200 with an empty body occasionally. decodeAudioData would
+    // throw on it and the handoff would be lost with the error, stranding the
+    // HUD of a build that is already running.
+    dbg("audio: empty clip");
+    clipEnded(handoffAfterPreempt(stopPlayback(), nextState));
+    return;
+  }
+
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { bytes.set(c, at); at += c.length; }
   const buf = await audioCtx.decodeAudioData(bytes.buffer);
 
-  // Whatever is audible now is cut off. Two clips really can land together — a
-  // build's spoken result is deliberately not gated by the conversation, so a
-  // done-line and a chat reply can arrive in the same second — and without this
-  // both source nodes start and both are heard. stopPlayback detaches onended
-  // before stop(), so the clip being cut cannot fire its ending on behalf of the
-  // one replacing it. It returns null when nothing was playing, which is every
-  // ordinary turn.
   const handoff = handoffAfterPreempt(stopPlayback(), nextState);
-
-  // The button went down while this clip was being fetched and decoded. Playing
-  // it now would talk over the person holding it — but the build it may have
-  // dispatched is already running, so the handoff is honoured even though the
-  // voice is never heard. Checked before any node is built, so nothing is left
-  // wired up to a source that will never start.
   if (holding) {
     dbg("audio dropped: the button is held");
     if (handoff) setState(stateAfterClip(handoff));
@@ -447,19 +649,7 @@ async function playAudio(b64, nextState) {
   refreshCancel();
   setState("speaking");
   dbg(`playing ${buf.duration.toFixed(1)}s`);
-  src.onended = () => {
-    playbackSource = null;
-    playbackHandoff = null;
-    refreshCancel();
-    analyser = null;
-    level = 0;
-    dbg("playback ended");
-    // A clip can hand the orb to a state instead of ending the turn: the build
-    // confirmation lands in "working" so the HUD picks up exactly when the voice
-    // stops. Anything without a handoff — or with one the orb does not know —
-    // returns to idle as usual.
-    setState(stateAfterClip(handoff));
-  };
+  src.onended = () => clipEnded(handoff);
   src.start();
 }
 

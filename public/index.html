@@ -271,6 +271,11 @@
       <div id="hint">hold the button, or press &amp; hold <kbd>Space</kbd></div>
     </div>
   </div>
+  <!-- The reply is played through a media element rather than a buffer source so
+       it can start before it has finished arriving; MediaSource needs somewhere
+       to attach. Nothing about it is meant to be seen or operated, and the audio
+       graph in app.js is what actually reaches the speakers. -->
+  <audio id="clip" preload="none" hidden></audio>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

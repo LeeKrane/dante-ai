@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 import { loadFishConfig } from "./lib/config.js";
 import { ask, askResilient, buildPersona } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { speak } from "./lib/tts.js";
+import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { describeFailure } from "./lib/outcome.js";
@@ -155,30 +155,76 @@ const server = createServer(async (req, res) => {
 // by the HUD, and sending `working` alongside the audio would race playback --
 // the clip's own end would then fire idle and tear the HUD down mid-build.
 // `stillCurrent` is how a chat reply survives being overtaken mid-breath. Fish
-// takes about a second, and a reply that exists is not a reply that has been
-// heard: someone watching an amber orb cannot tell the difference between the
-// model still thinking and the voice still being synthesized, so the same gesture
-// -- pressing record -- lands on either side of a race they cannot see. Checked
-// after the fetch, so an overtaken clip is never sent. Returns whether it spoke.
-// Omitted by every build line: those are deliberately not gated by the
+// starts sending after about 450 ms and a reply that exists is not a reply that
+// has been heard: someone watching an amber orb cannot tell the difference
+// between the model still thinking and the voice still being synthesized, so the
+// same gesture -- pressing record -- lands on either side of a race they cannot
+// see. Checked once, at the first byte, and the request is aborted rather than
+// merely ignored, so an overtaken clip stops being synthesized. Returns whether
+// it spoke. Omitted by every build line: those are deliberately not gated by the
 // conversation, because a dispatched build has been paid for.
+//
+// After that first byte the clip is committed and streams to the end, because by
+// then it is audible. Interrupting something you can hear is barge-in, and the
+// browser already handles it: the next clip cuts this one off, and the id below
+// is what keeps this one's remaining chunks out of it.
+let clipSeq = 0;
+
 async function say(send, text, nextState, stillCurrent) {
   send({ type: "reply_text", text });
   const t = Date.now();
-  const audio = await speak(text, cfg);
-  const ms = Date.now() - t;
-  log(`tts ok ${ms}ms ${audio.length}b`);
-  // The caption above is left standing on purpose. It is overwritten a moment
-  // later by the person's own words as they are transcribed, and blanking it
-  // here would clear whatever they had already said.
-  if (stillCurrent && !stillCurrent()) {
+  const id = ++clipSeq;
+  const abort = new AbortController();
+  let started = false;
+  let dropped = false;
+  let ms = 0;
+
+  // Called at the first byte, and again after the stream ends in case there was
+  // no first byte -- Fish does answer 200 with an empty body, and a clip that is
+  // never announced is a `nextState` never honoured and an orb left in amber.
+  const begin = () => {
+    if (started || dropped) return started;
+    ms = Date.now() - t;
+    // The caption sent above is left standing on purpose. It is overwritten a
+    // moment later by the person's own words as they are transcribed, and
+    // blanking it here would clear whatever they had already said.
+    if (stillCurrent && !stillCurrent()) {
+      dropped = true;
+      abort.abort();
+      return false;
+    }
+    started = true;
+    send({ type: "debug", stage: "tts", ms, msg: "fish first byte" });
+    send({ type: "state", value: "speaking" });
+    send({ type: "audio_start", id, format: cfg.format, nextState });
+    return true;
+  };
+
+  let bytes = 0;
+  try {
+    bytes = await speakStream(text, cfg, (chunk) => {
+      if (!begin()) return;
+      send({ type: "audio_chunk", id, data: chunk.toString("base64") });
+    }, { signal: abort.signal });
+  } catch (e) {
+    // The abort above surfaces here; everything else is a real Fish failure and
+    // is reported as one. A clip already part-sent still has to be closed, or the
+    // browser waits for bytes that are never coming with the orb stuck speaking.
+    if (!dropped) {
+      if (started) send({ type: "audio_end", id });
+      throw e;
+    }
+  }
+
+  begin();
+  if (dropped) {
     log(`clip dropped after ${ms}ms: superseded while it was being synthesized`);
     send({ type: "debug", stage: "tts", ms, msg: "clip dropped, superseded" });
     return false;
   }
-  send({ type: "debug", stage: "tts", ms, msg: `fish ${audio.length} bytes` });
-  send({ type: "state", value: "speaking" });
-  send({ type: "audio", format: cfg.format, data: audio.toString("base64"), nextState });
+  log(`tts ok ${Date.now() - t}ms ${bytes}b first=${ms}ms`);
+  send({ type: "debug", stage: "tts", ms, msg: `fish ${bytes} bytes` });
+  send({ type: "audio_end", id });
   return true;
 }
 
