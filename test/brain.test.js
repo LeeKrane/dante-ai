@@ -20,6 +20,37 @@ test("replaces the coding-agent prompt with the spoken Jarvis prompt", () => {
   assert.deepEqual(args.slice(-4), ["--resume", "session-1", "--", "Status report."]);
 });
 
+test("the chat model is spawned with no tools at all, not merely none allowed", () => {
+  // --allowedTools "" leaves every tool DEFINITION in the prompt; only --tools ""
+  // removes them. Measured on claude 2.1.241: 12,082 input tokens against 2,076.
+  // Same lesson CLAUDE.md records for lib/builder.js, costing latency here rather
+  // than safety.
+  const args = brain.buildClaudeArgs("Status report.", null);
+  const tools = args.indexOf("--tools");
+  assert.notEqual(tools, -1, "--tools is missing");
+  assert.equal(args[tools + 1], "");
+  assert.equal(args.includes("--allowedTools"), false);
+});
+
+test("no MCP server is loaded for a turn that cannot use one", () => {
+  // buildSpawnOptions passes no env, so the CLI reads the user's global
+  // ~/.claude.json whatever the cwd is, and starts every server configured there
+  // on every voice turn. lib/builder.js must NOT get this treatment: a primitive
+  // declaring `mcp` needs those slots.
+  const args = brain.buildClaudeArgs("Status report.", null);
+  assert.ok(args.includes("--strict-mcp-config"));
+  const config = args.indexOf("--mcp-config");
+  assert.notEqual(config, -1, "--mcp-config is missing");
+  assert.deepEqual(JSON.parse(args[config + 1]), { mcpServers: {} });
+});
+
+test("every option is settled before the prompt terminator", () => {
+  // The flags above all take a value, and one of them taking it greedily would
+  // swallow the prompt. `--` is what ends the list; nothing may need it after.
+  const args = brain.buildClaudeArgs("Status report.", "session-1");
+  assert.deepEqual(args.slice(-4), ["--resume", "session-1", "--", "Status report."]);
+});
+
 test("closes stdin so Claude does not wait for piped input", () => {
   assert.equal(typeof brain.buildSpawnOptions, "function");
   assert.deepEqual(brain.buildSpawnOptions("/tmp/jarvis"), {

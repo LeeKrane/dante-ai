@@ -83,6 +83,7 @@ afterwards and are independent of both.
 | 14 | The cancel button | — | `public/index.html`, `public/app.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
 | 15 | One voice at a time | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
 | 16 | Holding the floor through synthesis | — | `lib/turns.js`, `test/turns.test.js`, `server.js` |
+| 17 | No tools, no MCP, for a chat turn | — | `lib/brain.js`, `test/brain.test.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -551,6 +552,31 @@ still in synthesis.
 What this does **not** cover, deliberately: barging in once the clip is audible. That is stage 12,
 the previous turn really was answered, and it is already in the model's session context. Merging
 there would re-answer a question the person has heard the answer to.
+
+---
+
+## Stage 17 — no tools, no MCP, for a chat turn
+
+First of the answer-speed stages. A voice turn was carrying **12,082 input tokens**; the persona
+is about 800 of them. Two causes, both in `lib/brain.js`:
+
+- `--allowedTools ""` governs what may be USED. It leaves every tool's *definition* in the prompt
+  regardless — the same lesson this repo already records about `--disallowedTools` in
+  `lib/builder.js`, arriving here as latency rather than as safety. `--tools ""` is the form that
+  actually removes them.
+- `buildSpawnOptions` passes no `env`, so the CLI reads the user's global `~/.claude.json`
+  whatever the cwd is and starts every MCP server configured there, on every sentence spoken.
+
+Measured on claude 2.1.241: 12,082 → 2,076 tokens, median wall 2875 → 2657 ms over five runs
+each. The wall saving is much smaller than the token cut implies, because that input was already a
+cache hit — this is worth doing for the ~220 ms and for actually removing the tools, not for the
+token count.
+
+`lib/builder.js` deliberately does **not** get either flag. It reads MCP slots from the user's
+global config (`configuredMcpServers()`) and `marketing-site` declares `mcp: ["refero"]`, so
+`--strict-mcp-config` there would silently close that slot. Nothing goes into
+`claude-settings.json` either: `builder.js` uses it as its shared settings base, so a rule there
+would reach every build.
 
 ---
 
