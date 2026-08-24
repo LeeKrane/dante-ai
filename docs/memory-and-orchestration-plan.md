@@ -60,8 +60,10 @@ start) and resume at Stage 1. This plan file is the handoff.
 
 ## Stages
 
-Eleven stages, strictly sequential. Each is one sub-agent's scope. Every stage must leave
-`npm test` green and the browser working before the next starts.
+Thirteen stages, strictly sequential. Each is one sub-agent's scope. Every stage must leave
+`npm test` green and the browser working before the next starts. Stages 1-11 are the memory
+layer and the multi-step orchestration this document was written for; 12 and 13 were added
+afterwards and are independent of both.
 
 | # | Stage | Creates | Modifies |
 |---|---|---|---|
@@ -76,12 +78,17 @@ Eleven stages, strictly sequential. Each is one sub-agent's scope. Every stage m
 | 9 | builder.js steps loop + `failedStep` | — | `lib/builder.js`, `lib/outcome.js`, `server.js`, `test/builder.test.js`, `test/outcome.test.js` |
 | 10 | marketing-site primitive | `primitives/marketing-site.mjs` | `test/registry.test.js`, `test/builder.test.js` |
 | 11 | Tree-shaped HUD | — | `public/build-hud.js`, `public/index.html`, `public/app.js`, `public/progress-policy.js`, `test/progress-policy.test.js` |
+| 12 | Interrupting playback | `public/playback-policy.js`, `test/playback-policy.test.js` | `public/app.js` |
+| 13 | The cancel button | — | `public/index.html`, `public/app.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
 
-Two non-obvious orderings:
+Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
   object. `npm test` would be green while the browser renders `[object Object]`. Stage 6 is
   pure client defence and a no-op until 7 lands.
 - **8 before 9**, so stage 9's fixtures are shapes the registry already blesses.
+- **12 and 13 after 11.** They touch neither the memory layer nor the build chain, so they could
+  run at any point — but stage 11 rewrites `public/app.js` and `public/index.html`, and putting
+  two independent sets of edits through the same two files earns nothing but merge work.
 
 ---
 
@@ -387,6 +394,54 @@ must include `step: noop`.
 a gutter — there is no scrolling list to collapse. The tree shape lives in `#progress` in
 `app.js`, which *is* the list. `landing-page` must look byte-identical to today.
 
+## Stage 12 — interrupting playback
+
+JARVIS cannot currently be interrupted. `playAudio()` (`app.js:348`) keeps no handle on the
+`AudioBufferSourceNode` it creates, so a clip can only be waited out or reloaded away, and
+`startListening()` (`app.js:308`) says so outright by returning early on `state === "speaking"`.
+This stage is barge-in: pressing the record button cancels whatever is speaking and starts
+listening. Client-only — `say()` (`server.js:156-164`) resolves once the audio has been *sent*,
+so nothing on the wire or under `lib/` changes.
+
+`public/playback-policy.js` is the fourth module in the `stt-policy` / `visibility-policy`
+pattern: no DOM, no imports, everything a unit test can reach. `app.js` has no test file and
+cannot get one, so every decision that can be phrased as a function lives here.
+
+- `ORB_STATES` — the five orb states, as a Set.
+- `shouldInterruptPlayback(state, playing)` — a record press has to cancel a clip before it can
+  listen over it.
+- `canStartListening(state, holding, hasRecognizer)` — `thinking` stays blocked (no clip is
+  playing yet, so there is nothing to interrupt, only a pending turn to confuse); `speaking` no
+  longer is, which is the whole point of the stage.
+- `stateAfterCancel(handoff)` — the clip's `nextState` handoff arrives off the wire, so it is
+  validated against `ORB_STATES` rather than trusted straight into `setState`.
+
+In `app.js`: a module-scope `playbackSource` beside `analyser`/`freqBins`/`timeBins`
+(`:177-180`), and a `stopPlayback()` next to `playAudio` that detaches `onended` **before**
+calling `src.stop()`, clears the source, the analyser and `level`, and returns the pending
+handoff (or `null` when nothing was playing, so callers can call it unconditionally).
+`playAudio()` gains one guard: a clip that arrives while `holding` is true is dropped rather than
+played over the person speaking — but its handoff still applies, because the server cannot know
+the button went down while its audio was in flight.
+
+## Stage 13 — the cancel button
+
+Stopping JARVIS without also starting a new turn. `#controls` is a centred grid (`index.html:71`)
+with `#mic` alone on its row, so a plain flex sibling would shove the record button off centre
+every time it appeared. Instead `#mic` gets a `position: relative` inline-flex wrapper and
+`#cancel` is absolutely positioned against it (`left: 100%`), which leaves the record button in
+exactly the same place whether or not the cancel button is showing. It borrows `#mic`'s pill
+vocabulary at a smaller weight in the muted ink: it is a way out, not the primary action.
+
+Visibility is driven by `playbackSource`, not by `state`, because the button's honest claim is
+"a clip is audible right now" and `speaking` is set a moment before `src.start()`. The rule
+itself is `shouldShowCancel(playing, chromeHidden)` in `playback-policy.js` so that it is tested
+rather than buried in an untestable file.
+
+The click handler is `setState(stateAfterCancel(stopPlayback()))` followed by `cancelBtn.blur()`.
+The blur matters: the window `keydown` handler treats Space as push-to-talk (`app.js:336-344`),
+and a button still holding focus would try to activate on the same keypress.
+
 ---
 
 ## Verification
@@ -417,6 +472,11 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 - `test/registry.test.js` (~24) and `test/outcome.test.js` (~4) per stage 8 / 9 above.
 - One landmine catcher in stage 10: render every marketing-site step prompt with
   `previous: {dir, id:null, artifact:null}` and assert a non-empty string.
+- `test/playback-policy.test.js` (~13): a record press during a clip interrupts it and with
+  nothing playing interrupts nothing; `thinking` still refuses to listen and `speaking` no longer
+  does; holding or a missing recognizer still refuses; a missing handoff lands on `idle`; a valid
+  handoff is preserved; an unknown or non-string handoff off the wire is refused; the cancel
+  button shows only while a clip plays and never while the chrome is hidden.
 
 **Manual smoke** (stages 5, 10, 11 — no DOM harness in this repo, by design):
 1. `node server.js`, open Chrome, say a standing preference → `~/.config/jarvis/memory.json`
@@ -429,6 +489,15 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 7. Run `marketing-site` → three white boundary labels, three deeper groove marks, a step row
    counting 1→3, one `build.log` with three `=== step: === ` separators, and the browser opens
    the `index.html` the verify step touched.
+8. Ask for a long answer and hold the record button mid-sentence → the voice cuts out, the orb
+   turns green, the new sentence is transcribed, and the reply that follows arrives normally.
+9. Same again, but click **Stop** → the voice stops, the button disappears, the orb returns to
+   idle, and no new turn is sent. The button is absent at idle, listening and thinking, and the
+   record button never moves sideways when it appears.
+10. Interrupt a build's kickoff line with the record button → the build carries on, the HUD keeps
+    cutting its record. Click **Stop** on the same line instead → the orb lands in `working`,
+    because the build is still running.
+11. Press `h` mid-clip → the cancel button hides with the rest of the chrome, the audio plays on.
 
 ---
 
@@ -460,3 +529,9 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 16. `memory.json` lives outside the repo on purpose. Do not "helpfully" relocate it into the
     working tree — that would leak it into git and put it where builds can write.
 17. Do not touch `lib/progress.js`. Both features are designed so its parsing stays as-is.
+18. Detach `src.onended` before `src.stop()`. `stop()` fires `onended`, so leaving it attached
+    means the cancel path and the ended path both set the state, and which one wins is a race.
+19. The record-press interrupt discards the clip's `nextState` handoff on purpose; the cancel
+    button applies it. Applying it on both paths flips the orb through `working`, which calls
+    `buildHud.start()` and then `buildHud.finish()` on the very next `setState` — tearing down
+    the HUD of a build that is still running.
