@@ -84,6 +84,7 @@ afterwards and are independent of both.
 | 15 | One voice at a time | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
 | 16 | Holding the floor through synthesis | — | `lib/turns.js`, `test/turns.test.js`, `server.js` |
 | 17 | No tools, no MCP, for a chat turn | — | `lib/brain.js`, `test/brain.test.js` |
+| 18 | Fish starts sending before the clip is done | — | `lib/tts.js`, `test/tts.test.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -580,6 +581,32 @@ would reach every build.
 
 ---
 
+## Stage 18 — Fish starts sending before the clip is done
+
+`buildTtsRequest` hardcoded `latency: "normal"`, which asks Fish to synthesize the whole clip
+before it sends any of it. `"balanced"` asks it to start sending as it goes. One word.
+
+Measured against the real API, four runs each on the same three-sentence reply, medians:
+
+| | first byte | whole clip |
+|---|---|---|
+| `normal` | 2062 ms | 2155 ms |
+| `balanced` | **450 ms** | 2021 ms |
+
+**Read the second column honestly.** The plan for this stage predicted about 250 ms off the whole
+clip; the measurement puts it at ~130 ms, which is inside the run-to-run spread — one `balanced`
+run came back slower than the `normal` run beside it. Nobody hears a difference today, because
+`speak()` still does `await res.arrayBuffer()` and a clip that arrives in pieces is not a clip that
+plays in pieces.
+
+The stage is worth committing on the first column alone. That 1.6-second gap is the whole of stage
+19's win: the bytes are now in flight from 450 ms, and a client that plays them as they land stops
+waiting for the last one. Without this flag there is nothing for stage 19 to stream, so this ships
+first and separately — one word is easy to revert if Fish's `balanced` mode ever turns out to cost
+audio quality, and that is much harder to see once the streaming client is built on top of it.
+
+---
+
 ## Verification
 
 Existing style is `node:test` + `node:assert/strict`, ESM, no framework, no mocking library,
@@ -654,6 +681,9 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     reads `clip dropped … superseded while it was being synthesized`, one clip is heard, and it
     answers both. Then repeat with a two-second pause between the sentences → two ordinary,
     separate replies, both spoken, no merge framing in either prompt.
+19. Hold a normal conversation and listen to the voice itself. `balanced` mode changes how Fish
+    synthesizes, not merely when it sends, and the only test for whether it still sounds like
+    Jarvis is a person hearing it. Prosody, pace and the ends of sentences are what to listen for.
 
 ---
 
