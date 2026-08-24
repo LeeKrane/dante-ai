@@ -36,3 +36,19 @@ export function canStartListening(state, holding, hasRecognizer) {
 export function stateAfterClip(handoff) {
   return ORB_STATES.has(handoff) ? handoff : "idle";
 }
+
+// shouldShowCancel(playing, chromeHidden)
+//
+// The button offers to stop a clip, so it appears exactly while a clip is
+// audible and not one moment longer. Driven by whether a source is actually
+// playing rather than by the orb's state: "speaking" is set just before
+// src.start(), and a button offering to stop something that has not started is
+// a button that does nothing when pressed.
+//
+// `chromeHidden` is the interface hidden with `h`. CSS hides #controls with the
+// rest of it, but a button that is only invisible is still focusable and still
+// answers the keyboard, and a control nobody can see must not be one they can
+// still press.
+export function shouldShowCancel(playing, chromeHidden) {
+  return Boolean(playing) && !chromeHidden;
+}

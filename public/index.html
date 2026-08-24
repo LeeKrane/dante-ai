@@ -73,6 +73,26 @@
     display: grid; justify-items: center; gap: 12px;
     padding: 0 20px calc(30px + env(safe-area-inset-bottom));
   }
+  /* The record button stays centred whether or not the cancel button is beside
+     it: #cancel is positioned against this wrapper rather than laid out next to
+     #mic, so its appearance cannot shove #mic sideways mid-sentence. */
+  #talk { position: relative; display: inline-flex; }
+  #cancel {
+    position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+    margin-left: 12px; appearance: none; white-space: nowrap;
+    padding: 9px 16px; border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,.03);
+    color: var(--muted); font: 500 13px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em;
+    cursor: pointer;
+    transition: color .18s ease, border-color .18s ease, background .18s ease;
+  }
+  #cancel:hover { color: var(--ink); border-color: rgba(120,210,240,.5); background: rgba(255,255,255,.06); }
+  /* On a narrow screen there is no room to the right of the record button, so
+     the way out sits under it rather than off the edge of the display. */
+  @media (max-width: 520px) {
+    #cancel { left: 50%; top: 100%; transform: translate(-50%, 0); margin: 10px 0 0; }
+  }
   #mic {
     appearance: none; display: inline-flex; align-items: center; gap: 12px;
     padding: 15px 26px; border-radius: 999px;
@@ -244,7 +264,10 @@
       </div>
     </div>
     <div id="controls">
-      <button id="mic" type="button"><span class="dot"></span> Hold to talk</button>
+      <div id="talk">
+        <button id="mic" type="button"><span class="dot"></span> Hold to talk</button>
+        <button id="cancel" class="hidden" type="button" aria-label="Stop speaking">Stop</button>
+      </div>
       <div id="hint">hold the button, or press &amp; hold <kbd>Space</kbd></div>
     </div>
   </div>

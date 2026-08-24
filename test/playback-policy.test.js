@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ORB_STATES, canStartListening, stateAfterClip } from "../public/playback-policy.js";
+import {
+  ORB_STATES,
+  canStartListening,
+  shouldShowCancel,
+  stateAfterClip,
+} from "../public/playback-policy.js";
 
 test("the button may be pressed while Jarvis is speaking, which is what makes him interruptible", () => {
   assert.equal(canStartListening("speaking", false, true), true);
@@ -51,4 +56,22 @@ test("a handoff the orb does not recognize is refused rather than shown", () => 
   for (const handoff of ["busy", "IDLE", 42, {}, [], true]) {
     assert.equal(stateAfterClip(handoff), "idle", JSON.stringify(handoff));
   }
+});
+
+// --- the cancel button ------------------------------------------------------
+
+test("the way out is offered exactly while a clip is audible", () => {
+  assert.equal(shouldShowCancel(true, false), true);
+  assert.equal(shouldShowCancel(false, false), false);
+});
+
+test("nothing playing means nothing to offer, whatever the orb is doing", () => {
+  // Driven by the source, not by the state: "speaking" is set a moment before
+  // playback actually starts.
+  assert.equal(shouldShowCancel(null, false), false);
+  assert.equal(shouldShowCancel(undefined, false), false);
+});
+
+test("a hidden interface hides the way out with it, rather than leaving it pressable", () => {
+  assert.equal(shouldShowCancel(true, true), false);
 });

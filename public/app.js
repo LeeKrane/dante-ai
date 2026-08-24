@@ -2,12 +2,13 @@ import { isFatalSpeechError } from "./stt-policy.js";
 import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
-import { canStartListening, stateAfterClip } from "./playback-policy.js";
+import { canStartListening, shouldShowCancel, stateAfterClip } from "./playback-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
 const capEl = document.getElementById("caption");
 const micBtn = document.getElementById("mic");
+const cancelBtn = document.getElementById("cancel");
 const canvas = document.getElementById("orb");
 const ctx = canvas.getContext("2d");
 const dbgEl = document.getElementById("dbg");
@@ -169,6 +170,8 @@ function toggleVisibility(target) {
     // CSS hides the HUD with the rest of the chrome; telling it as well lets it
     // stop painting into a display:none canvas while the build carries on.
     buildHud.setChromeHidden(document.body.classList.contains("interface-hidden"));
+    // A hidden button that is merely invisible still answers the keyboard.
+    refreshCancel();
   }
   else if (target === "diagnostics" && dbgEl) dbgEl.classList.toggle("hidden");
 }
@@ -356,6 +359,17 @@ window.addEventListener("keydown", (e) => {
 });
 window.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListening(); } });
 
+// Silence without starting a turn. Unlike the record button this one DOES apply
+// the clip's handoff: nothing else is about to set the state, so discarding it
+// would strand the HUD of a build that is already running.
+cancelBtn?.addEventListener("click", () => {
+  const handoff = stopPlayback();
+  setState(stateAfterClip(handoff));
+  // Space is push-to-talk, and a button still holding focus would try to
+  // activate on the same keypress that starts the next sentence.
+  cancelBtn.blur();
+});
+
 // ---- Playback (analyser drives the reactive orb) ----
 
 // stopPlayback() -> the handoff the cancelled clip was carrying, or null.
@@ -364,6 +378,15 @@ window.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDef
 // the ended path and whoever cancelled would both set the state, and which one
 // won would come down to timing. Returns null when nothing is playing, so every
 // caller can call it without checking first.
+// Shown while a clip is audible and hidden the instant it is not, so the button
+// never offers to stop something that has already stopped.
+function refreshCancel() {
+  cancelBtn?.classList.toggle(
+    "hidden",
+    !shouldShowCancel(playbackSource, document.body.classList.contains("interface-hidden")),
+  );
+}
+
 function stopPlayback() {
   const source = playbackSource;
   if (!source) return null;
@@ -374,6 +397,7 @@ function stopPlayback() {
   try { source.stop(); } catch { /* already ended between the check and here */ }
   analyser = null;
   level = 0;
+  refreshCancel();
   dbg("playback cancelled");
   return handoff;
 }
@@ -406,11 +430,13 @@ async function playAudio(b64, nextState) {
   timeBins = new Uint8Array(an.fftSize);
   playbackSource = src;
   playbackHandoff = nextState || null;
+  refreshCancel();
   setState("speaking");
   dbg(`playing ${buf.duration.toFixed(1)}s`);
   src.onended = () => {
     playbackSource = null;
     playbackHandoff = null;
+    refreshCancel();
     analyser = null;
     level = 0;
     dbg("playback ended");
