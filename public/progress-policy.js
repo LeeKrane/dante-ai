@@ -79,3 +79,27 @@ export function pushProgressEntry(buffer, entry, max = PROGRESS_MAX) {
   while (buffer.length > max) buffer.shift();
   return buffer;
 }
+
+// "1 of 3", or "" when the producer did not say. Spelled out rather than "1/3"
+// because it is read as words in the HUD's step row and on its record.
+export function stepPosition(entry) {
+  if (!entry || entry.index === null || entry.of === null) return "";
+  return `${entry.index + 1} of ${entry.of}`;
+}
+
+// One row of the readout, as text. The tree shape is the whole point of this
+// function: a boundary sits at the left margin and the lines belonging to it are
+// indented under it, which is as much of a tree as a five-row list can carry.
+//
+// The indent is spaces rather than CSS because #progress div is already
+// `white-space: pre` for its ellipsis, so it costs nothing and keeps the
+// stylesheet out of it. A line with no step is never indented: a build without
+// steps has to render exactly as it did before there were any.
+export function progressRowText(entry) {
+  if (!entry) return "";
+  if (entry.kind === "step") {
+    const position = stepPosition(entry);
+    return position ? `${position} \u00b7 ${entry.step}` : entry.step;
+  }
+  return entry.step ? `  ${entry.text}` : entry.text;
+}

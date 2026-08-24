@@ -18,6 +18,7 @@
 // Colour is the whole honesty contract, and the legend states it on screen:
 //   cyan  — ambient. Generated. Means nothing.
 //   amber — a line the build actually reported.
+//   white — the orchestrator, not the model: a boundary between two steps.
 //   red   — the build failed.
 //
 // Silence is content, not absence: every two seconds without a reported line
@@ -28,6 +29,8 @@
 // The module owns nothing outside #build-hud. It starts a rAF loop on start(),
 // and stop() cancels it and drops every listener, so repeated builds never
 // accumulate loops.
+
+import { stepPosition } from "./progress-policy.js";
 
 const RECORD_CAP = 40000; // ~26 min of samples; a runaway build must not eat RAM
 
@@ -50,6 +53,7 @@ const CLEAR = 18;           // px of vertical clearance between the orb and the 
 const QUIET_STEP = 2;       // one silence hatch per 2s of quiet
 const QUIET_FULL = 95;      // quiet (s) at which a hatch reaches full length
 const SCAR_ARC = 130;       // px of arc a reported line bends the groove for
+const SCAR_ARC_STEP = SCAR_ARC * 1.8; // a step boundary bends it for longer, so the record visibly sections
 
 // Retirement.
 const GRACE_MS = 800;       // how long an ended build has to report HOW it ended
@@ -106,7 +110,7 @@ const bipolar = (x) => fbm(x) * 2 - 1;
 // no-op so app.js never needs a null check around it.
 function inertHud() {
   const noop = () => {};
-  return { start: noop, event: noop, succeeded: noop, failed: noop, finish: noop, setChromeHidden: noop, isActive: () => false };
+  return { start: noop, event: noop, step: noop, succeeded: noop, failed: noop, finish: noop, setChromeHidden: noop, isActive: () => false };
 }
 
 export function createBuildHud(options = {}) {
@@ -127,6 +131,10 @@ export function createBuildHud(options = {}) {
     request: document.getElementById("bh-request"),
     detailRow: document.getElementById("bh-detail-row"),
     detail: document.getElementById("bh-detail"),
+    stepRow: document.getElementById("bh-step-row"),
+    step: document.getElementById("bh-step"),
+    legStep: document.getElementById("bh-leg-step"),
+    legMark: document.getElementById("bh-leg-mark"),
     fileRow: document.getElementById("bh-file-row"),
     file: document.getElementById("bh-file"),
     clock: document.getElementById("bh-clock"),
@@ -169,8 +177,8 @@ export function createBuildHud(options = {}) {
   let filePinned = false;
 
   const record = [];   // {rn, th, a, w, hot, tick}
-  const scars = [];    // {rn, th}
-  const labels = [];   // {rn, th, text, stamp, born, side, slot}
+  const scars = [];    // {rn, th, arc, span, tone}
+  const labels = [];   // {rn, th, text, stamp, tone, born, side, slot}
   const shocks = [];   // {at, amp}
   const filaments = [];
   const particles = [];
@@ -394,7 +402,9 @@ export function createBuildHud(options = {}) {
     let hot = 0;
     for (const scar of scars) {
       const d = arcLen - scar.arc;
-      if (d >= 0 && d < SCAR_ARC) hot = Math.max(hot, Math.min(1, d / 6) * Math.exp(-d / 36));
+      // A step boundary carries its own, longer span: the deeper cut is what
+      // makes the record read as three sections rather than one continuous take.
+      if (d >= 0 && d < (scar.span ?? SCAR_ARC)) hot = Math.max(hot, Math.min(1, d / 6) * Math.exp(-d / 36));
     }
 
     const spacing = rate * revolution;
@@ -465,9 +475,12 @@ export function createBuildHud(options = {}) {
     return labelTop + ((labelBottom - labelTop) * slot) / (slotCount - 1);
   }
 
-  function addLabel(text, seconds) {
-    const r = (gR0 + gA * (1 - Math.exp(-seconds / TAU))) + Math.min(gA * 0.4, 46);
-    const label = { rn: r / span, th: theta, text, stamp: `+${mmss(seconds)}`, born: performance.now(), slot: null };
+  // `tone` is the register the label speaks in: "line" is the model reporting
+  // what it did, "step" is the orchestrator saying where the build has got to.
+  // They are different claims, so they are different colours.
+  function addLabel(text, stamp, tone = "line") {
+    const r = (gR0 + gA * (1 - Math.exp(-vt / TAU))) + Math.min(gA * 0.4, 46);
+    const label = { rn: r / span, th: theta, text, stamp, tone, born: performance.now(), slot: null };
     placeLabel(label, false);
     labels.push(label);
   }
@@ -494,7 +507,9 @@ export function createBuildHud(options = {}) {
       // Older entries dim so the newest line is always the one being read.
       const rank = labels.length - 1 - i;
       const dim = rank === 0 ? 1 : rank === 1 ? 0.72 : 0.45;
-      const colour = outcome === "fail" ? FAULT : AMBER;
+      // A failed build recolours everything: whatever a label said, the run it
+      // belongs to did not finish, and the record must not read as if it did.
+      const colour = outcome === "fail" ? FAULT : label.tone === "step" ? WHITE : AMBER;
 
       live.strokeStyle = rgba(colour, 0.4 * fade * dim);
       live.lineWidth = 1;
@@ -735,7 +750,12 @@ export function createBuildHud(options = {}) {
       const p = point(scar.rn * span, scar.th);
       live.beginPath();
       live.arc(p.x, p.y, 2.2, 0, TWO_PI);
-      live.fillStyle = rgba(outcome === "fail" ? FAULT : AMBER, 0.35 + glow);
+      // Relit in the colour it was cut in, so a boundary reads as a boundary on
+      // the way past as well as when it happened.
+      live.fillStyle = rgba(
+        outcome === "fail" ? FAULT : scar.tone === "step" ? WHITE : AMBER,
+        0.35 + glow,
+      );
       live.fill();
     }
   }
@@ -863,6 +883,11 @@ export function createBuildHud(options = {}) {
     setText(el.detail, detail);
     el.detailRow?.classList.toggle("hidden", !detail);
     el.fileRow?.classList.add("hidden");
+    // A chain that ran last time must not leave its last step on screen while a
+    // single-shot build runs, which would name a step this build does not have.
+    el.stepRow?.classList.add("hidden");
+    el.legMark?.classList.add("hidden");
+    el.legStep?.classList.add("hidden");
     setText(el.completion, "unmeasured");
     paintState("building");
     setText(el.quietKey, "quiet since dispatch");
@@ -887,19 +912,47 @@ export function createBuildHud(options = {}) {
     raf = requestAnimationFrame(frame);
   }
 
-  function event(line) {
-    if (phase !== "cutting") return;
-    const text = plain(line, 44);
-    if (!text) return;
+  // Shared by both kinds of mark: a reported line and a step boundary are both
+  // activity, and the quiet counter must not keep climbing through either.
+  function cut(depth, amp, tone = "line") {
     lastEventVt = vt;
     nextQuietVt = vt + QUIET_STEP;
     carrierBurst = performance.now() / 1000;
     const now = performance.now();
-    shocks.push({ at: now, amp: 1 }, { at: now + 130, amp: 0.55 });
+    shocks.push({ at: now, amp }, { at: now + 130, amp: amp * 0.55 });
     const r = (gR0 + gA * (1 - Math.exp(-vt / TAU))) + Math.min(gA * 0.4, 46);
-    scars.push({ arc: arcLen, th: theta, rn: r / span });
-    addLabel(text, vt);
+    scars.push({ arc: arcLen, th: theta, rn: r / span, span: depth, tone });
+  }
+
+  // `stepName` is which step reported this line, and is only ever stamped under
+  // the label — a build with no steps passes nothing and the stamp is what it
+  // has always been.
+  function event(line, stepName) {
+    if (phase !== "cutting") return;
+    const text = plain(line, 44);
+    if (!text) return;
+    cut(SCAR_ARC, 1);
+    const from = plain(stepName, 24);
+    addLabel(text, from ? `+${mmss(vt)} \u00b7 ${from}` : `+${mmss(vt)}`);
     noteFileFrom(text);
+  }
+
+  // The orchestrator reaching a new step. Not model chatter: nothing about it
+  // came from the build session, which is why it is white rather than amber and
+  // why the stamp names the position instead of the clock.
+  function step(info) {
+    if (phase !== "cutting") return;
+    const name = plain(info?.step, 28);
+    if (!name) return;
+    cut(SCAR_ARC_STEP, 1.5, "step");
+    const position = stepPosition(info);
+    addLabel(name, position ? `step ${position}` : "step", "step");
+    setText(el.step, position ? `${name} \u00b7 ${position}` : name);
+    el.stepRow?.classList.remove("hidden");
+    // The legend is the honesty contract, so the white entry appears exactly
+    // when there is something white on screen to explain, and not before.
+    el.legMark?.classList.remove("hidden");
+    el.legStep?.classList.remove("hidden");
   }
 
   function settle() {
@@ -960,6 +1013,7 @@ export function createBuildHud(options = {}) {
   return {
     start,
     event,
+    step,
     succeeded,
     failed,
     finish,

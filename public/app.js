@@ -1,7 +1,7 @@
 import { isFatalSpeechError } from "./stt-policy.js";
 import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
-import { normalizeProgress, pushProgressEntry } from "./progress-policy.js";
+import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
@@ -38,24 +38,6 @@ function dbg(message) {
 // well as lines and the two render differently.
 const progressBuffer = [];
 
-// A step boundary as one line of text: "2/3 build-pages". The index is 0-based
-// on the wire and 1-based on screen, because nobody counts steps from zero.
-function stepLabel(entry) {
-  const position = entry.of !== null && entry.index !== null
-    ? `${entry.index + 1}/${entry.of} `
-    : "";
-  return `${position}${entry.step}`;
-}
-
-// The rows are indented with spaces rather than CSS because #progress div is
-// already `white-space: pre` for the ellipsis, so the indent costs nothing and
-// keeps this stage out of the stylesheet. Only lines that belong to a named step
-// are indented: a build with no steps must render exactly as it did before.
-function rowText(entry) {
-  if (entry.kind === "step") return stepLabel(entry);
-  return entry.step ? `  ${entry.text}` : entry.text;
-}
-
 // Every row is written with textContent, never HTML: this text was produced by
 // the model running the build, and progress-policy.js stripping the control
 // characters out of it is only half the defence.
@@ -64,7 +46,7 @@ function renderProgress() {
   progEl.textContent = "";
   for (const entry of progressBuffer) {
     const row = document.createElement("div");
-    row.textContent = rowText(entry);
+    row.textContent = progressRowText(entry);
     progEl.appendChild(row);
   }
   progEl.classList.toggle("hidden", progressBuffer.length === 0);
@@ -76,12 +58,12 @@ function pushProgress(line) {
   pushProgressEntry(progressBuffer, entry);
   renderProgress();
   // The same thing, cut into the record around the orb: the HUD is the only place
-  // it is visible while a build is running (see build-hud-live in index.html).
-  // It takes a string today; a step boundary is worth more than that, and it gets
-  // its own gutter later.
-  const text = rowText(entry).trim();
-  buildHud.event(text);
-  dbg(`build: ${text}`);
+  // it is visible while a build is running (see build-hud-live in index.html). A
+  // boundary goes in through its own entry point, because the record marks it
+  // differently — it is the orchestrator speaking, not the build.
+  if (entry.kind === "step") buildHud.step(entry);
+  else buildHud.event(entry.text, entry.step);
+  dbg(`build: ${progressRowText(entry).trim()}`);
 }
 
 function clearProgress() {
