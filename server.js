@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig } from "./lib/config.js";
 import { ask, askResilient, buildPersona } from "./lib/brain.js";
+import { createTurnGate, mergeTurns } from "./lib/turns.js";
 import { speak } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -433,7 +434,14 @@ wss.on("connection", (ws) => {
   // so it cannot outlive the socket. `pending` is the question waiting on an
   // answer. The one-build-at-a-time guard is deliberately NOT here: it counts
   // builds on the machine, and two tabs are two of these closures.
-  const conv = { pending: null, turns: 0 };
+  // `unanswered` is everything said since the last spoken reply, oldest first.
+  // It is usually one sentence and is cleared the moment a reply is actually
+  // spoken; it holds more only when someone interrupted themselves. `abort` is
+  // the call in flight, and `settled` is how the next one waits for the abandoned
+  // child to finish dying -- two of them resuming one session id at the same
+  // time is the race this whole arrangement exists to avoid.
+  const conv = { pending: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
+  const gate = createTurnGate();
 
   // Read fresh from the store rather than from a boot-time snapshot: a second
   // tab opened mid-conversation has to join the session that is current now, not
@@ -460,13 +468,42 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Whoever spoke last has the floor. The call already running is abandoned
+      // rather than left to answer a question that has been overtaken, and what
+      // it was asked stays in `unanswered` so the call replacing it carries both.
+      conv.unanswered.push(msg.text);
+      if (conv.abort) {
+        log("turn superseded");
+        send({ type: "debug", stage: "brain", msg: "superseded by a newer turn" });
+        conv.abort.abort();
+      }
+      const token = gate.begin();
+      const controller = new AbortController();
+      conv.abort = controller;
+
       send({ type: "state", value: "thinking" });
       const tb = Date.now();
-      // askResilient, not ask: a remembered session id can have expired since it
-      // was written, and the first turn after a page load is exactly where that
-      // shows up. It retries once from cold rather than failing the turn.
-      const { reply: spoken, sessionId, recovered } =
-        await askResilient(msg.text, sessions.get(ws), { persona });
+      // The abandoned child is still shutting down and still owns the session
+      // file, so the replacement waits for it rather than racing it.
+      const previous = conv.settled;
+      let release;
+      conv.settled = new Promise((done) => { release = done; });
+      await previous;
+
+      let spoken, sessionId, recovered;
+      try {
+        // askResilient, not ask: a remembered session id can have expired since it
+        // was written, and the first turn after a page load is exactly where that
+        // shows up. It retries once from cold rather than failing the turn.
+        ({ reply: spoken, sessionId, recovered } = await askResilient(
+          mergeTurns(conv.unanswered),
+          sessions.get(ws),
+          { persona, signal: controller.signal },
+        ));
+      } finally {
+        if (conv.abort === controller) conv.abort = null;
+        release();
+      }
       const bms = Date.now() - tb;
       if (recovered) log("brain recovered from an unresumable session id");
       sessions.set(ws, sessionId);
@@ -493,6 +530,20 @@ wss.on("connection", (ws) => {
           log(`memory set ${JSON.stringify(saved)}`);
         }
       }
+      // The call landed after the floor had already passed to a newer sentence:
+      // the abort fired a moment too late to stop it. What it learned is kept --
+      // the exchange really did happen, and the session id and any preference
+      // are worth having -- but the answer belongs to a question that has been
+      // overtaken, so it is never spoken and never dispatches a build.
+      if (!gate.isCurrent(token)) {
+        log(`brain superseded after answering ${bms}ms session=${sessionId}`);
+        return;
+      }
+
+      // Answered, so nothing is outstanding any more. Cleared here rather than
+      // before the call, because a turn abandoned halfway has to leave what it
+      // was asked behind for the one that superseded it.
+      conv.unanswered.length = 0;
       log(`brain ok ${bms}ms session=${sessionId} reply=${JSON.stringify(reply)}` +
           (action ? ` action=${JSON.stringify(action.primitive)}` : ""));
       send({ type: "debug", stage: "brain", ms: bms, msg: `claude: "${reply}"` });
@@ -508,6 +559,10 @@ wss.on("connection", (ws) => {
         log("brain returned no speakable text");
       }
     } catch (e) {
+      // An abandoned turn is not a failure to report. Nobody is waiting on it,
+      // the person is already mid-sentence, and the turn that superseded it owns
+      // the screen now -- an error line here would flash over their own words.
+      if (e.aborted) return;
       // Narrowed to sessionExhausted on purpose: a dead session must not survive
       // as a stored id, or the next tab resumes it and fails the same way. Any
       // other failure -- a Fish outage, say -- must not cost the conversation

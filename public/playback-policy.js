@@ -11,17 +11,18 @@ export const ORB_STATES = new Set(["idle", "listening", "thinking", "working", "
 
 // canStartListening(state, holding, hasRecognizer)
 //
-// "speaking" is deliberately NOT on the refusal list, which is the whole point:
-// pressing the button while Jarvis is talking cancels the clip and starts a new
-// turn, the way every voice assistant that is pleasant to use behaves.
+// No state refuses the button any more, which is the whole point: whatever
+// Jarvis is doing, the person gets to talk. A clip being spoken is cancelled by
+// the press; a turn still being thought about is superseded by the server, which
+// abandons it and folds what was said into the call that replaces it
+// (lib/turns.js). Both are the same promise — whoever spoke last has the floor.
 //
-// "thinking" stays refused. Nothing is playing yet, so there is nothing to
-// interrupt — only a turn already in flight, whose reply would arrive in the
-// middle of the next sentence.
+// `state` is kept in the signature deliberately. This is the one place that
+// decides when the button is dead, and the honest answer being "never" is worth
+// stating once rather than discovering by reading a call site.
 export function canStartListening(state, holding, hasRecognizer) {
   if (!hasRecognizer) return false;
-  if (holding) return false;
-  return state !== "thinking";
+  return !holding;
 }
 
 // stateAfterClip(handoff) -> the state the orb takes when a clip stops, whether

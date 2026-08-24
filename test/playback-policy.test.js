@@ -6,14 +6,16 @@ test("the button may be pressed while Jarvis is speaking, which is what makes hi
   assert.equal(canStartListening("speaking", false, true), true);
 });
 
-test("the button may be pressed at idle, while listening, and during a build", () => {
-  for (const state of ["idle", "listening", "working"]) {
+test("the button may be pressed in every state the orb has", () => {
+  for (const state of ["idle", "listening", "working", "thinking", "speaking"]) {
     assert.equal(canStartListening(state, false, true), true, state);
   }
 });
 
-test("a turn already in flight is not interrupted, because there is no clip to cancel yet", () => {
-  assert.equal(canStartListening("thinking", false, true), false);
+test("a turn still being thought about does not lock the button either", () => {
+  // The server supersedes the call in flight and folds what was said into the
+  // one that replaces it, so the press is never wasted.
+  assert.equal(canStartListening("thinking", false, true), true);
 });
 
 test("a button already held starts nothing a second time", () => {

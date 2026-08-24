@@ -60,7 +60,7 @@ start) and resume at Stage 1. This plan file is the handoff.
 
 ## Stages
 
-Thirteen stages, strictly sequential. Each is one sub-agent's scope. Every stage must leave
+Fourteen stages, strictly sequential. Each is one sub-agent's scope. Every stage must leave
 `npm test` green and the browser working before the next starts. Stages 1-11 are the memory
 layer and the multi-step orchestration this document was written for; 12 and 13 were added
 afterwards and are independent of both.
@@ -79,7 +79,8 @@ afterwards and are independent of both.
 | 10 | marketing-site primitive | `primitives/marketing-site.mjs` | `test/registry.test.js`, `test/builder.test.js` |
 | 11 | Tree-shaped HUD | — | `public/build-hud.js`, `public/index.html`, `public/app.js`, `public/progress-policy.js`, `test/progress-policy.test.js` |
 | 12 | Interrupting playback | `public/playback-policy.js`, `test/playback-policy.test.js` | `public/app.js` |
-| 13 | The cancel button | — | `public/index.html`, `public/app.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
+| 13 | Superseding a thinking turn | `lib/turns.js`, `test/turns.test.js`, `test/brain-abort.test.js` | `lib/brain.js`, `server.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
+| 14 | The cancel button | — | `public/index.html`, `public/app.js`, `public/playback-policy.js`, `test/playback-policy.test.js` |
 
 Three non-obvious orderings:
 - **6 before 7.** Stage 7 changes the `{type:"progress", line}` wire shape from a string to an
@@ -89,6 +90,8 @@ Three non-obvious orderings:
 - **12 and 13 after 11.** They touch neither the memory layer nor the build chain, so they could
   run at any point — but stage 11 rewrites `public/app.js` and `public/index.html`, and putting
   two independent sets of edits through the same two files earns nothing but merge work.
+- **13 before 14.** Stage 13 was added after 12 shipped, to fix a bug 12 left behind. It goes
+  ahead of the cancel button because both edit `canStartListening` and its tests.
 
 ---
 
@@ -427,7 +430,40 @@ handoff (or `null` when nothing was playing, so callers can call it unconditiona
 played over the person speaking — but its handoff still applies, because the server cannot know
 the button went down while its audio was in flight.
 
-## Stage 13 — the cancel button
+## Stage 13 — superseding a turn that is still thinking
+
+Stage 12 made Jarvis interruptible while *speaking* and left him deaf while *thinking*:
+`canStartListening` refused that state, so a press during the gap between releasing the button and
+hearing an answer did nothing, and the old answer arrived over the top of whatever was said next.
+A bug, not a missing feature.
+
+**One call, not two.** Lifting the guard alone would put two `claude -p` calls on one session id
+at the same time, and the CLI owns that file. So the call in flight is abandoned the moment a new
+sentence arrives, and both sentences go out as a single call. The reply answers the most recent
+one; the earlier ones are context, mentioned only if they change the answer. Interrupting
+repeatedly accumulates, capped at `MAX_UNANSWERED`.
+
+`lib/turns.js` holds the two decisions, because `server.js` has no test file:
+- `mergeTurns(texts)` — one sentence passes through **byte-identical**, which is what keeps an
+  ordinary turn ordinary; several are framed newest-first.
+- `createTurnGate()` — a token issued per turn. A call can resolve in the same tick its abort
+  fires, and the abandoned turn must not answer a question that has been overtaken.
+
+`ask()` takes `opts.signal` and SIGTERMs the child on abort, rejecting with `err.aborted`.
+`askResilient` must rethrow that immediately: retrying an abandoned turn is the one moment stage
+4's cold retry is wrong, and it would put two children on one session id — the exact race the
+abort exists to prevent.
+
+`server.js` keeps `conv.unanswered` (cleared only when a reply is actually spoken), `conv.abort`,
+and `conv.settled`, which the next call waits on so the abandoned child is done dying before its
+replacement resumes the same session. A superseded turn keeps what it learned — the session id and
+any `[MEMORY:SET]` — and speaks nothing and dispatches nothing. `dispatchAction` keeps the raw
+`send`: a build already running is not a stale reply, and talking over a build is unchanged.
+
+Killing mid-call can leave the session half-written. Already survivable — `askResilient` heals an
+unresumable id with one cold retry.
+
+## Stage 14 — the cancel button
 
 Stopping JARVIS without also starting a new turn. `#controls` is a centred grid (`index.html:71`)
 with `#mic` alone on its row, so a plain flex sibling would shove the record button off centre
@@ -501,6 +537,15 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     cutting its record. Click **Stop** on the same line instead → the orb lands in `working`,
     because the build is still running.
 11. Press `h` mid-clip → the cancel button hides with the rest of the chrome, the audio plays on.
+12. Ask something, and the moment the orb turns amber, hold the button and ask something else →
+    the first answer never arrives, one reply answers the second question, and the log shows one
+    `brain ok` for the pair rather than two.
+13. Interrupt yourself twice in a row → still one reply, answering the last, and the prompt the
+    CLI receives carries all three newest-first.
+14. "Build me a landing page", then "actually, a marketing site" before the confirmation →
+    exactly one build starts, and it is the marketing site.
+15. Ask something ordinary and let it answer → the prompt it received is the sentence alone, with
+    no merge framing around it.
 
 ---
 
@@ -538,3 +583,8 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     button applies it. Applying it on both paths flips the orb through `working`, which calls
     `buildHud.start()` and then `buildHud.finish()` on the very next `setState` — tearing down
     the HUD of a build that is still running.
+20. An aborted call must never be retried. `askResilient` checks `err.aborted` before anything
+    else: a retry there spawns a second child on the same session id, which is the race the
+    abort was added to prevent.
+21. Never let two chat calls run at once on one socket. `conv.settled` is what serialises them,
+    and it is released in a `finally` so an abandoned turn cannot wedge the conversation shut.
