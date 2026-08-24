@@ -1,6 +1,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,8 +206,19 @@ test("success: exit 0 plus the artifact on disk", async () => {
   assert.equal(r.artifact, join(r.dir, "index.html"));
   assert.ok(existsSync(r.artifact));
   assert.equal(r.result.subtype, "success");
-  // Progress survived a JSON line far larger than a single pipe chunk.
-  assert.deepEqual(seen, ["Writing index.html"]);
+  // Progress survived a JSON line far larger than a single pipe chunk. It is an
+  // envelope even here, where there are no steps to distinguish: one shape for
+  // every build means no consumer ever has to branch on typeof.
+  assert.deepEqual(seen, [{ kind: "line", step: "", text: "Writing index.html" }]);
+});
+
+test("a build with no steps names no step, so the readout looks exactly as it did", async () => {
+  const seen = [];
+  await run(primitive, { subject: "coffee" }, (line) => seen.push(line), {
+    bin: fake.success,
+    root: root(),
+  });
+  assert.equal(seen[0].step, "");
 });
 
 test("every build gets its own directory", async () => {
@@ -298,6 +309,23 @@ test("rejects only when the CLI cannot be started at all", async () => {
     }),
     (err) => err.code === "ENOENT",
   );
+});
+
+test("a CLI that cannot start leaves no empty build.log behind", async () => {
+  // Its own root, so the directory this build made is the only one to inspect.
+  const isolated = join(workspace, "builds-enoent");
+  await assert.rejects(
+    run(primitive, { subject: "coffee" }, null, {
+      bin: join(workspace, "definitely-not-here"),
+      root: isolated,
+    }),
+    (err) => err.code === "ENOENT",
+  );
+  const dirs = await readdir(isolated);
+  assert.equal(dirs.length, 1);
+  // An empty log reads as "the build ran and said nothing", which is the one
+  // thing that did not happen.
+  assert.equal(existsSync(join(isolated, dirs[0], "build.log")), false);
 });
 
 // --- configuredMcpServers -------------------------------------------------
