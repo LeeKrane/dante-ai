@@ -244,3 +244,32 @@ test("stays plain enough to read aloud", () => {
     assert.match(message, /^[A-Z].*\.$/s);
   }
 });
+
+// --- which step it stopped at -----------------------------------------------
+
+test("names the step a chain stopped at, after saying what went wrong", () => {
+  const dir = tempDir();
+  const message = describeFailure({
+    code: 2,
+    dir,
+    outputContract: "index.html",
+    failedStep: "build-pages",
+  });
+  assert.match(message, /exit code 2/);
+  // Spoken aloud, so the id is read as words rather than as a filename.
+  assert.match(message, /It stopped at the build pages step\.$/);
+});
+
+test("a build that went fine is not given a step to blame", () => {
+  const dir = tempDir();
+  writeFileSync(join(dir, "index.html"), "<!doctype html>");
+  assert.equal(describeFailure({ code: 0, dir, outputContract: "index.html", failedStep: "verify" }), "");
+});
+
+test("an unusable step id is left off rather than spoken", () => {
+  const dir = tempDir();
+  for (const failedStep of [null, undefined, "", "   ", 42]) {
+    const message = describeFailure({ code: 2, dir, outputContract: "index.html", failedStep });
+    assert.equal(message, "The build stopped with exit code 2.", `${failedStep}`);
+  }
+});

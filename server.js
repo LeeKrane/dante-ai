@@ -336,6 +336,9 @@ async function build(send, primitive, params, preamble = "") {
     outputContract: primitive.outputContract,
     result: outcome.result,
     timedOut: outcome.timedOut,
+    // Only a chain sets this; a single-shot outcome has no such key, and
+    // describeFailure leaves the sentence alone when it is absent.
+    failedStep: outcome.failedStep,
   }) || "The build did not finish.";
 
   await say(send, `${trouble} Nothing is broken, sir. Say the word and I'll try again.`);

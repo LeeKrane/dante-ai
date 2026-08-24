@@ -4,7 +4,7 @@ import { mkdtemp, readdir, rm, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSpawnArgs, configuredMcpServers, run } from "../lib/builder.js";
+import { buildSpawnArgs, configuredMcpServers, run, stepSpec } from "../lib/builder.js";
 
 // The command line is unit-tested directly. run() is tested against small fake
 // CLIs written to a temp dir: real spawning, real streams, real exit codes and
@@ -132,6 +132,27 @@ const TOOL_USE_LINE =
 const RESULT_LINE =
   'JSON.stringify({ type: "result", subtype: "success", is_error: false, num_turns: 2 })';
 
+// Every invocation records the prompt it was given, so a chain can be checked
+// for how many times the CLI ran and in what order.
+const RECORD_CALL =
+  'const i = process.argv.indexOf("--append-system-prompt");' +
+  'fs.appendFileSync("calls.log", process.argv[i + 1].replace(/\\s+/g, " ") + "\\n");';
+
+// The first step writes plan.md, the second writes index.html. Which one this
+// invocation is is read off the directory the previous step left behind.
+const CHAIN_WRITE = [
+  RECORD_CALL,
+  'const first = !fs.existsSync("plan.md");',
+  'fs.writeFileSync(first ? "plan.md" : "index.html", first ? "the plan" : "<!doctype html>");',
+].join("\n");
+
+const CHAIN_BODY = (secondExit) => [
+  CHAIN_WRITE,
+  `console.log(${TOOL_USE_LINE});`,
+  `if (!first) process.exitCode = ${secondExit};`,
+  `console.log(${RESULT_LINE});`,
+].join("\n");
+
 // A fake CLI ignores its arguments entirely: it exists to produce a stream and
 // an exit code. `BIG` makes the tool_use line larger than one pipe chunk, which
 // is what proves the line reassembly in run() actually works.
@@ -183,6 +204,26 @@ before(async () => {
     [
       `console.log(${TOOL_USE_LINE});`,
       'process.on("SIGTERM", () => {});',
+      "setInterval(() => {}, 1000);",
+    ].join("\n"),
+  );
+
+  // A chain fake decides what to do from what is already in the directory,
+  // which is the only way one script can stand in for several different steps —
+  // and it means a step running out of order writes the wrong file and fails the
+  // test rather than passing by accident.
+  fake.chain = await writeFake("claude-chain.cjs", CHAIN_BODY("0"));
+
+  // Same, but the step that builds the page falls over instead.
+  fake.chainFailsSecond = await writeFake("claude-chain-fail.cjs", CHAIN_BODY("2"));
+
+  // Writes its file and then refuses to end, but exits cleanly when asked. A
+  // step like this satisfies its contract and still spends the whole budget.
+  fake.slowStep = await writeFake(
+    "claude-slow-step.cjs",
+    [
+      CHAIN_WRITE,
+      'process.on("SIGTERM", () => process.exit(0));',
       "setInterval(() => {}, 1000);",
     ].join("\n"),
   );
@@ -344,4 +385,218 @@ test("a config with no MCP section means no optional slots", async () => {
   const path = join(workspace, "claude-config-empty.json");
   await writeFile(path, JSON.stringify({ theme: "dark" }));
   assert.deepEqual(configuredMcpServers({ configPath: path }), []);
+});
+
+// --- stepSpec ---------------------------------------------------------------
+
+const chainPrimitive = {
+  ...primitive,
+  id: "chain-thing",
+  mcp: ["refero"],
+  timeoutMs: 20000,
+  steps: [
+    {
+      id: "plan",
+      systemPrompt: () => "Write plan.md.",
+      allowedTools: ["Write"],
+      outputContract: "plan.md",
+    },
+    {
+      id: "build",
+      systemPrompt: (p) => `Read ${p.previous.artifact} and build the page.`,
+      allowedTools: ["Write", "Edit", "Read"],
+      outputContract: "index.html",
+    },
+  ],
+};
+
+test("a step is told the overall goal before its own instructions", () => {
+  const spec = stepSpec(chainPrimitive, chainPrimitive.steps[0]);
+  const prompt = spec.systemPrompt({ subject: "coffee" });
+  assert.ok(prompt.startsWith("make coffee"), prompt);
+  assert.ok(prompt.includes("Write plan.md."));
+});
+
+test("a step runs with its own tools and never the primitive's", () => {
+  const spec = stepSpec(chainPrimitive, chainPrimitive.steps[0]);
+  assert.deepEqual(spec.allowedTools, ["Write"]);
+  // The primitive grants Edit and Read; the planning step must not get them.
+  assert.ok(!spec.allowedTools.includes("Edit"));
+});
+
+test("a step inherits the primitive's MCP slots only when it names none of its own", () => {
+  assert.deepEqual(stepSpec(chainPrimitive, chainPrimitive.steps[0]).mcp, ["refero"]);
+  const withOwn = { ...chainPrimitive.steps[0], mcp: ["other"] };
+  assert.deepEqual(stepSpec(chainPrimitive, withOwn).mcp, ["other"]);
+});
+
+// --- runSteps ---------------------------------------------------------------
+
+const callsIn = async (dir) => (await readFile(join(dir, "calls.log"), "utf8")).trim().split("\n");
+
+test("a chain runs the CLI once per step, in order", async () => {
+  const r = await run(chainPrimitive, { subject: "coffee" }, null, {
+    bin: fake.chain,
+    root: root(),
+  });
+
+  assert.equal(r.ok, true);
+  const calls = await callsIn(r.dir);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].includes("Write plan.md."), calls[0]);
+  assert.ok(calls[1].includes("build the page"), calls[1]);
+});
+
+test("a step is handed what the step before it produced", async () => {
+  const r = await run(chainPrimitive, { subject: "coffee" }, null, {
+    bin: fake.chain,
+    root: root(),
+  });
+  const calls = await callsIn(r.dir);
+  assert.ok(calls[1].includes(join(r.dir, "plan.md")), calls[1]);
+});
+
+test("the first step is told there is nothing before it, rather than handed a null", async () => {
+  // A null here would throw inside buildSpawnArgs and reject the whole build,
+  // turning a primitive-authoring typo into an unexplained TypeError.
+  const seen = [];
+  const nosy = {
+    ...chainPrimitive,
+    steps: [
+      {
+        ...chainPrimitive.steps[0],
+        systemPrompt: (p) => {
+          seen.push(p.previous);
+          return "Write plan.md.";
+        },
+      },
+      chainPrimitive.steps[1],
+    ],
+  };
+  const r = await run(nosy, { subject: "coffee" }, null, { bin: fake.chain, root: root() });
+  assert.equal(seen[0].id, null);
+  assert.equal(seen[0].artifact, null);
+  assert.equal(seen[0].dir, r.dir);
+});
+
+test("a chain keeps one directory and one log for the whole run", async () => {
+  const r = await run(chainPrimitive, { subject: "coffee" }, null, {
+    bin: fake.chain,
+    root: root(),
+  });
+  assert.equal(r.log, join(r.dir, "build.log"));
+  assert.ok(existsSync(join(r.dir, "plan.md")));
+  assert.ok(existsSync(join(r.dir, "index.html")));
+});
+
+test("the shared log names each step before it starts, so 900 seconds of it can be read", async () => {
+  const r = await run(chainPrimitive, { subject: "coffee" }, null, {
+    bin: fake.chain,
+    root: root(),
+  });
+  const log = await readFile(r.log, "utf8");
+  assert.ok(log.includes("=== step: plan ==="));
+  assert.ok(log.includes("=== step: build ==="));
+  assert.ok(log.indexOf("=== step: plan ===") < log.indexOf("=== step: build ==="));
+});
+
+test("a chain reports the primitive's own artifact, not the last step's working file", async () => {
+  const r = await run(chainPrimitive, { subject: "coffee" }, null, {
+    bin: fake.chain,
+    root: root(),
+  });
+  assert.equal(r.artifact, join(r.dir, "index.html"));
+  assert.equal(r.failedStep, null);
+});
+
+test("progress from a chain names the step it came from", async () => {
+  const seen = [];
+  await run(chainPrimitive, { subject: "coffee" }, (line) => seen.push(line), {
+    bin: fake.chain,
+    root: root(),
+  });
+  const lines = seen.filter((e) => e.kind === "line");
+  assert.deepEqual([...new Set(lines.map((e) => e.step))], ["plan", "build"]);
+});
+
+test("each step announces itself and its place in the chain", async () => {
+  const seen = [];
+  await run(chainPrimitive, { subject: "coffee" }, (line) => seen.push(line), {
+    bin: fake.chain,
+    root: root(),
+  });
+  assert.deepEqual(
+    seen.filter((e) => e.kind === "step"),
+    [
+      { kind: "step", step: "plan", state: "start", index: 0, of: 2 },
+      { kind: "step", step: "build", state: "start", index: 1, of: 2 },
+    ],
+  );
+});
+
+test("a failing step names itself and the steps after it never run", async () => {
+  const r = await run(chainPrimitive, { subject: "coffee" }, null, {
+    bin: fake.chainFailsSecond,
+    root: root(),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.failedStep, "build");
+  assert.equal(r.artifact, null);
+  assert.equal((await callsIn(r.dir)).length, 2);
+});
+
+test("a chain that fails at its first step never starts the second", async () => {
+  const doomed = {
+    ...chainPrimitive,
+    steps: [
+      { ...chainPrimitive.steps[0], outputContract: "never-written.md" },
+      chainPrimitive.steps[1],
+    ],
+  };
+  const r = await run(doomed, { subject: "coffee" }, null, { bin: fake.chain, root: root() });
+  assert.equal(r.ok, false);
+  assert.equal(r.failedStep, "plan");
+  assert.equal((await callsIn(r.dir)).length, 1);
+});
+
+test("the wall clock is what the budget is spent from, however generous the shares", async () => {
+  const greedy = {
+    ...chainPrimitive,
+    timeoutMs: 1500,
+    steps: chainPrimitive.steps.map((step) => ({ ...step, timeoutShareMs: 60000 })),
+  };
+  const started = Date.now();
+  const r = await run(greedy, { subject: "coffee" }, null, {
+    bin: fake.hang,
+    root: root(),
+    killGraceMs: 150,
+  });
+
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, true);
+  assert.equal(r.failedStep, "plan");
+  // A share bigger than the ceiling must be clamped to it, not honoured.
+  assert.ok(Date.now() - started < 5000, "the chain outlived its own timeout");
+});
+
+test("a step with no time left is not started, because it could only overrun further", async () => {
+  const tight = { ...chainPrimitive, timeoutMs: 1200 };
+  const r = await run(tight, { subject: "coffee" }, null, {
+    bin: fake.slowStep,
+    root: root(),
+    killGraceMs: 150,
+  });
+
+  // The first step wrote its file before it was stopped, so it satisfied its own
+  // contract — and still left nothing for the one after it.
+  assert.ok(existsSync(join(r.dir, "plan.md")));
+  assert.equal((await callsIn(r.dir)).length, 1);
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, true);
+  assert.equal(r.failedStep, "build");
+});
+
+test("a single-shot build reports no failed step at all, as it always has", async () => {
+  const r = await run(primitive, { subject: "coffee" }, null, { bin: fake.success, root: root() });
+  assert.equal("failedStep" in r, false);
 });
