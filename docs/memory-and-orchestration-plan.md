@@ -742,7 +742,12 @@ reaches the model on the next fresh session — which is what it already did.
 31. **A write to a dead child raises EPIPE on the stream rather than throwing at the call site**,
     and an unhandled one takes the whole server down. `proc.stdin.on("error", () => {})` is why the
     server survives a CLI that was killed between turns.
-32. **The child is respawned lazily rather than eagerly.** A CLI killed between turns costs
+32. **A recovery names the process it wants rid of.** Two tabs share one session, and a CLI that
+    dies fails both of their turns; each then wants to heal it. Without a generation on the
+    rejection, whoever gets there second tears down the process the first one just spawned, and a
+    healthy turn fails with an error about a restart nobody asked for. Found by opening two tabs,
+    not by any test — `restart(generation)` is a no-op once the session has moved on.
+33. **The child is respawned lazily rather than eagerly.** A CLI killed between turns costs
     nothing at all — verified by `SIGKILL`ing it mid-conversation, after which the next turn
     answered in 1838 ms and the one after it was back to 760 ms, with the session id unchanged.
 

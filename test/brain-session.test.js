@@ -273,6 +273,54 @@ test("a restarted session drops the conversation it was resuming", async () => {
   } finally { session.close(); }
 });
 
+test("a failure names the process it happened on", async () => {
+  const bin = await writeFake("gen.js", 'process.stdin.on("data", () => process.exit(3));');
+  const session = createBrainSession({ persona: "P", bin });
+  try {
+    const err = await session.ask("one").catch((e) => e);
+    assert.equal(err.generation, 1);
+  } finally { session.close(); }
+});
+
+test("one tab's recovery leaves alone a process another tab has already replaced", async () => {
+  // Two tabs share one session, and a CLI that dies fails both of their turns.
+  // Each of them then wants to heal it. Whoever gets there second must not tear
+  // down the process the first one just spawned and is being answered by — that
+  // turn was healthy, and it would fail with an error about a restart nobody
+  // asked for.
+  await rm(log, { force: true });
+  const bin = await writeFake("shared.js", dieOnce("shared-1"));
+  const session = createBrainSession({ persona: "P", bin });
+  try {
+    const [a, b] = await Promise.all([
+      session.ask("one").catch((e) => e),
+      session.ask("two").catch((e) => e),
+    ]);
+    assert.equal(a.generation, 1);
+    assert.equal(b.generation, 1);
+
+    // The first tab heals it and is answered by the replacement.
+    session.restart(a.generation);
+    assert.equal((await session.ask("one again")).reply, "answer 1: one again");
+
+    // The second tab now asks for the same dead process to go. It is gone.
+    session.restart(b.generation);
+    assert.equal((await session.ask("two again")).reply, "answer 2: two again");
+    assert.equal((await calls()).length, 2);
+  } finally { session.close(); }
+});
+
+test("a restart with no process named is unconditional", async () => {
+  // What close() and a caller with no failure in hand rely on.
+  const bin = await writeFake("uncond.js", warmBody());
+  const session = createBrainSession({ persona: "P", bin, resume: "stale-1" });
+  try {
+    await session.ask("one");
+    session.restart();
+    assert.equal(session.resumeId, null);
+  } finally { session.close(); }
+});
+
 test("a closed session refuses further turns rather than quietly spawning again", async () => {
   const bin = await writeFake("warm8.js", warmBody());
   const session = createBrainSession({ persona: "P", bin });
