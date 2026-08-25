@@ -15,6 +15,7 @@ import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
+  addWorkspace, applyWorkspaceTag, workspacePaths,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +62,13 @@ const registry = await loadRegistry();
 // write below goes through saveStore, which is atomic.
 const memoryStore = loadStore();
 const PROJECT_KEY = process.cwd();
+
+// The directory the server was started in is a workspace by definition -- it is
+// the repository the person is standing in -- so it is registered here rather
+// than waiting to be named out loud. Idempotent: re-registering a path already
+// known returns the existing alias and leaves its session counter alone, which
+// is what stops a week of restarts producing jarvis, jarvis-2, jarvis-3.
+if (addWorkspace(memoryStore, PROJECT_KEY)) saveStore(memoryStore);
 
 // The assistant can only ask for a build it has been told exists, so the persona
 // is derived from the registry that was just loaded rather than written by hand.
@@ -701,7 +709,7 @@ wss.on("connection", (ws) => {
 
       // Read in the same tick as the list itself, so it counts exactly the
       // sentences this call was asked about and nothing that arrives behind it.
-      const asked = mergeTurns(conv.unanswered, { roster });
+      const asked = mergeTurns(conv.unanswered, { roster, aliases: workspacePaths(memoryStore) });
       const answering = conv.unanswered.length;
 
       let spoken, sessionId, recovered;
@@ -737,6 +745,14 @@ wss.on("connection", (ws) => {
       // both apply. applyMemoryTag does its own sanitizing and capping, so what
       // it returns is only what actually survived.
       if (memory) {
+        // Workspace pairs first, and separately: they name a directory a real
+        // session will run in rather than a standing preference, so they are
+        // checked against the filesystem instead of folded into the persona.
+        const workspaces = applyWorkspaceTag(memoryStore, memory);
+        if (workspaces) {
+          saveStore(memoryStore);
+          log(`workspace set ${JSON.stringify(workspaces)}`);
+        }
         const saved = applyMemoryTag(memoryStore, PROJECT_KEY, memory);
         if (saved) {
           saveStore(memoryStore);

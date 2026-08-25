@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, existsSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, existsSync, chmodSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,6 +19,17 @@ import {
   MAX_KEY_CHARS,
   MAX_VALUE_CHARS,
   MAX_SUMMARY_CHARS,
+  MAX_WORKSPACES,
+  WORKSPACE_PREFIX,
+  addWorkspace,
+  aliasFromPath,
+  applyWorkspaceTag,
+  getWorkspace,
+  getWorkspaces,
+  nextSessionNumber,
+  resolveWorkspacePath,
+  sanitizeAlias,
+  workspacePaths,
 } from "../lib/memory.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
@@ -338,4 +349,262 @@ test("applyMemoryTag saves the keys that fit and drops only the ones past the ca
   assert.equal(Object.keys(getProject(store, "/p").preferences).length, MAX_PREFERENCE_KEYS);
   assert.equal(getProject(store, "/p").preferences.k0, "updated");
   assert.deepEqual(result, { k0: "updated", newa: "a" });
+});
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+//
+// A whole fake $HOME in a temp directory, because the check under test is
+// "genuinely inside the home directory once every symlink has been followed"
+// and there is no way to test that against a home nobody owns. realpathSync on
+// the way in because macOS hands out /var/folders paths that are themselves a
+// symlink to /private/var.
+
+function fakeHome() {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "jarvis-home-")));
+  mkdirSync(join(home, "development", "jarvis"), { recursive: true });
+  mkdirSync(join(home, "development", "KraneticFitness"), { recursive: true });
+  return home;
+}
+
+test("an alias is narrowed to something a person can say out loud", () => {
+  assert.equal(sanitizeAlias("Jarvis"), "jarvis");
+  assert.equal(sanitizeAlias("Kranetic Fitness"), "kranetic-fitness");
+  assert.equal(sanitizeAlias("my_repo.v2"), "my-repo-v2");
+  assert.equal(sanitizeAlias("  --weird--  "), "weird");
+  assert.equal(sanitizeAlias("x".repeat(200)).length, 40);
+});
+
+test("an alias that is not an alias at all is refused rather than guessed at", () => {
+  for (const bad of ["", "   ", "!!!", "---", "__proto__", "constructor", null, undefined, 42]) {
+    assert.equal(sanitizeAlias(bad), "", JSON.stringify(bad));
+  }
+});
+
+test("a directory names itself when nobody chose an alias", () => {
+  assert.equal(aliasFromPath("/home/krane/development/KraneticFitness"), "kraneticfitness");
+  assert.equal(aliasFromPath(42), "");
+});
+
+test("a real directory inside the home directory is a workspace", () => {
+  const home = fakeHome();
+  try {
+    const repo = join(home, "development", "jarvis");
+    assert.equal(resolveWorkspacePath(repo, { home }), repo);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a path outside the home directory is never a workspace", () => {
+  // This string becomes the working directory of a real Claude Code session
+  // with file tools on. It is the one value in this file that is not merely
+  // prompt text.
+  const home = fakeHome();
+  try {
+    assert.equal(resolveWorkspacePath("/etc", { home }), null);
+    assert.equal(resolveWorkspacePath("/", { home }), null);
+    // The home directory itself is every repository at once, and "start a
+    // session in home" is not a request anyone means to make by voice.
+    assert.equal(resolveWorkspacePath(home, { home }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a symlink out of the home directory does not smuggle a path back in", () => {
+  // The reason this check is realpathSync and not a string comparison: the
+  // link's own path starts with $HOME and would pass any prefix test, while
+  // the session would have run in /etc.
+  const home = fakeHome();
+  try {
+    const escape = join(home, "escape");
+    symlinkSync("/etc", escape);
+    assert.equal(resolveWorkspacePath(escape, { home }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a file, a missing path and a path with a NUL are all refused", () => {
+  const home = fakeHome();
+  try {
+    const file = join(home, "notes.txt");
+    writeFileSync(file, "hello");
+    assert.equal(resolveWorkspacePath(file, { home }), null);
+    assert.equal(resolveWorkspacePath(join(home, "nope"), { home }), null);
+    assert.equal(resolveWorkspacePath(join(home, "development") + "\0/jarvis", { home }), null);
+    for (const bad of ["", "   ", null, undefined, 42, {}]) {
+      assert.equal(resolveWorkspacePath(bad, { home }), null, JSON.stringify(bad));
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("registering a repository gives it an alias and a counter", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    const added = addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    assert.equal(added.alias, "jarvis");
+    assert.equal(added.path, join(home, "development", "jarvis"));
+    assert.equal(added.counter, 0);
+    assert.deepEqual(workspacePaths(store), { jarvis: join(home, "development", "jarvis") });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("registering the same repository twice does not accumulate aliases", () => {
+  // The server registers its own cwd at every startup. Without this, a week of
+  // restarts leaves jarvis, jarvis-2, jarvis-3 and a counter that resets.
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    const repo = join(home, "development", "jarvis");
+    const first = addWorkspace(store, repo, null, { home });
+    nextSessionNumber(store, "jarvis");
+    const second = addWorkspace(store, repo, "something-else", { home });
+    assert.equal(second.alias, first.alias);
+    assert.equal(second.counter, 1, "the counter must survive a re-registration");
+    assert.equal(Object.keys(getWorkspaces(store)).length, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("two repositories with the same basename both get an alias", () => {
+  const home = fakeHome();
+  try {
+    mkdirSync(join(home, "old", "jarvis"), { recursive: true });
+    const store = emptyStore();
+    assert.equal(addWorkspace(store, join(home, "development", "jarvis"), null, { home }).alias, "jarvis");
+    assert.equal(addWorkspace(store, join(home, "old", "jarvis"), null, { home }).alias, "jarvis-2");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a chosen alias beats the directory basename", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    const added = addWorkspace(store, join(home, "development", "KraneticFitness"), "Fitness", { home });
+    assert.equal(added.alias, "fitness");
+    assert.ok(getWorkspace(store, "fitness"));
+    assert.equal(getWorkspace(store, "nope"), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a path that is not a workspace is never registered as one", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    assert.equal(addWorkspace(store, "/etc", "etc", { home }), null);
+    assert.deepEqual(getWorkspaces(store), {});
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the number of remembered repositories is capped", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    for (let i = 0; i < MAX_WORKSPACES + 3; i += 1) {
+      const dir = join(home, `repo-${i}`);
+      mkdirSync(dir, { recursive: true });
+      addWorkspace(store, dir, null, { home });
+    }
+    assert.equal(Object.keys(getWorkspaces(store)).length, MAX_WORKSPACES);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session numbers count per repository, so jarvis one and fitness one are both sayable", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
+
+    assert.equal(nextSessionNumber(store, "jarvis"), 1);
+    assert.equal(nextSessionNumber(store, "jarvis"), 2);
+    assert.equal(nextSessionNumber(store, "fitness"), 1);
+    assert.equal(nextSessionNumber(store, "nobody"), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a counter corrupted on disk starts over rather than producing a session named NaN", () => {
+  const store = emptyStore();
+  store.workspaces = { jarvis: { path: "/somewhere", counter: "seven" } };
+  assert.equal(nextSessionNumber(store, "jarvis"), 1);
+});
+
+test("a store written before workspaces existed still reads", () => {
+  assert.deepEqual(getWorkspaces({ version: 1, projects: {} }), {});
+  assert.deepEqual(getWorkspaces(null), {});
+  assert.deepEqual(workspacePaths({ workspaces: { a: "not an object", b: { counter: 1 } } }), {});
+});
+
+test("a spoken workspace tag registers the repository", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    const saved = applyWorkspaceTag(
+      store,
+      { [`${WORKSPACE_PREFIX}fitness`]: join(home, "development", "KraneticFitness") },
+      { home },
+    );
+    assert.deepEqual(saved, { fitness: join(home, "development", "KraneticFitness") });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a workspace tag naming somewhere unreachable saves nothing and says nothing", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    assert.equal(applyWorkspaceTag(store, { [`${WORKSPACE_PREFIX}etc`]: "/etc" }, { home }), null);
+    assert.equal(applyWorkspaceTag(store, { [WORKSPACE_PREFIX]: "/etc" }, { home }), null);
+    assert.equal(applyWorkspaceTag(store, { palette: "dark" }, { home }), null);
+    assert.equal(applyWorkspaceTag(store, null, { home }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a workspace pair is never stored as a standing preference", () => {
+  // It is a path, and a preference is folded into every future prompt. Storing
+  // one there would be useless prose and a directory disclosed on every turn.
+  const store = emptyStore();
+  const saved = applyMemoryTag(store, "/cwd", {
+    [`${WORKSPACE_PREFIX}fitness`]: "/home/you/dev/KraneticFitness",
+    palette: "dark",
+  });
+  assert.deepEqual(saved, { palette: "dark" });
+});
+
+test("workspaces survive a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    nextSessionNumber(store, "jarvis");
+    assert.equal(saveStore(store, path), true);
+
+    const reloaded = loadStore(path);
+    assert.equal(getWorkspace(reloaded, "jarvis").counter, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

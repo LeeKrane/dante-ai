@@ -119,3 +119,12 @@ test("the closer stays last however much memory is prepended", () => {
   assert.ok(brain.buildPersona(registry, { summary: "Something recalled." }).endsWith(closer));
   assert.ok(brain.PERSONA.endsWith(closer));
 });
+
+test("the persona explains how a repository is named, or the workspace tag is never emitted", () => {
+  // lib/memory.js will happily store a workspace by voice, but nothing reaches
+  // it unless the model has been told the key exists. A capability the persona
+  // does not mention is a capability that does not exist.
+  const persona = brain.buildPersona();
+  assert.match(persona, /workspace:<name>/);
+  assert.match(persona, /\[MEMORY:SET workspace:/);
+});
