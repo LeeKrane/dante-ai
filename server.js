@@ -7,7 +7,7 @@ import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { listAgents } from "./lib/agents.js";
+import { createRosterPoller } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -63,6 +63,21 @@ const registry = await loadRegistry();
 // must not break a live conversation. An empty map is a working install --
 // free-form (a task and no kind) is the ordinary path.
 const sessionKinds = await loadSessionKinds();
+
+// One place that knows what Claude Code sessions are running. A turn reads it
+// (usually from cache, so an ordinary turn costs no child process at all), and
+// the ticks are what notice a session finishing while nobody is looking --
+// which is what will make reporting work with the browser closed.
+//
+// Started below, after the store is loaded, because the events name sessions
+// using the workspace aliases the store holds.
+const rosterPoller = createRosterPoller({
+  onEvents: (events) => {
+    for (const { kind, session } of events) {
+      log(`session ${kind}: ${session.name ?? session.sessionId}`);
+    }
+  },
+});
 
 // What earlier runs left behind. One server serves one project, so the whole
 // store is keyed by the directory it was started in. Read once here; every
@@ -778,7 +793,7 @@ wss.on("connection", (ws) => {
       // Started here rather than awaited here: the listing is a child process
       // of its own, and the wait below is dead time it can spend running. It
       // never rejects, so there is nothing to catch.
-      const listing = listAgents();
+      const listing = rosterPoller.read();
       // The abandoned child is still shutting down and still owns the session
       // file, so the replacement waits for it rather than racing it.
       const previous = conv.settled;
@@ -953,4 +968,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Jarvis on http://0.0.0.0:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
+  // Started once the server is actually up: a poller ticking behind a failed
+  // listen() would be a child process every five seconds with nobody to tell.
+  rosterPoller.start();
 });

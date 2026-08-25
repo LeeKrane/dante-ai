@@ -7,7 +7,9 @@ import { join } from "node:path";
 import {
   LIST_TIMEOUT_MS,
   MAX_SPOKEN,
+  createRosterPoller,
   describeRoster,
+  diffRoster,
   listAgents,
   parseRoster,
 } from "../lib/agents.js";
@@ -397,4 +399,186 @@ test("a CLI that answers with an empty listing is saying nothing is running", as
   // the answer was "none". That is a fact worth speaking.
   const empty = await writeFake("claude-empty.cjs", 'console.log("[]");');
   assert.deepEqual(await listAgents({ bin: empty }), []);
+});
+
+// ---------------------------------------------------------------------------
+// diffRoster
+// ---------------------------------------------------------------------------
+
+test("nothing changed is no events", () => {
+  const roster = rosterOf(session());
+  assert.deepEqual(diffRoster(roster, roster), []);
+  assert.deepEqual(diffRoster([], []), []);
+});
+
+test("a session that left the roster is the event someone is waiting for", () => {
+  const before = rosterOf(session());
+  const events = diffRoster(before, []);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, "gone");
+  assert.equal(events[0].session.name, "jarvis-1-builder-test-fix");
+});
+
+test("a session that stopped working is idle, however the CLI spelled it", () => {
+  const working = rosterOf(session({ state: "working", status: "busy" }));
+  assert.equal(diffRoster(working, rosterOf(session({ state: "done", status: "idle" })))[0].kind, "idle");
+  // An interactive session carries no state at all, so status is the fallback.
+  const busy = rosterOf(session({ state: null, status: "busy" }));
+  assert.equal(diffRoster(busy, rosterOf(session({ state: null, status: "idle" })))[0].kind, "idle");
+});
+
+test("a session waiting on a permission prompt is not idle", () => {
+  // "blocked" came off a live listing. Treating it as idle is exactly how a
+  // follow-up would fork a session instead of joining it.
+  const working = rosterOf(session({ state: "working" }));
+  assert.deepEqual(diffRoster(working, rosterOf(session({ state: "blocked" }))), []);
+});
+
+test("a session that picked something up is busy", () => {
+  const idle = rosterOf(session({ state: "done", status: "idle" }));
+  const events = diffRoster(idle, rosterOf(session({ state: "working", status: "busy" })));
+  assert.equal(events[0].kind, "busy");
+});
+
+test("a session that appeared is reported, whoever started it", () => {
+  const events = diffRoster([], rosterOf(session()));
+  assert.equal(events[0].kind, "started");
+});
+
+test("endings come before everything else in a tick", () => {
+  const before = rosterOf(session({ sessionId: "a", name: "gone-one" }), session({ sessionId: "b", state: "working" }));
+  const after = rosterOf(session({ sessionId: "b", state: "done", status: "idle" }), session({ sessionId: "c", name: "new-one" }));
+  assert.deepEqual(
+    diffRoster(before, after).map((e) => e.kind),
+    ["gone", "idle", "started"],
+  );
+});
+
+test("no baseline reports nothing, so a restart does not announce what was already running", () => {
+  // And a failed listing arriving as null must never read as "everything ended
+  // at once", which is the same guard.
+  assert.deepEqual(diffRoster(null, rosterOf(session())), []);
+  assert.deepEqual(diffRoster(undefined, rosterOf(session())), []);
+  assert.deepEqual(diffRoster(rosterOf(session()), null), []);
+});
+
+// ---------------------------------------------------------------------------
+// createRosterPoller
+// ---------------------------------------------------------------------------
+
+// A listing function that hands back a scripted sequence, so a whole run of
+// ticks is a plain array rather than a wait.
+function scripted(...answers) {
+  let i = 0;
+  const calls = [];
+  const list = async () => {
+    calls.push(Date.now());
+    return answers[Math.min(i++, answers.length - 1)];
+  };
+  list.calls = calls;
+  return list;
+}
+
+test("the first tick is a baseline, not an announcement", async () => {
+  const seen = [];
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session())),
+    onEvents: (events) => seen.push(...events),
+  });
+  await poller.read();
+  poller.stop();
+  assert.deepEqual(seen, []);
+  assert.equal(poller.current().length, 1);
+});
+
+test("a session finishing between ticks is reported once", async () => {
+  const seen = [];
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session({ state: "working" })), rosterOf(session({ state: "done", status: "idle" }))),
+    maxAgeMs: 0,
+    onEvents: (events) => seen.push(...events),
+  });
+  await poller.read();
+  await poller.read();
+  await poller.read();
+  poller.stop();
+  assert.deepEqual(seen.map((e) => e.kind), ["idle"]);
+});
+
+test("a listing that failed keeps the last roster rather than reporting it gone", async () => {
+  // The whole reason listAgents separates null from []: a CLI hiccup must not
+  // announce that every session ended.
+  const seen = [];
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session()), null),
+    maxAgeMs: 0,
+    onEvents: (events) => seen.push(...events),
+  });
+  await poller.read();
+  await poller.read();
+  poller.stop();
+  assert.deepEqual(seen, []);
+  assert.equal(poller.current().length, 1);
+});
+
+test("a fresh enough roster is reused rather than re-read", async () => {
+  const list = scripted(rosterOf(session()));
+  const poller = createRosterPoller({ list, maxAgeMs: 60_000 });
+  await poller.read();
+  await poller.read();
+  await poller.read();
+  poller.stop();
+  assert.equal(list.calls.length, 1);
+});
+
+test("two reads at once share one listing rather than racing", async () => {
+  // A slow CLI and a fixed interval is how a poller ends up with three child
+  // processes racing to set the same baseline.
+  const list = scripted(rosterOf(session()));
+  const poller = createRosterPoller({ list, maxAgeMs: 0 });
+  await Promise.all([poller.read(), poller.read(), poller.read()]);
+  poller.stop();
+  assert.equal(list.calls.length, 1);
+});
+
+test("a listener that throws does not stop the poller", async () => {
+  // The queue and the reporting both hang off this timer.
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session({ state: "working" })), rosterOf(session({ state: "done" })), []),
+    maxAgeMs: 0,
+    onEvents: () => {
+      throw new Error("a bad listener");
+    },
+  });
+  await poller.read();
+  await poller.read();
+  assert.deepEqual(await poller.read(), []);
+  poller.stop();
+});
+
+test("a listing that rejects is a missed tick, not a dead poller", async () => {
+  let first = true;
+  const poller = createRosterPoller({
+    maxAgeMs: 0,
+    list: async () => {
+      if (first) {
+        first = false;
+        throw new Error("boom");
+      }
+      return rosterOf(session());
+    },
+  });
+  assert.equal(await poller.read(), null);
+  assert.equal((await poller.read()).length, 1);
+  poller.stop();
+});
+
+test("stopping twice, and starting twice, are both harmless", async () => {
+  const poller = createRosterPoller({ list: scripted([]), intervalMs: 10_000 });
+  poller.start();
+  poller.start();
+  poller.stop();
+  poller.stop();
+  assert.deepEqual(await poller.read(), []);
+  poller.stop();
 });
