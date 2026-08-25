@@ -180,8 +180,41 @@ prints nothing and gives up after a second — a jarvis that is down must cost a
 session nothing. Both mechanisms report the same exit; jarvis dedupes so the
 thread gets one line, not three.
 
-`docs/roadmap.md` is where this goes next: voice approval for the handful of
-things worth interrupting you over.
+### It asks before the two things worth asking about
+
+Sessions run under your permissions, so one that hits a permission prompt with
+nobody at the terminal just stops. A `PreToolUse` hook can block and return a
+decision, so jarvis asks you out loud instead and you answer from across the
+room.
+
+> *"jarvis-1-builder-test-fix wants to push to the remote, sir. Allow?"*
+> — *"go ahead"* — *"Allowed, sir."*
+
+**Scoped to two things**: a file write outside the session's own repository, and
+a command that publishes (`git push`, `gh pr create`, `gh release create`,
+`npm publish`). Everything else falls through to what your terminal would have
+done. That is the smallest set with the highest consequence, which is the right
+trade for a channel that interrupts you.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+      "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-approve.mjs", "timeout": 120 }]
+    }]
+  }
+}
+```
+
+**No browser open, or no clear answer, means no decision** — never a denial. The
+session falls back to its normal behaviour and Slack gets a "waiting on you".
+Denying by silence would break every session started while you are away, which
+is exactly when you need them working. The answer is read by a strict word list
+and **never goes through the model**: routing it through one would let a
+prompt-injected tool description argue for its own approval.
+
+`docs/roadmap.md` is where this goes next.
 
 ## Make it yours
 
@@ -241,7 +274,7 @@ the screen. If part of the UI "disappeared," press the key again.
 
 ## Security
 
-**`POST /hook` is loopback only.** That is its entire security model, and it does
+**`POST /hook` and `POST /approve` are loopback only.** That is its entire security model, and it does
 not change because the rest of the server is reachable over the VPN. Any local
 process can post to it, so nothing a payload carries ever reaches a model
 prompt — it reaches the event formatter and Slack, capped and stripped, or it is
@@ -252,6 +285,11 @@ appears in no log line, no debug message, and nothing crossing the WebSocket.
 Message text is escaped for the three characters that open Slack's control
 sequences, so a summary a model wrote saying `<!channel>` cannot notify a
 workspace.
+
+**An approval answer never reaches a model.** `parseYesNo` is a strict
+vocabulary, and an unclear answer re-asks once and then decides nothing. No
+voice phrase anywhere can pass `--dangerously-skip-permissions` or
+`--permission-mode bypassPermissions`.
 
 **A session transcript is untrusted input.** It holds whatever the session read
 off disk or off the web, which makes it the most attacker-reachable text here. It

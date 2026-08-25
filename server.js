@@ -7,6 +7,7 @@ import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
+import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import { summarizeSession } from "./lib/transcript.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
@@ -183,6 +184,105 @@ async function reportAttention(event) {
   const line = formatEvent({ kind: "needs-attention", name: remembered.name, detail: event.detail });
   log(`session needs attention: ${line}`);
   await postForSession(event.sessionId, line);
+}
+
+// ---------------------------------------------------------------------------
+// Voice approval
+// ---------------------------------------------------------------------------
+
+// A generous window. The session is blocked while this runs, but it is blocked
+// on a question that was asked out loud, and sixty seconds is what it takes to
+// walk back into the room. When it expires nothing is decided: the session
+// falls through to what it would have done anyway.
+const APPROVAL_WINDOW_MS = 60_000;
+
+// The newest connected page. One question at a time and it goes to whoever is
+// actually there -- two tabs are not two people, and asking both would mean the
+// first answer wins a race with the second.
+let voice = null;
+let pendingApproval = null;
+
+// requestApproval(payload) -> the hook's decision, or {} for no decision.
+//
+// {} is the answer to almost everything, and it is never a denial. Denying for
+// want of a listener would silently break every session started while you are
+// away, which is precisely when you need them working.
+async function requestApproval(payload = {}) {
+  // Only sessions jarvis started. The hook is installed globally, so it fires
+  // for the terminal you are sitting at too -- and that terminal can ask you
+  // itself, better, on the screen you are already looking at.
+  const remembered = getSessionRecord(memoryStore, payload.session_id);
+  if (!remembered) return {};
+
+  const scope = inApprovalScope(payload.tool_name, payload.tool_input, payload.cwd || remembered.cwd);
+  if (!scope) return {};
+
+  const name = remembered.name ?? "A session";
+
+  // Nobody to ask, or somebody already being asked. Slack still hears about it,
+  // because a session waiting on a person is the thing you most want to know.
+  if (!voice || pendingApproval) {
+    log(`approval unanswerable: ${name} ${scope.spoken}`);
+    reportAttention({ sessionId: payload.session_id, detail: scope.spoken })
+      .catch((e) => log("attention report failed:", e.message || e));
+    return {};
+  }
+
+  const send = voice;
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = (decision) => {
+      clearTimeout(timer);
+      if (pendingApproval?.finish === finish) pendingApproval = null;
+      resolve(decision);
+    };
+    timer = setTimeout(() => {
+      log(`approval timed out: ${name}`);
+      // Reported rather than dropped: it went unanswered, which is exactly the
+      // sort of thing to find in Slack afterwards.
+      reportAttention({ sessionId: payload.session_id, detail: scope.spoken })
+        .catch((e) => log("attention report failed:", e.message || e));
+      finish({});
+    }, APPROVAL_WINDOW_MS);
+
+    pendingApproval = { name, spoken: scope.spoken, finish, reasked: false };
+    log(`approval asked: ${name} ${scope.spoken}`);
+    say(send, `${name} ${scope.spoken}, sir. Allow?`).catch((e) => log("approval ask failed:", e.message || e));
+  });
+}
+
+// The answer, straight off the transcript. It NEVER goes through the model:
+// routing it through one would make a prompt-injected tool description able to
+// argue for its own approval, and no system prompt reliably survives that.
+//
+// Returns true when the words were an answer to a pending question, which is
+// what stops them from also being a new turn.
+async function answerApproval(send, text) {
+  if (!pendingApproval) return false;
+  const answer = parseYesNo(text);
+
+  // One re-ask, then it stops badgering. A sentence this cannot read costs a
+  // question rather than a wrong `git push`.
+  if (answer === "unclear" && !pendingApproval.reasked) {
+    pendingApproval.reasked = true;
+    log(`approval unclear: ${JSON.stringify(text)}`);
+    await say(send, `Yes or no, sir. ${pendingApproval.name} ${pendingApproval.spoken}.`);
+    return true;
+  }
+
+  const question = pendingApproval;
+  pendingApproval = null;
+
+  if (answer === "unclear") {
+    question.finish({});
+    await say(send, "I could not tell, sir. I have left it to the session.");
+    return true;
+  }
+
+  log(`approval ${answer}: ${question.name}`);
+  question.finish(buildDecision(answer, `${answer === "yes" ? "approved" : "denied"} by voice`));
+  await say(send, answer === "yes" ? `Allowed, sir.` : `Denied, sir.`);
+  return true;
 }
 
 // What earlier runs left behind. One server serves one project, so the whole
@@ -366,6 +466,32 @@ const server = createServer(async (req, res) => {
       ? reportComplete(event.sessionId, { cwd: event.cwd })
       : reportAttention(event);
     work.catch((e) => log("hook report failed:", e.message || e));
+    return;
+  }
+
+  // Voice approval. Loopback only, for the same reason and with the same rules
+  // as /hook -- and unlike /hook this one HOLDS the response, because a
+  // decision that arrives after the tool ran is not a decision.
+  if (urlPath === "/approve") {
+    if (!isLoopback(req.socket?.remoteAddress)) {
+      log(`approve refused from ${req.socket?.remoteAddress ?? "unknown"}`);
+      res.writeHead(403); res.end("forbidden"); return;
+    }
+    if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); res.end("method not allowed"); return; }
+    if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) {
+      res.writeHead(415); res.end("unsupported media type"); return;
+    }
+    const declared = Number(req.headers["content-length"]);
+    if (!Number.isFinite(declared) || declared > MAX_BODY) {
+      res.writeHead(413); res.end("payload too large"); return;
+    }
+
+    const body = await readJsonBody(req);
+    let decision = {};
+    try { decision = await requestApproval(body ?? {}); }
+    catch (e) { log("approval failed:", e.message || e); }
+    // {} is a complete answer: no decision, session falls through.
+    sendJson(res, 200, decision);
     return;
   }
 
@@ -778,7 +904,9 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 
   // Its own bucket, not the artifacts list: artifacts answer "what did we build
   // lately", and ten sessions would push every build out of that answer.
-  rememberSession(memoryStore, sessionId, { name, alias: workspace.alias, task: session.task, kind: session.kind ?? null });
+  rememberSession(memoryStore, sessionId, {
+    name, alias: workspace.alias, cwd: workspace.path, task: session.task, kind: session.kind ?? null,
+  });
   saveStore(memoryStore);
   log(`session started name=${name} id=${sessionId} cwd=${workspace.path}`);
   send({ type: "debug", stage: "session", msg: `started ${name}` });
@@ -1040,6 +1168,10 @@ wss.on("connection", (ws) => {
   const remembered = getProject(memoryStore, PROJECT_KEY)?.sessionId;
   if (remembered) sessions.set(ws, remembered);
 
+  // The newest page is the one that gets asked. A tab that never speaks is
+  // still a room with someone in it.
+  voice = send;
+
   log("client connected");
   ws.on("message", async (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
@@ -1047,6 +1179,10 @@ wss.on("connection", (ws) => {
     log("say:", JSON.stringify(msg.text));
     send({ type: "debug", stage: "stt", msg: `heard "${msg.text}"` });
     try {
+      // An approval outranks everything, including a half-finished build
+      // question: a real process is blocked on it right now.
+      if (await answerApproval(send, msg.text)) return;
+
       // An outstanding question owns the next thing said: it is an answer, not a
       // new turn, so it goes to the build rather than to the chat model.
       if (conv.pending) {
@@ -1211,6 +1347,9 @@ wss.on("connection", (ws) => {
     const sessionId = sessions.get(ws);
     sessions.delete(ws);
     conv.pending = null;
+    // A question already asked is left to time out rather than answered by a
+    // closing tab. Nothing is decided by a page going away.
+    if (voice === send) voice = null;
     // A build already running is left to finish: it has been paid for and its
     // artifact still lands on disk. Nothing here points back at this socket
     // afterwards, and send() is a no-op once the socket is gone, so a progress
