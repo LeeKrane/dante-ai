@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
+import { formatEvent } from "./lib/notify.js";
+import { summarizeSession } from "./lib/transcript.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
@@ -21,7 +23,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
-  queueForSession, takeQueued, dropQueuesExcept, rememberSession,
+  queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -83,6 +85,9 @@ const rosterPoller = createRosterPoller({
       // can be delivered. This is the whole reason the poller runs whether or
       // not a browser is connected.
       if (kind === "idle") deliverQueued(session);
+      // The report someone walked away for. Not awaited: a poller tick must
+      // not be held open by a Slack round trip and a summary behind it.
+      if (kind === "gone") reportEnded(session).catch((e) => log("report failed:", e.message || e));
     }
     // A queue for a session that ended is a promise that can never be kept, and
     // leaving it behind means a reused id would deliver it to a stranger.
@@ -116,6 +121,38 @@ async function deliverQueued(record) {
     // an order that assumed this one landed.
     if (!result.ok) break;
   }
+}
+
+// A session left the roster. Report what came of it -- which is the whole
+// reason any of this runs with the browser closed.
+//
+// Only sessions jarvis started are reported. The roster sees every terminal on
+// this machine, and posting to Slack every time somebody closes one would make
+// the channel worthless within a day.
+async function reportEnded(record) {
+  const remembered = getSessionRecord(memoryStore, record.sessionId);
+  if (!remembered) return;
+
+  const startedAt = Number.isFinite(record.startedAt) ? record.startedAt : remembered.at;
+  const line = formatEvent({
+    kind: "complete",
+    name: remembered.name ?? record.name,
+    durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
+    // Up to ~25 s of Haiku, and worth it: "done" without it is not news.
+    summary: await summarizeSession({
+      cwd: record.cwd,
+      sessionId: record.sessionId,
+      task: remembered.task,
+    }),
+    detail: remembered.stoppedAt ? "stopped from here" : "",
+  });
+
+  log(`session ended: ${line}`);
+  // Without a thread parent there is nothing to reply to -- Slack may have been
+  // down or unconfigured at the start -- so the event goes to the channel
+  // rather than nowhere.
+  if (remembered.slackTs) await slack.postReply(remembered.slackTs, line);
+  else await slack.postParent(line);
 }
 
 // What earlier runs left behind. One server serves one project, so the whole
@@ -530,6 +567,14 @@ async function dispatchStop(send, session, preamble, roster) {
 
   // Anything still waiting for it can never be delivered now.
   takeQueued(memoryStore, record.sessionId);
+  // Noted so the report when it leaves the roster says it was stopped rather
+  // than that it finished -- which are different things to read at midnight.
+  // Only for sessions jarvis started: writing a record here for a terminal
+  // somebody was sitting at would turn "jarvis stopped it" into a Slack post
+  // about a session Slack has never heard of.
+  if (getSessionRecord(memoryStore, record.sessionId)) {
+    rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
+  }
   saveStore(memoryStore);
   log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
   await say(
@@ -656,6 +701,9 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   if (!started.ok) {
     log(`session start failed name=${name} ${started.error}`);
     send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
+    // Its own parent message, not a reply: there is no thread, because there
+    // was never a session to start one.
+    slack.postParent(formatEvent({ kind: "failed", name, detail: started.error }));
     await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
     return;
   }
@@ -672,7 +720,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   // wait on a notification would be exactly backwards. The thread id lands in
   // memory whenever it arrives, and every later event for this session looks
   // it up there.
-  slack.postParent(`${name} started - ${session.task ?? "no task given"}`).then((ts) => {
+  slack.postParent(formatEvent({ kind: "started", name, task: session.task })).then((ts) => {
     if (!ts) return;
     rememberSession(memoryStore, sessionId, { slackTs: ts });
     saveStore(memoryStore);
