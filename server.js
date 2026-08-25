@@ -7,6 +7,7 @@ import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
+import { listAgents } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -683,6 +684,10 @@ wss.on("connection", (ws) => {
 
       send({ type: "state", value: "thinking" });
       const tb = Date.now();
+      // Started here rather than awaited here: the listing is a child process
+      // of its own, and the wait below is dead time it can spend running. It
+      // never rejects, so there is nothing to catch.
+      const listing = listAgents();
       // The abandoned child is still shutting down and still owns the session
       // file, so the replacement waits for it rather than racing it.
       const previous = conv.settled;
@@ -690,9 +695,13 @@ wss.on("connection", (ws) => {
       conv.settled = new Promise((done) => { release = done; });
       await previous;
 
+      // null when the CLI could not be asked, which leaves the turn exactly as
+      // it would have been. The roster is a nicety; answering is not.
+      const roster = await listing;
+
       // Read in the same tick as the list itself, so it counts exactly the
       // sentences this call was asked about and nothing that arrives behind it.
-      const asked = mergeTurns(conv.unanswered);
+      const asked = mergeTurns(conv.unanswered, { roster });
       const answering = conv.unanswered.length;
 
       let spoken, sessionId, recovered;

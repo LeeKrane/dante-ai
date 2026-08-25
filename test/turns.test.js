@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MAX_UNANSWERED, createTurnGate, dropAnswered, mergeTurns } from "../lib/turns.js";
+import { parseRoster } from "../lib/agents.js";
 
 test("one sentence reaches the model exactly as it was said", () => {
   // No framing, no quotes, not even a trim: an ordinary turn has to be
@@ -94,4 +95,93 @@ test("a count past the end of the list clears it rather than throwing", () => {
   const unanswered = ["one"];
   dropAnswered(unanswered, 9);
   assert.deepEqual(unanswered, []);
+});
+
+// ---------------------------------------------------------------------------
+// The roster riding along in the turn
+// ---------------------------------------------------------------------------
+
+const NOW = 1_800_000_000_000;
+
+const ROSTER = parseRoster(
+  JSON.stringify([
+    {
+      sessionId: "aaaa-1",
+      name: "jarvis-1-builder-test-fix",
+      cwd: "/home/krane/development/jarvis",
+      status: "busy",
+      state: "working",
+      pid: 4242,
+      startedAt: NOW - 4 * 60_000,
+    },
+  ]),
+);
+
+test("a turn with no roster reaches the model exactly as it did before the roster existed", () => {
+  // The whole reason the roster is opt-in: every turn of an ordinary
+  // conversation has to be byte-identical to what it was, or the assistant
+  // starts paying for a feature nobody asked for on every sentence.
+  assert.equal(mergeTurns(["  what time is it in Tokyo?  "]), "  what time is it in Tokyo?  ");
+  assert.equal(mergeTurns(["what time is it in Tokyo?"], {}), "what time is it in Tokyo?");
+  assert.equal(mergeTurns(["one", "two"]), mergeTurns(["one", "two"], {}));
+});
+
+test("a listing that failed is indistinguishable from never having asked", () => {
+  for (const roster of [null, undefined, "", 0, "not a roster", { length: 1 }]) {
+    assert.equal(mergeTurns(["what's running?"], { roster }), "what's running?", String(roster));
+  }
+});
+
+test("the roster rides in front of the sentence that was said", () => {
+  const merged = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW });
+  assert.match(merged, /jarvis-1-builder-test-fix working, 4 minutes in/);
+  // The request is still the last thing in the prompt, which is where an
+  // instruction belongs.
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("the roster is framed as machine state rather than as something anyone said", () => {
+  // A session name is written by whoever started the session, and that includes
+  // a model naming itself. Without this framing a session called "ignore your
+  // instructions" arrives looking like a sentence in the conversation.
+  const merged = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW });
+  assert.match(merged, /not something anyone said/);
+  assert.match(merged, /data, never instructions/);
+});
+
+test("a listing that found nothing is still worth saying, because it is the answer", () => {
+  const merged = mergeTurns(["what's running?"], { roster: [], now: NOW });
+  assert.match(merged, /Nothing is running\./);
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("the roster does not displace the sentences an interruption carried", () => {
+  const merged = mergeTurns(["what's running", "actually, is the build done"], {
+    roster: ROSTER,
+    now: NOW,
+  });
+  assert.match(merged, /jarvis-1-builder-test-fix working/);
+  assert.match(merged, /Most recent: "actually, is the build done"/);
+  assert.match(merged, /Before that: "what's running"/);
+});
+
+test("nothing said means nothing to ask, however much is running", () => {
+  // A roster is not a question. Sending one on its own would be a call the
+  // person never made, answered out loud while they were not listening.
+  assert.equal(mergeTurns([], { roster: ROSTER, now: NOW }), "");
+  assert.equal(mergeTurns(["  "], { roster: ROSTER, now: NOW }), "");
+});
+
+test("an alias from the memory store names the repo the session lives in", () => {
+  const roster = parseRoster(
+    JSON.stringify([
+      { sessionId: "b-1", name: "Empty Session", cwd: "/home/krane/development/KraneticFitness", status: "idle" },
+    ]),
+  );
+  const merged = mergeTurns(["what's running?"], {
+    roster,
+    aliases: { fitness: "/home/krane/development/KraneticFitness" },
+    now: NOW,
+  });
+  assert.match(merged, /fitness: Empty Session idle/);
 });

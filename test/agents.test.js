@@ -366,26 +366,35 @@ test("an empty cwd is not passed as a flag with nothing after it", async () => {
   assert.equal(record.name, "agents --json");
 });
 
-test("a CLI that is not installed leaves the roster empty rather than throwing", async () => {
+test("a CLI that is not installed answers null rather than throwing", async () => {
+  // Not [] — an empty array is the claim that nothing is running, and saying
+  // that out loud while six sessions work away is worse than saying nothing.
   const roster = await listAgents({ bin: join(workspace, "no-such-binary") });
-  assert.deepEqual(roster, []);
+  assert.equal(roster, null);
 });
 
 test("a non-zero exit is not a roster, even with a perfectly good listing on stdout", async () => {
   const roster = await listAgents({ bin: fake.exitTwo });
-  assert.deepEqual(roster, []);
+  assert.equal(roster, null);
 });
 
 test("output that is not JSON is not a roster", async () => {
   const roster = await listAgents({ bin: fake.garbage });
-  assert.deepEqual(roster, []);
+  assert.equal(roster, null);
 });
 
 test("a CLI that hangs is abandoned rather than waited on", async () => {
   const started = Date.now();
   const roster = await listAgents({ bin: fake.hang, timeoutMs: 150 });
-  assert.deepEqual(roster, []);
+  assert.equal(roster, null);
   // Well under the default leash, which is what proves the override was used
   // and not simply that the process eventually died.
   assert.ok(Date.now() - started < LIST_TIMEOUT_MS, "should have given up at its own deadline");
+});
+
+test("a CLI that answers with an empty listing is saying nothing is running", async () => {
+  // The one case that must NOT be null: the CLI was asked, it answered, and
+  // the answer was "none". That is a fact worth speaking.
+  const empty = await writeFake("claude-empty.cjs", 'console.log("[]");');
+  assert.deepEqual(await listAgents({ bin: empty }), []);
 });
