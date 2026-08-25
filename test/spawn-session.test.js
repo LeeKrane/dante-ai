@@ -9,8 +9,11 @@ import {
   MAX_TASK_CHARS,
   buildStartArgs,
   newSessionId,
+  MAX_REPLY_CHARS,
+  buildTellArgs,
   refuseStart,
   startSession,
+  tellSession,
 } from "../lib/spawn-session.js";
 
 const ID = "abcd1234-0000-4000-8000-000000000000";
@@ -292,4 +295,97 @@ test("a refusal for being full names the obvious one to stop", () => {
 test("being full with nothing idle says so without inventing a name", () => {
   const spoken = refuseStart({ task: "x" }, { workspace: WORKSPACE, running: MAX_SESSIONS });
   assert.ok(!spoken.includes("idle"), spoken);
+});
+
+// ---------------------------------------------------------------------------
+// buildTellArgs
+// ---------------------------------------------------------------------------
+
+test("a follow-up resumes the session it names and asks for one answer", () => {
+  // --output-format json rather than stream-json: nobody is watching a
+  // follow-up happen, only the answer is wanted.
+  assert.deepEqual(buildTellArgs({ sessionId: ID, text: "also run the tests" }), [
+    "-p",
+    "--resume",
+    ID,
+    "--output-format",
+    "json",
+    "--",
+    "also run the tests",
+  ]);
+});
+
+test("a follow-up with nothing to say, or nowhere to say it, is not one", () => {
+  assert.equal(buildTellArgs({ sessionId: ID, text: "" }), null);
+  assert.equal(buildTellArgs({ sessionId: ID, text: null }), null);
+  assert.equal(buildTellArgs({ sessionId: "not-a-uuid", text: "x" }), null);
+  assert.equal(buildTellArgs(), null);
+});
+
+test("a follow-up goes after the terminator too", () => {
+  const args = buildTellArgs({ sessionId: ID, text: "--version" });
+  assert.equal(args[args.length - 2], "--");
+  assert.equal(args[args.length - 1], "--version");
+});
+
+// ---------------------------------------------------------------------------
+// tellSession
+// ---------------------------------------------------------------------------
+
+test("a session's answer comes back as the thing to say", async () => {
+  const answers = await writeFake(
+    "claude-answers.cjs",
+    'console.log(JSON.stringify({ result: "  fixed the timeout assertion  " }));',
+  );
+  const result = await tellSession({ sessionId: ID, cwd: workspace, text: "how did it go" }, { bin: answers });
+  assert.equal(result.ok, true);
+  assert.equal(result.reply, "fixed the timeout assertion");
+});
+
+test("an answer longer than anyone will sit through is clipped", async () => {
+  const long = await writeFake(
+    "claude-long.cjs",
+    `console.log(JSON.stringify({ result: "x".repeat(${MAX_REPLY_CHARS * 3}) }));`,
+  );
+  const result = await tellSession({ sessionId: ID, cwd: workspace, text: "how did it go" }, { bin: long });
+  assert.equal(result.reply.length, MAX_REPLY_CHARS);
+});
+
+test("a session that took the message and said nothing is still a session that took it", async () => {
+  const quiet = await writeFake("claude-quiet.cjs", 'console.log(JSON.stringify({ result: "" }));');
+  const result = await tellSession({ sessionId: ID, cwd: workspace, text: "noted" }, { bin: quiet });
+  assert.equal(result.ok, true);
+  assert.equal(result.reply, "");
+});
+
+test("a session that refused says why", async () => {
+  const refuses = await writeFake(
+    "claude-tell-refuses.cjs",
+    ['console.error("No conversation found to resume");', "process.exitCode = 1;"].join("\n"),
+  );
+  const result = await tellSession({ sessionId: ID, cwd: workspace, text: "x" }, { bin: refuses });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /No conversation found/);
+});
+
+test("an answer that is not JSON is a failure rather than a sentence read aloud", async () => {
+  const garbage = await writeFake("claude-tell-garbage.cjs", 'console.log("Usage: claude [options]");');
+  const result = await tellSession({ sessionId: ID, cwd: workspace, text: "x" }, { bin: garbage });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /could not read/);
+});
+
+test("a session that never answers is abandoned rather than waited on forever", async () => {
+  const hangs = await writeFake(
+    "claude-tell-hangs.cjs",
+    ['process.on("SIGTERM", () => {});', "setInterval(() => {}, 1000);"].join("\n"),
+  );
+  const result = await tellSession({ sessionId: ID, cwd: workspace, text: "x" }, { bin: hangs, timeoutMs: 150 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /did not answer in time/);
+});
+
+test("a follow-up with nowhere to run is refused before anything spawns", async () => {
+  assert.equal((await tellSession({ sessionId: ID, text: "x" })).ok, false);
+  assert.equal((await tellSession({ sessionId: ID, cwd: workspace, text: "" })).ok, false);
 });

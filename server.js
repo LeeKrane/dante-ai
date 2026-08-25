@@ -7,17 +7,18 @@ import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { createRosterPoller } from "./lib/agents.js";
+import { createRosterPoller, isWorking, matchSessions } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { loadSessionKinds, buildName } from "./lib/sessions.js";
-import { MAX_SESSIONS, newSessionId, refuseStart, startSession } from "./lib/spawn-session.js";
+import { MAX_SESSIONS, newSessionId, refuseStart, startSession, tellSession } from "./lib/spawn-session.js";
 import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
+  queueForSession, takeQueued, dropQueuesExcept,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -72,12 +73,47 @@ const sessionKinds = await loadSessionKinds();
 // Started below, after the store is loaded, because the events name sessions
 // using the workspace aliases the store holds.
 const rosterPoller = createRosterPoller({
-  onEvents: (events) => {
+  onEvents: (events, roster) => {
     for (const { kind, session } of events) {
       log(`session ${kind}: ${session.name ?? session.sessionId}`);
+      // The moment a session stops working is the moment anything queued for it
+      // can be delivered. This is the whole reason the poller runs whether or
+      // not a browser is connected.
+      if (kind === "idle") deliverQueued(session);
+    }
+    // A queue for a session that ended is a promise that can never be kept, and
+    // leaving it behind means a reused id would deliver it to a stranger.
+    if (events.some((event) => event.kind === "gone")) {
+      const dropped = dropQueuesExcept(memoryStore, roster.map((record) => record.sessionId));
+      if (dropped > 0) {
+        saveStore(memoryStore);
+        log(`dropped ${dropped} queue(s) for sessions that ended`);
+      }
     }
   },
 });
+
+// Hand a session everything that was said to it while it was busy, in the order
+// it was said. Nothing here speaks: by the time a session goes idle the person
+// who queued it may be gone, and Phase C is what will tell them. This is the
+// delivery, not the report.
+async function deliverQueued(record) {
+  const waiting = takeQueued(memoryStore, record.sessionId);
+  if (waiting.length === 0) return;
+  saveStore(memoryStore);
+
+  for (const text of waiting) {
+    const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
+    log(
+      result.ok
+        ? `delivered to ${record.name}: ${JSON.stringify(text)}`
+        : `delivery to ${record.name} failed: ${result.error}`,
+    );
+    // One failure ends the run rather than pressing on: the rest were said in
+    // an order that assumed this one landed.
+    if (!result.ok) break;
+  }
+}
 
 // What earlier runs left behind. One server serves one project, so the whole
 // store is keyed by the directory it was started in. Read once here; every
@@ -440,6 +476,55 @@ function firstUnanswered(primitive, params) {
 // the model already said out loud about the request; it is fused onto whatever
 // comes next so the turn is one utterance instead of two. The corrective paths
 // below drop it deliberately -- an acknowledgement contradicts the correction.
+// Pass something on to a session that is already running.
+//
+// The gate is the whole stage. Resuming a session that is CURRENTLY WORKING is
+// not a join: two processes on one session id is the race askResilient and
+// conv.settled exist to prevent inside jarvis, and it is worse across
+// processes. So a busy session gets the message queued, and the roster poller
+// delivers it on the first tick that sees it idle.
+async function dispatchTell(send, session, preamble, roster) {
+  const matches = matchSessions(roster, session.name ?? session.repo);
+  if (matches.length === 0) {
+    await say(send, joinSpoken(preamble, "I do not know a session by that name, sir."));
+    return;
+  }
+  if (matches.length > 1) {
+    // Never the first of several. "Tell jarvis one" reaching the wrong session
+    // is a real instruction sent to real work.
+    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
+    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
+    return;
+  }
+
+  const [record] = matches;
+  const text = session.task ?? session.text ?? session.message;
+
+  if (isWorking(record)) {
+    const queued = queueForSession(memoryStore, record.sessionId, text);
+    if (!queued) {
+      await say(send, joinSpoken(preamble, `${record.name} already has as much waiting as I will hold, sir.`));
+      return;
+    }
+    saveStore(memoryStore);
+    log(`queued for ${record.name}: ${JSON.stringify(queued)}`);
+    // Said plainly, because "queued" and "told" are different promises and the
+    // difference is minutes.
+    await say(send, joinSpoken(preamble, `${record.name} is busy, sir. I will pass it on when it stops.`));
+    return;
+  }
+
+  send({ type: "state", value: "thinking" });
+  const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
+  if (!result.ok) {
+    log(`tell ${record.name} failed: ${result.error}`);
+    await say(send, joinSpoken(preamble, `${record.name} would not take that, sir. ${result.error}.`));
+    return;
+  }
+  log(`told ${record.name}`);
+  await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
+}
+
 // Start a real Claude Code session in one of the workspaces, and say one
 // sentence about it. Everything that decides anything lives in lib/ -- which
 // repository (getWorkspace), whether to at all (refuseStart), what to call it
@@ -450,11 +535,15 @@ function firstUnanswered(primitive, params) {
 // starting one by voice: the confirmation is immediate, and the roster is what
 // reports what happened afterwards.
 async function dispatchSession(send, session, preamble = "", roster = null) {
+  if (session.verb === "tell") {
+    await dispatchTell(send, session, preamble, roster);
+    return;
+  }
   if (session.verb !== "start") {
-    // Talking to and stopping sessions are the next stages. Saying so is better
-    // than silence: the tag was stripped, so otherwise nothing would happen and
-    // nothing would explain why.
-    await say(send, joinSpoken(preamble, "I can only start sessions so far, sir."));
+    // Stopping a session is the next stage. Saying so is better than silence:
+    // the tag was stripped, so otherwise nothing would happen and nothing would
+    // explain why.
+    await say(send, joinSpoken(preamble, "I can only start sessions and talk to them so far, sir."));
     return;
   }
 

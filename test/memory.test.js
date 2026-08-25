@@ -30,6 +30,13 @@ import {
   resolveWorkspacePath,
   sanitizeAlias,
   workspacePaths,
+  MAX_QUEUED_PER_SESSION,
+  MAX_QUEUED_CHARS,
+  QUEUE_TTL_MS,
+  queueForSession,
+  peekQueued,
+  takeQueued,
+  dropQueuesExcept,
 } from "../lib/memory.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
@@ -622,5 +629,108 @@ test("a path someone dictated with a tilde still resolves", () => {
     assert.equal(resolveWorkspacePath("~", { home }), null);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Follow-ups waiting for a busy session
+// ---------------------------------------------------------------------------
+
+const SESSION_ID = "abcd1234-0000-4000-8000-000000000000";
+const T = 1_800_000_000_000;
+
+test("something said to a busy session waits for it", () => {
+  const store = emptyStore();
+  assert.equal(queueForSession(store, SESSION_ID, "also run the tests", T), "also run the tests");
+  assert.deepEqual(peekQueued(store, SESSION_ID, T), ["also run the tests"]);
+});
+
+test("follow-ups are delivered in the order they were said", () => {
+  const store = emptyStore();
+  queueForSession(store, SESSION_ID, "first", T);
+  queueForSession(store, SESSION_ID, "second", T + 1000);
+  assert.deepEqual(takeQueued(store, SESSION_ID, T + 2000), ["first", "second"]);
+});
+
+test("taking a queue empties it, because a follow-up delivered twice is said twice", () => {
+  // The poller ticks every few seconds; reading without taking would deliver
+  // the same instruction on every one of them.
+  const store = emptyStore();
+  queueForSession(store, SESSION_ID, "run the tests", T);
+  assert.deepEqual(takeQueued(store, SESSION_ID, T), ["run the tests"]);
+  assert.deepEqual(takeQueued(store, SESSION_ID, T), []);
+});
+
+test("a follow-up from two hours ago never surprises a session tomorrow", () => {
+  const store = emptyStore();
+  queueForSession(store, SESSION_ID, "run the tests", T);
+  assert.deepEqual(peekQueued(store, SESSION_ID, T + QUEUE_TTL_MS + 1), []);
+  assert.deepEqual(takeQueued(store, SESSION_ID, T + QUEUE_TTL_MS + 1), []);
+});
+
+test("a full queue refuses rather than quietly dropping the oldest", () => {
+  // "Queued, sir" is a promise, and evicting to make room breaks one already
+  // made.
+  const store = emptyStore();
+  for (let i = 0; i < MAX_QUEUED_PER_SESSION; i += 1) {
+    assert.ok(queueForSession(store, SESSION_ID, `line ${i}`, T + i));
+  }
+  assert.equal(queueForSession(store, SESSION_ID, "one too many", T + 99), null);
+  assert.equal(peekQueued(store, SESSION_ID, T + 99).length, MAX_QUEUED_PER_SESSION);
+});
+
+test("an expired entry frees the room it was holding", () => {
+  const store = emptyStore();
+  for (let i = 0; i < MAX_QUEUED_PER_SESSION; i += 1) queueForSession(store, SESSION_ID, `line ${i}`, T);
+  const later = T + QUEUE_TTL_MS + 1;
+  assert.equal(queueForSession(store, SESSION_ID, "fresh", later), "fresh");
+  assert.deepEqual(peekQueued(store, SESSION_ID, later), ["fresh"]);
+});
+
+test("nothing worth queueing is not queued", () => {
+  const store = emptyStore();
+  assert.equal(queueForSession(store, SESSION_ID, "", T), null);
+  assert.equal(queueForSession(store, SESSION_ID, "   ", T), null);
+  assert.equal(queueForSession(store, SESSION_ID, null, T), null);
+  assert.equal(queueForSession(store, "", "something", T), null);
+  assert.deepEqual(store.queued ?? {}, {});
+});
+
+test("a queued line is capped and stripped like everything else that is stored", () => {
+  const store = emptyStore();
+  const queued = queueForSession(store, SESSION_ID, "x".repeat(MAX_QUEUED_CHARS * 3), T);
+  assert.equal(queued.length, MAX_QUEUED_CHARS);
+});
+
+test("queues for sessions that ended are dropped rather than left for a reused id", () => {
+  const store = emptyStore();
+  queueForSession(store, SESSION_ID, "for the live one", T);
+  queueForSession(store, "dead-1", "for the dead one", T);
+  assert.equal(dropQueuesExcept(store, [SESSION_ID]), 1);
+  assert.deepEqual(peekQueued(store, SESSION_ID, T), ["for the live one"]);
+  assert.deepEqual(peekQueued(store, "dead-1", T), []);
+});
+
+test("dropping queues on a store that never had any is harmless", () => {
+  assert.equal(dropQueuesExcept(emptyStore(), []), 0);
+  assert.equal(dropQueuesExcept({}, null), 0);
+});
+
+test("a queue survives a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    queueForSession(store, SESSION_ID, "also run the tests", Date.now());
+    assert.equal(saveStore(store, path), true);
+    assert.deepEqual(peekQueued(loadStore(path), SESSION_ID), ["also run the tests"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a queue corrupted on disk reads as empty rather than throwing", () => {
+  for (const queued of [{ [SESSION_ID]: "not a list" }, { [SESSION_ID]: [null, 42, { at: 1 }] }, "nonsense"]) {
+    assert.deepEqual(peekQueued({ queued }, SESSION_ID, T), [], JSON.stringify(queued));
   }
 });

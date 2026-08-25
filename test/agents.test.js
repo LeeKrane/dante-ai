@@ -9,6 +9,8 @@ import {
   MAX_SPOKEN,
   createRosterPoller,
   describeRoster,
+  isWorking,
+  matchSessions,
   diffRoster,
   listAgents,
   parseRoster,
@@ -581,4 +583,66 @@ test("stopping twice, and starting twice, are both harmless", async () => {
   poller.stop();
   assert.deepEqual(await poller.read(), []);
   poller.stop();
+});
+
+// ---------------------------------------------------------------------------
+// matchSessions
+// ---------------------------------------------------------------------------
+
+const THREE = rosterOf(
+  session({ sessionId: "a", name: "jarvis-1-review" }),
+  session({ sessionId: "b", name: "jarvis-2-fix-tests" }),
+  session({ sessionId: "c", name: "fitness-1-review" }),
+);
+
+test("a session is found by the name it was given", () => {
+  assert.deepEqual(matchSessions(THREE, "jarvis-2-fix-tests").map((r) => r.sessionId), ["b"]);
+});
+
+test("punctuation and case are not worth refusing a spoken name over", () => {
+  for (const spoken of ["JARVIS 2 fix tests", "jarvis_2_fix_tests", "  jarvis-2-fix-tests  "]) {
+    assert.deepEqual(matchSessions(THREE, spoken).map((r) => r.sessionId), ["b"], spoken);
+  }
+});
+
+test("a prefix finds the session it names", () => {
+  assert.deepEqual(matchSessions(THREE, "jarvis-1").map((r) => r.sessionId), ["a"]);
+});
+
+test("an exact name is never made ambiguous by a longer one", () => {
+  const roster = rosterOf(
+    session({ sessionId: "a", name: "jarvis-1" }),
+    session({ sessionId: "b", name: "jarvis-1-review" }),
+  );
+  assert.deepEqual(matchSessions(roster, "jarvis-1").map((r) => r.sessionId), ["a"]);
+});
+
+test("several matches come back as several, never as a best guess", () => {
+  // Silently picking the first is how "stop jarvis one" stops the wrong process.
+  const roster = rosterOf(
+    session({ sessionId: "a", name: "jarvis-1-review" }),
+    session({ sessionId: "b", name: "jarvis-1-review-2" }),
+  );
+  assert.equal(matchSessions(roster, "jarvis-1").length, 2);
+});
+
+test("a name nothing answers to matches nothing", () => {
+  assert.deepEqual(matchSessions(THREE, "nonsense"), []);
+  assert.deepEqual(matchSessions(THREE, ""), []);
+  assert.deepEqual(matchSessions(THREE, null), []);
+  assert.deepEqual(matchSessions(null, "jarvis-1"), []);
+});
+
+test("a session with no name is never matched by an empty one", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: null }));
+  assert.deepEqual(matchSessions(roster, "jarvis"), []);
+});
+
+test("whether a session can take a follow-up is one question with one answer", () => {
+  assert.equal(isWorking({ state: "working" }), true);
+  assert.equal(isWorking({ state: "blocked" }), true);
+  assert.equal(isWorking({ state: "done", status: "busy" }), false);
+  assert.equal(isWorking({ state: null, status: "busy" }), true);
+  assert.equal(isWorking({ state: null, status: "idle" }), false);
+  assert.equal(isWorking({ state: null, status: null }), false);
 });
