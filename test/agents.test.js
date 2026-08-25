@@ -646,3 +646,19 @@ test("whether a session can take a follow-up is one question with one answer", (
   assert.equal(isWorking({ state: null, status: "idle" }), false);
   assert.equal(isWorking({ state: null, status: null }), false);
 });
+
+test("a session named with its repository in front is still found", () => {
+  // describeRoster reads a hand-started session out loud as "jarvis: Empty
+  // Session", so that is what comes back in the tag.
+  const roster = rosterOf(session({ sessionId: "a", name: "Empty Session" }));
+  assert.deepEqual(matchSessions(roster, "jarvis: Empty Session").map((r) => r.sessionId), ["a"]);
+  assert.deepEqual(matchSessions(roster, "jarvis empty session").map((r) => r.sessionId), ["a"]);
+});
+
+test("a name that merely shares a word is not a match", () => {
+  // The whole name has to be the tail, or "the review one" would match every
+  // session with review anywhere in its name.
+  const roster = rosterOf(session({ sessionId: "a", name: "review" }));
+  assert.deepEqual(matchSessions(roster, "review-the-changes"), []);
+  assert.deepEqual(matchSessions(roster, "code review please"), []);
+});

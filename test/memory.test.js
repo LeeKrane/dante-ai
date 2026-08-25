@@ -37,6 +37,10 @@ import {
   peekQueued,
   takeQueued,
   dropQueuesExcept,
+  MAX_SESSIONS_REMEMBERED,
+  rememberSession,
+  getSessionRecord,
+  getSessions,
 } from "../lib/memory.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
@@ -733,4 +737,57 @@ test("a queue corrupted on disk reads as empty rather than throwing", () => {
   for (const queued of [{ [SESSION_ID]: "not a list" }, { [SESSION_ID]: [null, 42, { at: 1 }] }, "nonsense"]) {
     assert.deepEqual(peekQueued({ queued }, SESSION_ID, T), [], JSON.stringify(queued));
   }
+});
+
+// ---------------------------------------------------------------------------
+// Sessions jarvis started
+// ---------------------------------------------------------------------------
+
+test("a started session is remembered by what it was asked to do", () => {
+  const store = emptyStore();
+  const saved = rememberSession(store, SESSION_ID, { name: "jarvis-1-review", task: "look at the diff" });
+  assert.equal(saved.name, "jarvis-1-review");
+  assert.equal(getSessionRecord(store, SESSION_ID).task, "look at the diff");
+});
+
+test("a later patch adds to a session record rather than replacing it", () => {
+  // Phase C writes a Slack thread id here afterwards, and it must not wipe what
+  // the start recorded.
+  const store = emptyStore();
+  rememberSession(store, SESSION_ID, { name: "jarvis-1-review", task: "look at the diff" });
+  rememberSession(store, SESSION_ID, { slackTs: "1700000000.1" });
+  const record = getSessionRecord(store, SESSION_ID);
+  assert.equal(record.name, "jarvis-1-review");
+  assert.equal(record.slackTs, "1700000000.1");
+});
+
+test("sessions do not crowd out what was built, because they are kept apart from it", () => {
+  // The artifacts list answers "what did we build lately"; ten sessions in an
+  // afternoon would push every build out of that answer.
+  const store = emptyStore();
+  recordArtifact(store, "/cwd", { primitive: "landing-page" });
+  for (let i = 0; i < 12; i += 1) rememberSession(store, `id-${i}`, { name: `jarvis-${i}` });
+  assert.equal(getProject(store, "/cwd").artifacts.length, 1);
+});
+
+test("the oldest remembered session is the one that goes", () => {
+  const store = emptyStore();
+  for (let i = 0; i < MAX_SESSIONS_REMEMBERED + 5; i += 1) {
+    rememberSession(store, `id-${i}`, { name: `jarvis-${i}` }, T + i);
+  }
+  assert.equal(Object.keys(getSessions(store)).length, MAX_SESSIONS_REMEMBERED);
+  assert.equal(getSessionRecord(store, "id-0"), null);
+  assert.ok(getSessionRecord(store, `id-${MAX_SESSIONS_REMEMBERED + 4}`));
+});
+
+test("a session with no id is not remembered", () => {
+  const store = emptyStore();
+  assert.equal(rememberSession(store, "", { name: "x" }), null);
+  assert.equal(rememberSession(store, null, { name: "x" }), null);
+  assert.deepEqual(getSessions(store), {});
+});
+
+test("a store written before sessions existed still reads", () => {
+  assert.deepEqual(getSessions({ version: 1, projects: {} }), {});
+  assert.equal(getSessionRecord({ sessions: "nonsense" }, SESSION_ID), null);
 });

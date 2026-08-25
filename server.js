@@ -20,7 +20,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
-  queueForSession, takeQueued, dropQueuesExcept,
+  queueForSession, takeQueued, dropQueuesExcept, rememberSession,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -483,6 +483,15 @@ function firstUnanswered(primitive, params) {
 // because resolving a name to the wrong session is the same mistake either way,
 // except that stop signals a real process.
 async function resolveSession(send, roster, query, preamble) {
+  // null is "I could not ask", not "nothing is running". Saying "I do not know
+  // a session by that name" of a session that exists is worse than admitting
+  // the listing failed -- especially for stop, where the next thing the person
+  // does is try again louder.
+  if (!Array.isArray(roster)) {
+    await say(send, joinSpoken(preamble, "I cannot see what is running just now, sir."));
+    return null;
+  }
+
   const matches = matchSessions(roster, query);
   if (matches.length === 0) {
     await say(send, joinSpoken(preamble, "I do not know a session by that name, sir."));
@@ -533,6 +542,12 @@ async function dispatchTell(send, session, preamble, roster) {
   if (!record) return;
 
   const text = session.task ?? session.text ?? session.message;
+  // Checked before the busy branch: without this, a tag with no message at all
+  // reports a full queue, which is a different problem with a different fix.
+  if (typeof text !== "string" || text.trim() === "") {
+    await say(send, joinSpoken(preamble, `What should I tell ${record.name}, sir?`));
+    return;
+  }
 
   if (isWorking(record)) {
     const queued = queueForSession(memoryStore, record.sessionId, text);
@@ -586,14 +601,20 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 
   const workspace = getWorkspace(memoryStore, session.repo);
   const live = Array.isArray(roster) ? roster : [];
+  // Background sessions only. An interactive session is a terminal somebody is
+  // sitting at; counting those means a machine in ordinary use is already over
+  // the ceiling before jarvis has started anything, and every request is
+  // refused. What the ceiling is really bounding is how many unattended
+  // sessions are running with nobody watching them.
+  const unattended = live.filter((record) => record.kind === "background");
   const refusal = refuseStart(session, {
     workspace,
     workspaces: workspacePaths(memoryStore),
-    running: live.length,
+    running: unattended.length,
     max: MAX_SESSIONS,
-    // The oldest idle session is the obvious one to stop, and naming it is what
+    // The oldest idle one is the obvious thing to stop, and naming it is what
     // makes a refusal actionable rather than a dead end.
-    oldestIdle: live.filter((r) => r.status === "idle").map((r) => r.name).find(Boolean),
+    oldestIdle: unattended.filter((r) => !isWorking(r)).map((r) => r.name).find(Boolean),
   });
   if (refusal) {
     log(`session refused: ${refusal}`);
@@ -631,7 +652,9 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     return;
   }
 
-  recordArtifact(memoryStore, PROJECT_KEY, { kind: "session", name, sessionId, alias: workspace.alias });
+  // Its own bucket, not the artifacts list: artifacts answer "what did we build
+  // lately", and ten sessions would push every build out of that answer.
+  rememberSession(memoryStore, sessionId, { name, alias: workspace.alias, task: session.task, kind: session.kind ?? null });
   saveStore(memoryStore);
   log(`session started name=${name} id=${sessionId} cwd=${workspace.path}`);
   send({ type: "debug", stage: "session", msg: `started ${name}` });
