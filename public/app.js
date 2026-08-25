@@ -1,4 +1,4 @@
-import { isFatalSpeechError } from "./stt-policy.js";
+import { applyResults, interimOf, isFatalSpeechError, mergeTranscript } from "./stt-policy.js";
 import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
@@ -281,7 +281,11 @@ ws.onmessage = async (ev) => {
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null;
 let holding = false;   // physical button/Space held — this drives the green
-let finalText = "";
+// What earlier recognition sessions of this hold produced, and the finals of the
+// session running right now, indexed the way the engine indexes them. They are
+// separate because a restart renumbers `results` from 0 — see stt-policy.js.
+let committedText = "";
+let sessionFinals = [];
 
 if (SR) {
   rec = new SR();
@@ -290,13 +294,8 @@ if (SR) {
   rec.interimResults = true;
   rec.onstart = () => dbg("stt: started");
   rec.onresult = (e) => {
-    let interim = "";
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const r = e.results[i];
-      if (r.isFinal) finalText += r[0].transcript + " ";
-      else interim += r[0].transcript;
-    }
-    const shown = (finalText + interim).trim();
+    sessionFinals = applyResults(sessionFinals, e.resultIndex, e.results);
+    const shown = mergeTranscript(committedText, sessionFinals, interimOf(e.resultIndex, e.results));
     if (shown) {
       setCaption(shown, "you");
       dbg(`stt heard: "${shown}"`);
@@ -316,6 +315,10 @@ if (SR) {
   rec.onend = () => {
     listening = false;
     if (holding) {
+      // The restarted session numbers its results from 0, so bank this one's
+      // before it does or the next phrase overwrites this one.
+      committedText = mergeTranscript(committedText, sessionFinals);
+      sessionFinals = [];
       try {
         rec.start();
         listening = true;
@@ -325,8 +328,9 @@ if (SR) {
       }
       return;
     }
-    const text = finalText.trim();
-    finalText = "";
+    const text = mergeTranscript(committedText, sessionFinals);
+    committedText = "";
+    sessionFinals = [];
     if (text) {
       dbg(`release → sending "${text}"`);
       noteSpokenTurn(text);
@@ -353,7 +357,8 @@ function startListening() {
   // where a handoff is honoured.
   stopPlayback();
   holding = true;
-  finalText = "";
+  committedText = "";
+  sessionFinals = [];
   audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") audioCtx.resume();
   setState("listening");
