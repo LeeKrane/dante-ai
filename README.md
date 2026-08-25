@@ -105,16 +105,37 @@ fresh `builds/<timestamp>/`, streams the work into the HUD around the orb, and
 opens the page when it's done. One build at a time; a primitive can declare
 `steps: [...]` to run plan → build → verify as a chain in one directory.
 
-**Sessions.** Every turn carries a line describing the Claude Code sessions
-running on this machine — from `claude agents --json`, so it sees the ones you
-started in a terminal too. Ask *"what's running?"* or *"is the fitness one
-done?"*. Repositories get spoken aliases: *"the fitness repo is at
-~/development/KraneticFitness"* stores one, and sessions in it are then called
-`fitness-1`, `fitness-2`. A listing that fails costs the roster for that turn,
-never the turn.
+**Sessions.** The point of the thing. Every turn carries a line describing the
+Claude Code sessions running on this machine — from `claude agents --json`, so
+it sees the ones you started in a terminal too — and you can drive them:
 
-`docs/roadmap.md` is where this is going: starting, driving and stopping sessions
-by voice, with Slack as the out-of-band channel.
+- *"What's running?"* — the roster, spoken. Never a uuid, a pid or a path.
+- *"Start a session in jarvis to fix the failing builder test"* — spawns
+  `claude --bg` in that repo and names it `jarvis-3-fix-failing-builder-test`.
+  Five at a time, counted from the roster so terminal sessions count too.
+- *"Tell jarvis three to run the tests as well"* — resumes it and speaks the
+  answer back. If it's busy the message is **queued** and delivered the moment
+  it goes idle, because resuming a working session forks it rather than joining.
+- *"Stop jarvis three"* — SIGTERM, never SIGKILL, and confirmed gone before it
+  says so.
+
+Repositories get spoken aliases: *"the fitness repo is at
+~/development/KraneticFitness"* stores one, and sessions in it are then
+`fitness-1`, `fitness-2`.
+
+These sessions run under **your** settings, permissions, hooks and MCP servers —
+the same session you'd have started by typing `claude` there. Jarvis imposes no
+deny list, because you asked for an orchestrator and not a sandbox. What it will
+never do is pass `--dangerously-skip-permissions` or `--permission-mode
+bypassPermissions`, on any path: voice is a lossy channel, and a misheard
+sentence must not be able to remove every guardrail.
+
+`sessions/*.mjs` shapes a session the way `primitives/*.mjs` shapes a build —
+prompt and model only, no tool scope. Ships `review` and `tests`; copy
+`sessions/_template.mjs` to add one.
+
+`docs/roadmap.md` is where this goes next: Slack as an out-of-band channel, and
+voice approval for the handful of things worth interrupting you over.
 
 ## Make it yours
 
@@ -163,6 +184,8 @@ the screen. If part of the UI "disappeared," press the key again.
 | `lib/memory.js` | the store — preferences, summaries, artifacts, workspace aliases. |
 | `lib/turns.js` | what one call carries: merged interruptions, the roster, the turn gate. |
 | `lib/registry.js` + `primitives/` | what it can build. |
+| `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
+| `lib/spawn-session.js` | starting, telling and stopping a real session. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
 | `lib/action.js`, `outcome.js`, `progress.js`, `tts.js`, `config.js` | tags, success detection, readable progress, speech, config. |
