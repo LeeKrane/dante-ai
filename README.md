@@ -134,8 +134,54 @@ sentence must not be able to remove every guardrail.
 prompt and model only, no tool scope. Ships `review` and `tests`; copy
 `sessions/_template.mjs` to add one.
 
-`docs/roadmap.md` is where this goes next: Slack as an out-of-band channel, and
-voice approval for the handful of things worth interrupting you over.
+### It reports back
+
+Start something, walk away, read what came of it on your phone. Slack is the
+durable channel; voice only works when the page is open.
+
+One thread per session: a parent when it starts, replies for everything after.
+Each report carries a one-sentence summary generated from the session's own
+transcript, because "done" on its own is not news.
+
+```bash
+mkdir -p ~/.config/jarvis && cat > ~/.config/jarvis/slack.json <<'EOF'
+{
+  "botToken": "xoxb-YOUR-BOT-TOKEN",
+  "channel": "C0123456789"
+}
+EOF
+```
+
+A Slack app with the `chat:write` scope, invited to that channel.
+`JARVIS_SLACK_TOKEN` and `JARVIS_SLACK_CHANNEL` work too and win over the file.
+Skip this entirely and everything else still works — Slack is an enhancement,
+not a dependency, and an outage costs a notification rather than a turn. It is
+**outbound only**: no Socket Mode, no Events API, nothing anyone types in Slack
+reaches this machine.
+
+The roster poller notices a session ending within five seconds on its own. For
+the fast path — and for a session *blocked on you*, which polling can never see
+— install the hook. **Jarvis never writes `~/.claude/` itself**; its own build
+deny list forbids exactly that, and a hook is code that runs on your next
+session, so paste it yourself:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }]
+  }
+}
+```
+
+It posts to `127.0.0.1:3210/hook` (`JARVIS_PORT` to change it), always exits 0,
+prints nothing and gives up after a second — a jarvis that is down must cost a
+session nothing. Both mechanisms report the same exit; jarvis dedupes so the
+thread gets one line, not three.
+
+`docs/roadmap.md` is where this goes next: voice approval for the handful of
+things worth interrupting you over.
 
 ## Make it yours
 
@@ -194,6 +240,23 @@ the screen. If part of the UI "disappeared," press the key again.
 `npm test` — `node --test`, no network and no keys needed.
 
 ## Security
+
+**`POST /hook` is loopback only.** That is its entire security model, and it does
+not change because the rest of the server is reachable over the VPN. Any local
+process can post to it, so nothing a payload carries ever reaches a model
+prompt — it reaches the event formatter and Slack, capped and stripped, or it is
+dropped in silence.
+
+**The Slack bot token is a credential.** It rides in one Authorization header and
+appears in no log line, no debug message, and nothing crossing the WebSocket.
+Message text is escaped for the three characters that open Slack's control
+sequences, so a summary a model wrote saying `<!channel>` cannot notify a
+workspace.
+
+**A session transcript is untrusted input.** It holds whatever the session read
+off disk or off the web, which makes it the most attacker-reachable text here. It
+is framed to the summarizer as data rather than instructions, and the result is
+capped and stripped either way — framing is a mitigation, never the boundary.
 
 **The gate.** The check that matters is at the WebSocket upgrade, not on the login
 page: a UI-only gate is skipped by opening the socket directly. `builds/` is gated

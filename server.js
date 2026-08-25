@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent } from "./lib/notify.js";
+import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { summarizeSession } from "./lib/transcript.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
@@ -38,6 +39,7 @@ const WG_IP = "192.168.82.1";
 // server does not quietly disable the checks below.
 const ALLOWED_HOSTS = new Set([
   `localhost:${PORT}`,
+  `127.0.0.1:${PORT}`, // the hook bridge posts here, and it is the same machine
   `0.0.0.0:${PORT}`,
   `[::1]:${PORT}`,
   `${WG_IP}:${PORT}`
@@ -87,7 +89,10 @@ const rosterPoller = createRosterPoller({
       if (kind === "idle") deliverQueued(session);
       // The report someone walked away for. Not awaited: a poller tick must
       // not be held open by a Slack round trip and a summary behind it.
-      if (kind === "gone") reportEnded(session).catch((e) => log("report failed:", e.message || e));
+      if (kind === "gone") {
+        reportComplete(session.sessionId, { cwd: session.cwd, name: session.name, startedAt: session.startedAt })
+          .catch((e) => log("report failed:", e.message || e));
+      }
     }
     // A queue for a session that ended is a promise that can never be kept, and
     // leaving it behind means a reused id would deliver it to a stranger.
@@ -123,36 +128,61 @@ async function deliverQueued(record) {
   }
 }
 
-// A session left the roster. Report what came of it -- which is the whole
-// reason any of this runs with the browser closed.
+// One exit, reported once, whichever mechanism noticed it.
 //
+// Both do. The roster poller is the floor -- it works for sessions started
+// before jarvis existed and needs nothing installed -- and the Stop and
+// SessionEnd hooks are the fast path, firing the moment it happens. They are
+// not alternatives, so the deduper is what keeps one exit from becoming two
+// lines in the thread.
+const reported = createDeduper();
+
+// Where a session's events go. Its own thread if it has one; the channel if
+// Slack was down or unconfigured when it started, because an event with
+// nowhere to thread is still worth more than nothing.
+async function postForSession(sessionId, line) {
+  if (!line) return;
+  const remembered = getSessionRecord(memoryStore, sessionId);
+  if (remembered?.slackTs) await slack.postReply(remembered.slackTs, line);
+  else await slack.postParent(line);
+}
+
 // Only sessions jarvis started are reported. The roster sees every terminal on
 // this machine, and posting to Slack every time somebody closes one would make
 // the channel worthless within a day.
-async function reportEnded(record) {
-  const remembered = getSessionRecord(memoryStore, record.sessionId);
+async function reportComplete(sessionId, context = {}) {
+  const remembered = getSessionRecord(memoryStore, sessionId);
   if (!remembered) return;
+  if (!reported.accept(`${sessionId}:complete`)) return;
 
-  const startedAt = Number.isFinite(record.startedAt) ? record.startedAt : remembered.at;
+  const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
   const line = formatEvent({
     kind: "complete",
-    name: remembered.name ?? record.name,
+    name: remembered.name ?? context.name,
     durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
     // Up to ~25 s of Haiku, and worth it: "done" without it is not news.
     summary: await summarizeSession({
-      cwd: record.cwd,
-      sessionId: record.sessionId,
+      cwd: context.cwd || remembered.cwd,
+      sessionId,
       task: remembered.task,
     }),
     detail: remembered.stoppedAt ? "stopped from here" : "",
   });
 
-  log(`session ended: ${line}`);
-  // Without a thread parent there is nothing to reply to -- Slack may have been
-  // down or unconfigured at the start -- so the event goes to the channel
-  // rather than nowhere.
-  if (remembered.slackTs) await slack.postReply(remembered.slackTs, line);
-  else await slack.postParent(line);
+  log(`session complete: ${line}`);
+  await postForSession(sessionId, line);
+}
+
+// A session that is blocked on a person. The one thing polling can never see,
+// which is most of why the hook bridge exists at all.
+async function reportAttention(event) {
+  const remembered = getSessionRecord(memoryStore, event.sessionId);
+  if (!remembered) return;
+  if (!reported.accept(`${event.sessionId}:needs-attention:${event.detail}`)) return;
+
+  const line = formatEvent({ kind: "needs-attention", name: remembered.name, detail: event.detail });
+  log(`session needs attention: ${line}`);
+  await postForSession(event.sessionId, line);
 }
 
 // What earlier runs left behind. One server serves one project, so the whole
@@ -300,6 +330,44 @@ const server = createServer(async (req, res) => {
   }
 
   const urlPath = (req.url ?? "/").split("?")[0];
+
+  // The hook bridge. Loopback only, and that is its ENTIRE security model --
+  // it does not change because the rest of this server is reachable over the
+  // VPN. It sits above the cookie gate on purpose: the caller is a hook script
+  // spawned by Claude Code, which has no browser session to present.
+  //
+  // Any local process can reach it, so nothing it carries may become an
+  // instruction. A payload reaches lib/notify.js and Slack, and never a model
+  // prompt. Anything unexpected is dropped in silence rather than answered
+  // with a complaint, because a complaint is a channel too.
+  if (urlPath === "/hook") {
+    if (!isLoopback(req.socket?.remoteAddress)) {
+      log(`hook refused from ${req.socket?.remoteAddress ?? "unknown"}`);
+      res.writeHead(403); res.end("forbidden"); return;
+    }
+    if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); res.end("method not allowed"); return; }
+    if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) {
+      res.writeHead(415); res.end("unsupported media type"); return;
+    }
+    const declared = Number(req.headers["content-length"]);
+    if (!Number.isFinite(declared) || declared > MAX_BODY) {
+      res.writeHead(413); res.end("payload too large"); return;
+    }
+
+    const body = await readJsonBody(req);
+    // Answered before anything is done with it. A hook blocks the session that
+    // spawned it, and a summary can take twenty-five seconds; making a session
+    // wait on jarvis reporting about it would be exactly backwards.
+    sendJson(res, 200, { ok: true });
+
+    const event = parseHookEvent(body);
+    if (!event) return;
+    const work = event.kind === "complete"
+      ? reportComplete(event.sessionId, { cwd: event.cwd })
+      : reportAttention(event);
+    work.catch((e) => log("hook report failed:", e.message || e));
+    return;
+  }
 
   if (urlPath === "/auth/login") {
     if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); res.end("method not allowed"); return; }
