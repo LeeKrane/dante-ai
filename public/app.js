@@ -199,9 +199,19 @@ let incoming = null;
 
 // ---- WebSocket ----
 const ws = new WebSocket(`ws://${location.host}`);
-ws.onopen = () => dbg("ws: connected");
+// A socket the server refused never opened, which is how an expired session
+// shows up here: the page loaded because the cookie was still good when the HTML
+// was fetched, and the upgrade was rejected a moment later. Telling someone to
+// restart the server would be wrong, so the two closings are distinguished.
+let wsOpened = false;
+ws.onopen = () => { wsOpened = true; dbg("ws: connected"); };
 ws.onclose = () => {
   dbg("ws: closed");
+  if (!wsOpened) {
+    // replace(), so the orb is not one Back away from a page that cannot work.
+    location.replace("/login.html");
+    return;
+  }
   // A build in flight now has no way to report its ending, so the HUD is retired
   // rather than left cutting a record nothing will ever finish.
   buildHud.finish();

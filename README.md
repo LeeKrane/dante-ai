@@ -15,8 +15,8 @@ Chrome mic → Web Speech API (free STT) → WebSocket → node server
   → canvas orb + build HUD
 ```
 
-One npm dependency (`ws`). No frameworks, no build step, no Anthropic API key —
-it runs on the Claude subscription you already have.
+Two npm dependencies (`ws`, `@supabase/supabase-js`). No frameworks, no build
+step, no Anthropic API key — it runs on the Claude subscription you already have.
 
 ## What you need
 
@@ -25,6 +25,7 @@ it runs on the Claude subscription you already have.
 - **Node 20+**
 - **Claude Code**, installed and logged in
 - **A Fish Audio API key** — the S2.1 API
+- **A Supabase project** — the sign-in gate in front of the orb
 
 Works on macOS and Linux. Windows: use WSL, or note your config path is
 `C:\Users\you\.config\fish-audio\speak.json`.
@@ -53,6 +54,40 @@ mkdir -p ~/.config/fish-audio && cat > ~/.config/fish-audio/speak.json <<'EOF'
 }
 EOF
 ```
+
+## 2b. Point it at a Supabase project
+
+The orb is behind a sign-in. Create a project at
+[supabase.com](https://supabase.com), then copy the **Project URL** and the
+**anon / public** key out of *Project Settings → API*:
+
+```bash
+mkdir -p ~/.config/jarvis && cat > ~/.config/jarvis/supabase.json <<'EOF'
+{
+  "url": "https://YOUR-PROJECT.supabase.co",
+  "anonKey": "YOUR-ANON-KEY-HERE"
+}
+EOF
+```
+
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` in the environment work too, and win over
+the file.
+
+**There is no sign-up page, on purpose.** Create the one account you want by
+hand: *Authentication → Users → Add user*, with **Auto Confirm User** ticked.
+Anyone who can sign in can spawn a Claude Code session with file tools on, so
+this is a list you should be able to read in one glance.
+
+Two things worth knowing about the gate:
+
+- The Supabase SDK runs **server-side only**. The browser never receives the anon
+  key or the access token — signing in sets an `HttpOnly` cookie, which is also
+  why no script on this origin (a build's own page included) can read the
+  session.
+- The server speaks plain HTTP, so the cookie is not marked `Secure` by default;
+  a `Secure` cookie is simply never sent over `http://` and the login would
+  appear to succeed and then not hold. Once there is TLS in front of this, set
+  `SECURE_COOKIE=1`.
 
 ## 3. Prove Claude works headless (30 seconds, saves you an hour)
 
@@ -147,6 +182,12 @@ key again.
   `builds/<timestamp>/`, streams progress, enforces a timeout.
 - `lib/action.js`, `lib/outcome.js`, `lib/progress.js` — tag parsing, success
   detection, and turning raw build output into readable lines.
+- `lib/auth.js` + `public/login.html` — **the gate.** Supabase sign-in, an
+  `HttpOnly` session cookie, and the check at the WebSocket upgrade. The login
+  page is a decoration on top of that check, not the check itself: what accepting
+  the socket grants is a Claude Code session with file tools on, so refusing it
+  has to happen where a refusal is a destroyed socket rather than a hidden
+  button.
 - `claude-settings.json` — small and load-bearing. The chat turn is passed this
   file directly; a build gets a throwaway copy with per-machine path deny rules
   merged on (see *What a build is allowed to do*), so edit this file to change

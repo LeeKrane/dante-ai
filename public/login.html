@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in &middot; Jarvis</title>
+<style>
+  /* shadcn/ui's dark tokens, written out by hand. The real thing is Tailwind
+     utilities over Radix primitives, which would mean a bundler and a build
+     step; this page is one file and no dependencies, so the tokens are here and
+     the components below are the four this screen actually uses. Keep the
+     values -- they are what make it read as shadcn rather than as an
+     approximation of it. */
+  :root {
+    --background: hsl(240 10% 3.9%);
+    --foreground: hsl(0 0% 98%);
+    --card: hsl(240 10% 3.9%);
+    --card-foreground: hsl(0 0% 98%);
+    --muted-foreground: hsl(240 5% 64.9%);
+    --border: hsl(240 3.7% 15.9%);
+    --input: hsl(240 3.7% 15.9%);
+    --primary: hsl(0 0% 98%);
+    --primary-foreground: hsl(240 5.9% 10%);
+    --destructive: hsl(0 62.8% 30.6%);
+    --destructive-foreground: hsl(0 0% 98%);
+    /* The one departure: the focus ring is the orb's cyan rather than shadcn's
+       neutral, so the page it guards is recognisable in the page that guards
+       it. */
+    --ring: hsl(194 100% 65%);
+    --radius: 0.5rem;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    /* The same field the orb sits on, so signing in does not feel like leaving
+       the application to visit a form. */
+    background: radial-gradient(120% 90% at 50% 40%, #0a1826 0%, #05090f 56%, #03050a 100%);
+    color: var(--foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+
+  /* Card */
+  .card {
+    width: 100%;
+    max-width: 380px;
+    background: color-mix(in srgb, var(--card) 82%, transparent);
+    color: var(--card-foreground);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 1px 3px rgb(0 0 0 / .5), 0 12px 40px rgb(0 0 0 / .35);
+    backdrop-filter: blur(8px);
+  }
+  .card-header { display: grid; gap: 6px; padding: 24px 24px 0; }
+  .card-title { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -.025em; line-height: 1.2; }
+  .card-description { margin: 0; font-size: .875rem; line-height: 1.4; color: var(--muted-foreground); }
+  .card-content { display: grid; gap: 16px; padding: 24px; }
+
+  /* Label */
+  .label {
+    font-size: .875rem; font-weight: 500; line-height: 1;
+    /* shadcn dims a label whose control is disabled; the form disables every
+       field while a sign-in is in flight, so this is not decorative. */
+  }
+  .field:has(input:disabled) .label { opacity: .7; }
+  .field { display: grid; gap: 8px; }
+
+  /* Input */
+  .input {
+    height: 40px; width: 100%;
+    padding: 8px 12px;
+    font-size: .875rem; font-family: inherit;
+    color: var(--foreground);
+    background: transparent;
+    border: 1px solid var(--input);
+    border-radius: calc(var(--radius) - 2px);
+    outline: none;
+    transition: box-shadow .15s ease, border-color .15s ease;
+  }
+  .input::placeholder { color: var(--muted-foreground); }
+  /* shadcn's focus is a 2px ring with a 2px offset in the background colour,
+     not a border colour change -- that gap is most of why it looks like it
+     does. */
+  .input:focus-visible {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
+  }
+  .input:disabled { cursor: not-allowed; opacity: .5; }
+
+  /* Button */
+  .button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    height: 40px; width: 100%;
+    padding: 8px 16px;
+    font-size: .875rem; font-weight: 500; font-family: inherit;
+    color: var(--primary-foreground);
+    background: var(--primary);
+    border: none; border-radius: calc(var(--radius) - 2px);
+    cursor: pointer;
+    transition: opacity .15s ease, box-shadow .15s ease;
+  }
+  .button:hover:not(:disabled) { opacity: .9; }
+  .button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring); }
+  .button:disabled { cursor: not-allowed; opacity: .5; }
+
+  /* Spinner, shown only while a sign-in is in flight. */
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+  /* Alert, destructive variant. */
+  .alert {
+    padding: 12px 16px;
+    font-size: .875rem; line-height: 1.4;
+    color: var(--destructive-foreground);
+    border: 1px solid var(--destructive);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--destructive) 22%, transparent);
+  }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="card-header">
+      <h1 class="card-title">Sign in to Jarvis</h1>
+      <p class="card-description">Enter your email and password to continue.</p>
+    </div>
+    <!-- A real form, so Enter submits and password managers recognise it. The
+         submit handler cancels the default navigation; without the form they
+         would both have to be built by hand. -->
+    <form class="card-content" id="form" method="post" action="/auth/login">
+      <!-- aria-live so the failure is announced, not only drawn. -->
+      <div class="alert hidden" id="error" role="alert" aria-live="polite"></div>
+      <div class="field">
+        <label class="label" for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" placeholder="you@example.com"
+               autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label class="label" for="password">Password</label>
+        <input class="input" id="password" name="password" type="password"
+               autocomplete="current-password" required>
+      </div>
+      <button class="button" id="submit" type="submit">
+        <span class="spinner hidden" id="spinner" aria-hidden="true"></span>
+        <span id="submit-text">Sign in</span>
+      </button>
+    </form>
+  </main>
+<script type="module">
+const form = document.getElementById("form");
+const errorEl = document.getElementById("error");
+const submitEl = document.getElementById("submit");
+const spinnerEl = document.getElementById("spinner");
+const submitText = document.getElementById("submit-text");
+const fields = [document.getElementById("email"), document.getElementById("password")];
+
+function busy(on) {
+  submitEl.disabled = on;
+  for (const f of fields) f.disabled = on;
+  spinnerEl.classList.toggle("hidden", !on);
+  submitText.textContent = on ? "Signing in…" : "Sign in";
+}
+
+// textContent, never innerHTML: this string came back over the network.
+function fail(message) {
+  errorEl.textContent = message;
+  errorEl.classList.remove("hidden");
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  errorEl.classList.add("hidden");
+  busy(true);
+  try {
+    const res = await fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // The token never comes back to this page. The server sets an HttpOnly
+      // cookie, which is why there is nothing to store here and nothing for a
+      // later script on this origin to read.
+      body: JSON.stringify({ email: fields[0].value, password: fields[1].value }),
+    });
+    if (res.ok) {
+      // replace(), not assign(): the login screen should not be one Back away
+      // from the signed-in page.
+      location.replace("/");
+      return;
+    }
+    const body = await res.json().catch(() => ({}));
+    fail(body.error || "Sign-in failed. Try again.");
+  } catch {
+    fail("Could not reach the server.");
+  }
+  busy(false);
+});
+</script>
+</body>
+</html>

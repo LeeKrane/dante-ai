@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { loadFishConfig } from "./lib/config.js";
+import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
+import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import { speakStream } from "./lib/tts.js";
@@ -39,6 +40,14 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 
 const cfg = loadFishConfig(); // throws early if Fish key missing
+
+// Same reasoning: a Supabase project that is not configured should stop the
+// server here, naming what is missing, rather than turn into a login screen
+// that cannot let anyone in. The SDK lives on this side only -- the browser is
+// never given the anon key, and never sees the token, because the session is an
+// HttpOnly cookie this server sets.
+const supabaseCfg = loadSupabaseConfig();
+const auth = createAuth({ url: supabaseCfg.url, anonKey: supabaseCfg.anonKey, secure: supabaseCfg.secure });
 
 // Read once, at startup. A primitive is a file on disk, so re-reading the folder
 // per request would let a half-saved edit break a live conversation. Loading it
@@ -126,6 +135,48 @@ function hostAllowed(host) {
   return typeof host === "string" && ALLOWED_HOSTS.has(host.toLowerCase());
 }
 
+// ---------------------------------------------------------------------------
+// The gate
+// ---------------------------------------------------------------------------
+
+// The login screen has to be reachable by someone who is, by definition, not
+// signed in, and it is the only thing that is. Everything else under public/ is
+// the application, and everything under builds/ is what the application wrote —
+// gating the orb but not its artifacts would leave every page the model
+// produced readable by anyone who can reach the port.
+const PUBLIC_PATHS = new Set(["/login.html"]);
+
+function sessionToken(req) {
+  return parseCookie(req.headers.cookie)[COOKIE] ?? "";
+}
+
+// A login body is one small JSON object. The cap is not a tuning knob: it is
+// what stops a caller who has proved nothing from making this process hold an
+// arbitrary amount of memory.
+const MAX_BODY = 4096;
+
+function readJsonBody(req) {
+  return new Promise((done) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY) { chunks.length = 0; req.destroy(); done(null); return; }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      try { done(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+      catch { done(null); } // not JSON, which signIn answers the same way as wrong credentials
+    });
+    req.on("error", () => done(null));
+  });
+}
+
+function sendJson(res, status, body, headers = {}) {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers });
+  res.end(JSON.stringify(body));
+}
+
 const server = createServer(async (req, res) => {
   if (!hostAllowed(req.headers.host)) {
     log(`http refused host=${JSON.stringify(req.headers.host ?? null)}`);
@@ -135,6 +186,48 @@ const server = createServer(async (req, res) => {
   }
 
   const urlPath = (req.url ?? "/").split("?")[0];
+
+  if (urlPath === "/auth/login") {
+    if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); res.end("method not allowed"); return; }
+    const body = await readJsonBody(req);
+    const result = await auth.signIn(body?.email, body?.password);
+    if (!result.ok) {
+      // The email is deliberately not logged. This line is written on a failed
+      // attempt, which means it is written for whatever anyone types into the
+      // form, and a log of guessed addresses is not worth keeping. The reason is
+      // logged, because "getaddrinfo ENOTFOUND" and "Invalid login credentials"
+      // are the same sentence in the browser and very different problems here.
+      log(`login refused: ${result.reason}`);
+      sendJson(res, 401, { error: result.error });
+      return;
+    }
+    log("login accepted");
+    sendJson(res, 200, { ok: true }, { "Set-Cookie": result.cookie });
+    return;
+  }
+
+  if (urlPath === "/auth/logout") {
+    if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); res.end("method not allowed"); return; }
+    auth.forget(sessionToken(req));
+    sendJson(res, 200, { ok: true }, { "Set-Cookie": clearCookie(supabaseCfg.secure) });
+    return;
+  }
+
+  if (!PUBLIC_PATHS.has(urlPath) && !(await auth.verify(sessionToken(req)))) {
+    // A person who typed an address gets the login screen. Anything else — a
+    // module the page imports, a build artifact — gets a status code, because
+    // answering a script's request with an HTML page turns a plain
+    // authentication failure into a confusing parse error instead.
+    if (urlPath === "/" || urlPath === "/index.html") {
+      res.writeHead(302, { Location: "/login.html", "Cache-Control": "no-store" });
+      res.end();
+    } else {
+      res.writeHead(401, { "Cache-Control": "no-store" });
+      res.end("unauthorized");
+    }
+    return;
+  }
+
   // Two roots, one containment rule: the app's own files, and the read-only
   // artifacts a build wrote, so a finished page can be opened in the browser.
   const isBuild = urlPath.startsWith(BUILDS_URL);
@@ -510,10 +603,23 @@ const wss = new WebSocketServer({
   maxPayload: 64 * 1024,
 });
 
-server.on("upgrade", (req, socket, head) => {
+server.on("upgrade", async (req, socket, head) => {
   if (!originAllowed(req.headers.origin)) {
     log(`ws refused origin=${JSON.stringify(req.headers.origin ?? null)}`);
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  // This is the check the login screen is a decoration on top of. What accepting
+  // this socket grants is a Claude Code session with file tools on, running
+  // under this login — so the answer has to be decided here, where a refusal is
+  // a destroyed socket, and not in a page that could simply be skipped by
+  // opening the socket directly. The cookie is the only credential considered:
+  // it is HttpOnly, so no script on this origin (a build's page included) can
+  // read it, and it is never carried in the URL, which this server logs.
+  if (!(await auth.verify(sessionToken(req)))) {
+    log("ws refused unauthenticated");
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }

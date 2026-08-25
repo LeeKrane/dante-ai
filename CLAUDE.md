@@ -12,8 +12,12 @@ points. Read it before changing anything under `lib/`.
 
 These are enforced by the existing code but written down nowhere else:
 
-- **No new dependencies.** `ws` is the only one, and the README advertises that. Everything else
-  is a `node:` builtin. No frameworks, no build step, no bundler, no TypeScript.
+- **No new dependencies.** There are exactly two — `ws`, and `@supabase/supabase-js` for the
+  sign-in gate — and the README advertises both. Everything else is a `node:` builtin. No
+  frameworks, no build step, no bundler, no TypeScript. The Supabase SDK is server-side only for
+  that last reason: `public/` is served straight off disk, so nothing there can `import` from
+  `node_modules`. A browser-side dependency would mean a bundler, which is the rule this one is
+  not allowed to break.
 - **Tests are `node:test` + `node:assert/strict`**, run by `npm test` (`node --test`). No test
   framework, no mocking library. Impure code is tested against real temp directories
   (`mkdtemp`) and real fake CLIs written to disk and passed as `opts.bin` — see the `writeFake`
@@ -46,6 +50,16 @@ Two deny layers keep it in its lane, and both are load-bearing:
 Changes to either are a security review, never a casual edit. `--allowedTools` and
 `--disallowedTools` are variadic and swallow every following token until one starts with `-`, so
 argument order in `buildSpawnArgs` matters; the trailing `--` is what ends the list.
+
+`lib/auth.js` decides who may reach that in the first place, and the same rule applies to it:
+
+- The check that matters is the one in `server.on("upgrade")`. `public/login.html` is a
+  decoration on top of it — a UI-only gate is skipped by opening the socket directly.
+- `decodeJwt()` reads a token's claims **without verifying its signature** and must never be used
+  as a verification. It exists only to reject the obviously dead ones before spending a round
+  trip; `supabase.auth.getUser()` is what actually verifies.
+- `builds/` is gated alongside the orb. Gating one and not the other leaves every page the model
+  wrote readable by anyone who can reach the port.
 
 ## Reading this codebase
 
