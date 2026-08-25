@@ -36,6 +36,46 @@ test("a phrase Chrome on Android re-delivers at a growing length is not repeated
   assert.equal(mergeTranscript("", finals), "How are you Jarvis");
 });
 
+test("a phrase Chrome on Android re-delivers at a growing index is not repeated either", () => {
+  // The delivery shape the index-addressed defence cannot see: the same growing
+  // prefixes, but each one filed at the next index up rather than rewriting the
+  // one before it. This is what a phone actually sent, and it read back as
+  // "please please please please state please state your please state your
+  // purpose".
+  const events = [
+    ["please"],
+    ["please", "please"],
+    ["please", "please", "please"],
+    ["please", "please", "please", "please state"],
+    ["please", "please", "please", "please state", "please state your"],
+    ["please", "please", "please", "please state", "please state your", "please state your purpose"],
+  ];
+  let finals = [];
+  for (const transcripts of events) {
+    const results = transcripts.map((transcript) => result(transcript, true));
+    finals = applyResults(finals, 0, results);
+  }
+  assert.equal(mergeTranscript("", finals), "please state your purpose");
+});
+
+test("a revised prefix collapses even when the engine repunctuates it", () => {
+  // The engine capitalises and punctuates each revision differently, so the
+  // overlap has to be found on the words themselves.
+  const finals = ["please", "Please state", "Please state your", "Please state your purpose."];
+  assert.equal(mergeTranscript("", finals), "Please state your purpose.");
+});
+
+test("a phrase that extends one an earlier session already committed is not repeated", () => {
+  // The restart case and the prefix case at once: the new session opens by
+  // re-reporting the tail of what the last one heard.
+  assert.equal(mergeTranscript("how are you", ["you Jarvis"]), "how are you Jarvis");
+});
+
+test("genuinely new speech is still appended rather than swallowed", () => {
+  assert.equal(mergeTranscript("", ["How are you", "Jarvis"]), "How are you Jarvis");
+  assert.equal(mergeTranscript("open the pod bay", ["doors please"]), "open the pod bay doors please");
+});
+
 test("desktop Chrome's one-final-per-index stream still accumulates every phrase", () => {
   let finals = [];
   finals = applyResults(finals, 0, [result("How are you", true)]);

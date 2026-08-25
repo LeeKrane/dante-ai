@@ -151,7 +151,15 @@ const server = createServer(async (req, res) => {
   }
   try {
     const buf = await readFile(file);
-    const headers = { "Content-Type": MIME[extname(file)] || "application/octet-stream" };
+    // Nothing here carries a version in its name and nothing sent a validator,
+    // so a phone was free to heuristically cache app.js and go on running a
+    // build of it from days ago — which is a miserable way to test a fix on a
+    // device. The files are read off local disk per request; there is no
+    // bandwidth here worth trading for that.
+    const headers = {
+      "Content-Type": MIME[extname(file)] || "application/octet-stream",
+      "Cache-Control": "no-store",
+    };
     if (isBuild) {
       // A built page is model-written HTML with model-written inline script,
       // served from the same origin as this app. `sandbox allow-scripts` drops
