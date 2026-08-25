@@ -12,7 +12,9 @@ import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { loadSessionKinds, buildName } from "./lib/sessions.js";
-import { MAX_SESSIONS, newSessionId, refuseStart, startSession, tellSession } from "./lib/spawn-session.js";
+import {
+  MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession,
+} from "./lib/spawn-session.js";
 import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
@@ -476,6 +478,49 @@ function firstUnanswered(primitive, params) {
 // the model already said out loud about the request; it is fused onto whatever
 // comes next so the turn is one utterance instead of two. The corrective paths
 // below drop it deliberately -- an acknowledgement contradicts the correction.
+// One session in the roster, or a sentence saying why not. Shared by tell and
+// stop, because "which one did you mean" is the same question either way -- and
+// because resolving a name to the wrong session is the same mistake either way,
+// except that stop signals a real process.
+async function resolveSession(send, roster, query, preamble) {
+  const matches = matchSessions(roster, query);
+  if (matches.length === 0) {
+    await say(send, joinSpoken(preamble, "I do not know a session by that name, sir."));
+    return null;
+  }
+  if (matches.length > 1) {
+    // Never the first of several, and never by position: "the third one" is
+    // precisely the sentence that gets misheard.
+    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
+    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
+    return null;
+  }
+  return matches[0];
+}
+
+// Ask a session to stop, and confirm it did before saying so.
+async function dispatchStop(send, session, preamble, roster) {
+  const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
+  if (!record) return;
+
+  send({ type: "state", value: "thinking" });
+  const result = await stopSession(record);
+  if (!result.ok) {
+    log(`stop ${record.name} failed: ${result.error}`);
+    await say(send, joinSpoken(preamble, `I could not stop ${record.name}, sir. ${result.error}.`));
+    return;
+  }
+
+  // Anything still waiting for it can never be delivered now.
+  takeQueued(memoryStore, record.sessionId);
+  saveStore(memoryStore);
+  log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
+  await say(
+    send,
+    joinSpoken(preamble, result.alreadyGone ? `${record.name} had already finished, sir.` : `${record.name} is stopped, sir.`),
+  );
+}
+
 // Pass something on to a session that is already running.
 //
 // The gate is the whole stage. Resuming a session that is CURRENTLY WORKING is
@@ -484,20 +529,9 @@ function firstUnanswered(primitive, params) {
 // processes. So a busy session gets the message queued, and the roster poller
 // delivers it on the first tick that sees it idle.
 async function dispatchTell(send, session, preamble, roster) {
-  const matches = matchSessions(roster, session.name ?? session.repo);
-  if (matches.length === 0) {
-    await say(send, joinSpoken(preamble, "I do not know a session by that name, sir."));
-    return;
-  }
-  if (matches.length > 1) {
-    // Never the first of several. "Tell jarvis one" reaching the wrong session
-    // is a real instruction sent to real work.
-    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
-    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
-    return;
-  }
+  const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
+  if (!record) return;
 
-  const [record] = matches;
   const text = session.task ?? session.text ?? session.message;
 
   if (isWorking(record)) {
@@ -539,11 +573,14 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     await dispatchTell(send, session, preamble, roster);
     return;
   }
+  if (session.verb === "stop") {
+    await dispatchStop(send, session, preamble, roster);
+    return;
+  }
   if (session.verb !== "start") {
-    // Stopping a session is the next stage. Saying so is better than silence:
-    // the tag was stripped, so otherwise nothing would happen and nothing would
-    // explain why.
-    await say(send, joinSpoken(preamble, "I can only start sessions and talk to them so far, sir."));
+    // Saying so is better than silence: the tag was stripped, so otherwise
+    // nothing would happen and nothing would explain why.
+    await say(send, joinSpoken(preamble, "I can start a session, talk to one, or stop one, sir."));
     return;
   }
 

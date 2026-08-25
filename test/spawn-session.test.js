@@ -13,6 +13,7 @@ import {
   buildTellArgs,
   refuseStart,
   startSession,
+  stopSession,
   tellSession,
 } from "../lib/spawn-session.js";
 
@@ -388,4 +389,88 @@ test("a session that never answers is abandoned rather than waited on forever", 
 test("a follow-up with nowhere to run is refused before anything spawns", async () => {
   assert.equal((await tellSession({ sessionId: ID, text: "x" })).ok, false);
   assert.equal((await tellSession({ sessionId: ID, cwd: workspace, text: "" })).ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// stopSession
+// ---------------------------------------------------------------------------
+
+// A kill(2) stand-in over a set of pids that are "alive", so the polite-stop
+// sequence can be tested without a real process to sacrifice.
+function fakeKill(alive, { refuse = false, ignoresTerm = false } = {}) {
+  const signals = [];
+  const live = new Set(alive);
+  const kill = (pid, signal) => {
+    signals.push([pid, signal]);
+    if (refuse) {
+      const err = new Error("operation not permitted");
+      err.code = "EPERM";
+      throw err;
+    }
+    if (!live.has(pid)) {
+      const err = new Error("no such process");
+      err.code = "ESRCH";
+      throw err;
+    }
+    if (signal === "SIGTERM" && !ignoresTerm) live.delete(pid);
+  };
+  kill.signals = signals;
+  return kill;
+}
+
+test("stopping a session asks politely and confirms it went", async () => {
+  const kill = fakeKill([4242]);
+  const result = await stopSession({ pid: 4242, name: "jarvis-1" }, { kill });
+  assert.equal(result.ok, true);
+  assert.deepEqual(kill.signals[0], [4242, "SIGTERM"]);
+});
+
+test("a session mid-write is never killed outright", async () => {
+  // It is holding a real file in a real repository. The difference between a
+  // polite stop and a hard one is a half-written source file nobody asked for.
+  const kill = fakeKill([4242], { ignoresTerm: true });
+  const result = await stopSession({ pid: 4242 }, { kill, timeoutMs: 120, pollMs: 20 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /still running/);
+  assert.ok(!kill.signals.some(([, signal]) => signal === "SIGKILL"), JSON.stringify(kill.signals));
+});
+
+test("a session that had already finished is not a failure to stop it", async () => {
+  const result = await stopSession({ pid: 4242 }, { kill: fakeKill([]) });
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyGone, true);
+});
+
+test("a pid that could signal a whole process group is refused", async () => {
+  // kill(2) reads 0 as "my own process group" and a negative pid as that whole
+  // group. This is the one function that would act on it.
+  for (const pid of [0, -1, -4242, 1.5, "4242", null, undefined]) {
+    const kill = fakeKill([]);
+    const result = await stopSession({ pid }, { kill });
+    assert.equal(result.ok, false, String(pid));
+    assert.equal(kill.signals.length, 0, String(pid));
+  }
+});
+
+test("a session this process may not signal says so rather than claiming success", async () => {
+  const result = await stopSession({ pid: 4242 }, { kill: fakeKill([4242], { refuse: true }) });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not allowed/);
+});
+
+test("a real process really does stop", async () => {
+  // The fake above proves the sequence; this proves the sequence is the right
+  // one for an actual pid.
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    const result = await stopSession({ pid: child.pid }, { timeoutMs: 4000, pollMs: 50 });
+    assert.equal(result.ok, true);
+  } finally {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already stopped, which is what the assertion above wanted.
+    }
+  }
 });
