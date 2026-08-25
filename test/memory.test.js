@@ -608,3 +608,19 @@ test("workspaces survive a save and a load", () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("a path someone dictated with a tilde still resolves", () => {
+  // No shell is involved anywhere on this path, so nothing else would expand
+  // it — and "~/development/jarvis" is exactly what a person says out loud.
+  const home = fakeHome();
+  try {
+    assert.equal(
+      resolveWorkspacePath("~/development/jarvis", { home }),
+      join(home, "development", "jarvis"),
+    );
+    // A bare tilde is the home directory, which is still not a workspace.
+    assert.equal(resolveWorkspacePath("~", { home }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
