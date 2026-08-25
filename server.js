@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
+import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
@@ -172,6 +173,13 @@ function brainSession() {
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+// The durable channel. Unconfigured it is a working object whose posts return
+// null, so nothing below has to ask whether Slack exists -- and a missing
+// config file is not a startup error, because an assistant without Slack is
+// still an assistant.
+const slackCfg = loadSlackConfig();
+const slack = createSlack(slackCfg, { log });
 
 // ---------------------------------------------------------------------------
 // Static files
@@ -659,6 +667,17 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   log(`session started name=${name} id=${sessionId} cwd=${workspace.path}`);
   send({ type: "debug", stage: "session", msg: `started ${name}` });
 
+  // Not awaited. A Slack round trip is up to five seconds and the confirmation
+  // below is the answer to something someone just said out loud; making them
+  // wait on a notification would be exactly backwards. The thread id lands in
+  // memory whenever it arrives, and every later event for this session looks
+  // it up there.
+  slack.postParent(`${name} started - ${session.task ?? "no task given"}`).then((ts) => {
+    if (!ts) return;
+    rememberSession(memoryStore, sessionId, { slackTs: ts });
+    saveStore(memoryStore);
+  });
+
   // The preamble is the model's own confirmation, which is usually the whole
   // sentence. The name is added because it is how every later command refers to
   // this session, and hearing it once is what makes "stop jarvis three" possible.
@@ -1117,6 +1136,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Jarvis on http://0.0.0.0:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
+  console.log(`slack: ${slack.enabled ? `on (${slackCfg.channel})` : "off"}`);
   // Started once the server is actually up: a poller ticking behind a failed
   // listen() would be a child process every five seconds with nobody to tell.
   rosterPoller.start();
