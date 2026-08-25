@@ -116,7 +116,7 @@ test("returns a fresh result object every call, so a caller's edit cannot leak",
   const first = parseAction(null);
   first.reply = "mutated";
   first.action = { primitive: "leaked", params: {} };
-  assert.deepEqual(parseAction(undefined), { reply: "", action: null, memory: null });
+  assert.deepEqual(parseAction(undefined), { reply: "", action: null, memory: null, session: null });
 });
 
 test("strips quotes around values so a quoted primitive still dispatches", () => {
@@ -189,12 +189,12 @@ test("rejects pathological input promptly instead of backtracking", () => {
 
 test("never throws on malformed or non-string input", () => {
   for (const bad of [null, undefined, 42, {}, [], true, () => {}]) {
-    assert.deepEqual(parseAction(bad), { reply: "", action: null, memory: null });
+    assert.deepEqual(parseAction(bad), { reply: "", action: null, memory: null, session: null });
   }
-  assert.deepEqual(parseAction(""), { reply: "", action: null, memory: null });
-  assert.deepEqual(parseAction("[]"), { reply: "[]", action: null, memory: null });
-  assert.deepEqual(parseAction("[ACTION:BUILD]"), { reply: "", action: null, memory: null });
-  assert.deepEqual(parseAction("[ACTION:BUILD ===]"), { reply: "", action: null, memory: null });
+  assert.deepEqual(parseAction(""), { reply: "", action: null, memory: null, session: null });
+  assert.deepEqual(parseAction("[]"), { reply: "[]", action: null, memory: null, session: null });
+  assert.deepEqual(parseAction("[ACTION:BUILD]"), { reply: "", action: null, memory: null, session: null });
+  assert.deepEqual(parseAction("[ACTION:BUILD ===]"), { reply: "", action: null, memory: null, session: null });
 });
 
 test("returns clean speech, a dispatchable action, and captured preferences when both tags appear", () => {
@@ -244,4 +244,66 @@ test("matches the memory tag name regardless of case", () => {
 
   const mixed = parseAction("Noted. [Memory:Set Palette=dark]");
   assert.deepEqual(mixed.memory, { palette: "dark" });
+});
+
+// ---------------------------------------------------------------------------
+// [ACTION:SESSION ...]
+// ---------------------------------------------------------------------------
+
+test("a session tag says what to do to which repository", () => {
+  const { reply, session, action } = parseAction(
+    'Starting it now, sir. [ACTION:SESSION verb=start repo=jarvis task="fix the failing builder test" kind=tests]',
+  );
+  assert.equal(reply, "Starting it now, sir.");
+  assert.deepEqual(session, {
+    verb: "start",
+    repo: "jarvis",
+    task: "fix the failing builder test",
+    kind: "tests",
+  });
+  // A session is not a build, and dispatching one as the other would look up a
+  // primitive named after a repository.
+  assert.equal(action, null);
+});
+
+test("the verb is read whatever case it was written in", () => {
+  assert.deepEqual(parseAction("[action:session VERB=Start repo=jarvis task=x]").session, {
+    verb: "start",
+    repo: "jarvis",
+    task: "x",
+  });
+});
+
+test("a session tag with no verb is a garbled tag rather than a guess", () => {
+  assert.equal(parseAction("[ACTION:SESSION repo=jarvis task=x]").session, null);
+  assert.equal(parseAction("[ACTION:SESSION]").session, null);
+  assert.equal(parseAction("[ACTION:SESSION verb=]").session, null);
+});
+
+test("a build tag is still a build, and never a session", () => {
+  const { action, session } = parseAction("[ACTION:BUILD primitive=landing-page subject=coffee]");
+  assert.deepEqual(action, { primitive: "landing-page", params: { subject: "coffee" } });
+  assert.equal(session, null);
+});
+
+test("a session tag and a memory tag in one reply both apply", () => {
+  const { session, memory, reply } = parseAction(
+    'Noted. [MEMORY:SET palette=dark] [ACTION:SESSION verb=start repo=jarvis task="build it"]',
+  );
+  assert.equal(reply, "Noted.");
+  assert.deepEqual(memory, { palette: "dark" });
+  assert.equal(session.verb, "start");
+});
+
+test("two session tags in one reply means the first one, not both", () => {
+  // A model that changed its mind mid-sentence starts one session, not two.
+  const { session } = parseAction(
+    "[ACTION:SESSION verb=start repo=jarvis task=first] [ACTION:SESSION verb=start repo=jarvis task=second]",
+  );
+  assert.equal(session.task, "first");
+});
+
+test("a session tag is stripped from the spoken text like every other tag", () => {
+  const { reply } = parseAction("On it.\n[ACTION:SESSION verb=stop name=jarvis-1]");
+  assert.equal(reply, "On it.");
 });

@@ -11,11 +11,13 @@ import { listAgents } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
+import { loadSessionKinds, buildName } from "./lib/sessions.js";
+import { MAX_SESSIONS, newSessionId, refuseStart, startSession } from "./lib/spawn-session.js";
 import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
-  addWorkspace, applyWorkspaceTag, workspacePaths,
+  addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,11 @@ const auth = createAuth({ url: supabaseCfg.url, anonKey: supabaseCfg.anonKey, se
 // naming the file, rather than a silence in the middle of a conversation.
 const registry = await loadRegistry();
 
+// Read once at startup for the same reason the registry is: a half-saved edit
+// must not break a live conversation. An empty map is a working install --
+// free-form (a task and no kind) is the ordinary path.
+const sessionKinds = await loadSessionKinds();
+
 // What earlier runs left behind. One server serves one project, so the whole
 // store is keyed by the directory it was started in. Read once here; every
 // write below goes through saveStore, which is atomic.
@@ -80,10 +87,10 @@ if (addWorkspace(memoryStore, PROJECT_KEY)) saveStore(memoryStore);
 // restart, with nothing anywhere reporting why. Caveat: a --resume'd CLI session
 // keeps the system prompt it started with, so a refreshed persona is guaranteed
 // to reach the model on the next cold start rather than on the next turn.
-let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY));
+let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds);
 
 function refreshPersona() {
-  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY));
+  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds);
 }
 
 // One CLI for the whole server rather than a fresh one per sentence. Two thirds
@@ -418,6 +425,82 @@ function firstUnanswered(primitive, params) {
 // the model already said out loud about the request; it is fused onto whatever
 // comes next so the turn is one utterance instead of two. The corrective paths
 // below drop it deliberately -- an acknowledgement contradicts the correction.
+// Start a real Claude Code session in one of the workspaces, and say one
+// sentence about it. Everything that decides anything lives in lib/ -- which
+// repository (getWorkspace), whether to at all (refuseStart), what to call it
+// (buildName), what reaches the command line (buildStartArgs). This is the
+// wiring between them.
+//
+// It never waits for the session to do anything. That is the entire point of
+// starting one by voice: the confirmation is immediate, and the roster is what
+// reports what happened afterwards.
+async function dispatchSession(send, session, preamble = "", roster = null) {
+  if (session.verb !== "start") {
+    // Talking to and stopping sessions are the next stages. Saying so is better
+    // than silence: the tag was stripped, so otherwise nothing would happen and
+    // nothing would explain why.
+    await say(send, joinSpoken(preamble, "I can only start sessions so far, sir."));
+    return;
+  }
+
+  const workspace = getWorkspace(memoryStore, session.repo);
+  const live = Array.isArray(roster) ? roster : [];
+  const refusal = refuseStart(session, {
+    workspace,
+    workspaces: workspacePaths(memoryStore),
+    running: live.length,
+    max: MAX_SESSIONS,
+    // The oldest idle session is the obvious one to stop, and naming it is what
+    // makes a refusal actionable rather than a dead end.
+    oldestIdle: live.filter((r) => r.status === "idle").map((r) => r.name).find(Boolean),
+  });
+  if (refusal) {
+    log(`session refused: ${refusal}`);
+    await say(send, joinSpoken(preamble, refusal));
+    return;
+  }
+
+  const kind = sessionKinds.get(session.kind) ?? null;
+  // Reserved before the spawn, not after: two requests in flight must not be
+  // handed the same number, and a number burned by a failed start is cheaper
+  // than two sessions called jarvis-3.
+  const number = nextSessionNumber(memoryStore, workspace.alias);
+  saveStore(memoryStore);
+
+  const name = buildName(
+    { alias: workspace.alias, number, task: session.task, hint: kind?.nameHint?.({ task: session.task }) },
+    live.map((r) => r.name),
+  );
+  const sessionId = newSessionId();
+
+  const started = await startSession({
+    name,
+    sessionId,
+    cwd: workspace.path,
+    task: session.task,
+    systemPrompt: kind?.systemPrompt?.({ task: session.task, alias: workspace.alias }),
+    model: kind?.model,
+    effort: kind?.effort,
+  });
+
+  if (!started.ok) {
+    log(`session start failed name=${name} ${started.error}`);
+    send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
+    await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
+    return;
+  }
+
+  recordArtifact(memoryStore, PROJECT_KEY, { kind: "session", name, sessionId, alias: workspace.alias });
+  saveStore(memoryStore);
+  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}`);
+  send({ type: "debug", stage: "session", msg: `started ${name}` });
+
+  // The preamble is the model's own confirmation, which is usually the whole
+  // sentence. The name is added because it is how every later command refers to
+  // this session, and hearing it once is what makes "stop jarvis three" possible.
+  await say(send, joinSpoken(preamble, `Running as ${name}.`));
+}
+
 async function dispatchAction(send, conv, action, preamble = "") {
   log(`action primitive=${JSON.stringify(action.primitive)} params=${JSON.stringify(action.params)}`);
 
@@ -737,7 +820,7 @@ wss.on("connection", (ws) => {
       // The model may append machine-readable tags: one asking for a build, one
       // recording a standing preference. Split them off first -- a tag is for
       // dispatch, never for the voice.
-      const { reply, action, memory } = parseAction(spoken);
+      const { reply, action, memory, session } = parseAction(spoken);
 
       // Applied before dispatch, with nothing awaited in between: "make it dark
       // from now on and build me a landing page" has to have the preference on
@@ -784,7 +867,12 @@ wss.on("connection", (ws) => {
       // what it was asked behind for the call that supersedes it, and only the
       // sentences this reply addressed come off, so one said during synthesis is
       // still waiting afterwards.
-      if (action) {
+      if (session) {
+        // Same commitment as a build: whatever is said next, the session either
+        // started or was refused by the time this returns.
+        dropAnswered(conv.unanswered, answering);
+        await dispatchSession(send, session, reply, roster);
+      } else if (action) {
         // Dispatch is the commitment: the build is running from here, whatever is
         // said next, so the request that started it is settled even though the
         // kickoff line is still being synthesized.
@@ -861,6 +949,8 @@ server.on("error", (err) => {
 // serves what it wrote, which is not something to expose to the local network.
 server.listen(PORT, "0.0.0.0", () => {
   const ids = [...registry.keys()];
+  const kinds = [...sessionKinds.keys()];
   console.log(`Jarvis on http://0.0.0.0:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
+  console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
 });
