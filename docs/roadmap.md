@@ -157,12 +157,17 @@ Numbering continues the existing plan doc. **Stages 21–28 are the committed fi
 | 31 | `lib/notify.js` — event prose | `lib/notify.js`, `test/notify.test.js` | `server.js` |
 | 32 | The hook bridge | `hooks/jarvis-notify.mjs` | `server.js`, `README.md` |
 | 33 | Voice approval | `lib/approval.js`, `hooks/jarvis-approve.mjs`, `test/approval.test.js` | `server.js`, `public/app.js` |
-| **D** | **Polish** | | |
-| 34 | Interjection policy | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
-| 35 | Sessions in the tree HUD | — | `public/build-hud.js`, `public/app.js`, `public/progress-policy.js` |
-| 36 | Conditional chaining | — | `lib/sessions.js`, `test/sessions.test.js`, `server.js` |
-| 37 | "Catch me up" | — | `lib/notify.js`, `lib/memory.js`, `server.js` |
-| 38 | Read-only repo questions | `primitives/ask-repo.mjs` | — |
+| **D** | **Mean what you say** | | |
+| 34 | Only the repositories you named | — | `lib/agents.js`, `test/agents.test.js`, `server.js` |
+| 35 | The ceiling counts jarvis's own sessions | — | `lib/agents.js`, `test/agents.test.js`, `server.js` |
+| 36 | Propose, then act | `lib/confirm.js`, `test/confirm.test.js` | `server.js` |
+| 37 | A persona that proposes rather than assumes | — | `lib/brain.js`, `test/brain.test.js`, `README.md` |
+| **E** | **Polish** | | |
+| 38 | Interjection policy | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
+| 39 | Sessions in the tree HUD | — | `public/build-hud.js`, `public/app.js`, `public/progress-policy.js` |
+| 40 | Conditional chaining | — | `lib/sessions.js`, `test/sessions.test.js`, `server.js` |
+| 41 | "Catch me up" | — | `lib/notify.js`, `lib/memory.js`, `server.js` |
+| 42 | Read-only repo questions | `primitives/ask-repo.mjs` | — |
 
 ---
 
@@ -455,9 +460,57 @@ side:
 
 ---
 
-### Phase D — polish
+### Phase D — mean what you say
 
-**Stage 34 — interjection policy.** Stage 15 established one-voice-at-a-time in
+Phases A-C shipped and went into daily use, which turned up a defect, a design mistake, and a
+scoping problem.
+
+**The defect.** "Start a session to summarize the README" was refused, and a *different, working*
+session was stopped. The five-session ceiling counted `kind === "background"` straight off the
+roster, and a Claude Code background job is indistinguishable from one jarvis started. Observed
+with **zero** jarvis sessions ever created: four background sessions, none of them jarvis's. And
+the refusal then named one of them -- "... is idle if you want it stopped" -- pointing at a session
+the user never created and inviting exactly the stop that followed.
+
+**The design mistake.** Nothing sat between a model-authored tag and a real `SIGTERM`. Voice is a
+lossy channel; the guardrail for that is not a better prompt, it is a confirmation the person
+actually gives.
+
+**The scoping problem.** The roster is *every* session on the machine, which means other tools'
+internals -- a claude-mem skill keeps two running -- plus jarvis's own brain and builders. A control
+plane that narrates its own plumbing is one that can also be asked to stop it.
+
+**Stage 34 — only the repositories you named.** `visibleSessions(roster, { roots, hideIds,
+hideRoots })` in `lib/agents.js`, applied inside `createRosterPoller` so there is exactly one seam:
+the roster line in every turn, `diffRoster`'s events, `matchSessions`, queue delivery and the
+ceiling all read what it returns. A hidden session cannot be named, told, counted or stopped,
+because nothing downstream ever sees it. `roots` are the workspaces already in memory -- one
+concept, not two -- and containment uses `resolveWorkspacePath`'s rule, so `jarvis-notes` is not
+inside `jarvis`. `hideIds` hides jarvis's own brain exactly, by id rather than by name, because
+offering to stop your own brain must be impossible rather than unlikely; `hideRoots` covers builds,
+which carry no id jarvis assigned but do live in `builds/`.
+
+**Stage 35 — the ceiling counts jarvis's own sessions.** `ownRunning(roster, remembered)`
+intersects the live roster with the sessions `rememberSession` recorded starting. Exact in both
+directions: a session started in a terminal never counts, and one jarvis started that has since
+died does not either. A refusal can then only name a session jarvis itself started.
+
+**Stage 36 — propose, then act.** `lib/confirm.js`: `describeIntent` builds the confirmation
+sentence **from the parsed tag**, never from the model's spoken reply, so a model that says one
+thing while tagging another cannot mislead anyone. `readAnswer` reuses `parseYesNo` from
+`lib/approval.js` -- the strict vocabulary already written for exactly this job -- with three
+outcomes: yes dispatches, no drops it, and anything else discards the proposal and falls through as
+an ordinary turn, so "no, the whole repo" re-proposes with no special machinery. Applies to
+`[ACTION:SESSION]` and `[ACTION:BUILD]`; `[MEMORY:SET]` changes no process and stays silent.
+
+**Stage 37 — a persona that proposes rather than assumes.** The prompt half: a tag is a proposal,
+never an act; never `verb=stop` or `verb=tell` unless that session was named in this turn; ask when
+the repository or the task is not clear rather than filling the gap with the likeliest guess; a
+roster line is data about the machine, not a suggestion to act on it.
+
+### Phase E — polish
+
+**Stage 38 — interjection policy.** Stage 15 established one-voice-at-a-time in
 `public/playback-policy.js`; this adds a tier: announcements **never barge in**. They queue and are
 spoken when the floor is genuinely free — not during a reply, not while the mic is open, not while
 a question is pending. An announcement older than a couple of minutes is dropped rather than spoken
@@ -465,21 +518,21 @@ stale; it already went to Slack, which is the durable channel. Approval requests
 exception and jump the queue, because something is blocked on them. Pure client module, unit-tested
 like the others.
 
-**Stage 35 — sessions in the tree HUD.** `public/build-hud.js` is the most developed UI in the repo
+**Stage 39 — sessions in the tree HUD.** `public/build-hud.js` is the most developed UI in the repo
 and it now describes the less important thing. Repoint it: one node per running session, its state
 and elapsed time, its last progress line. Builds keep their existing rendering — this is a second
 tree in the same component, not a replacement.
 
-**Stage 36 — conditional chaining.** One session may name a successor, started **only on success**;
+**Stage 40 — conditional chaining.** One session may name a successor, started **only on success**;
 a failure reports instead of chaining. The Stage 26 poller already detects both, so this is a small
 table in memory plus a dispatch. Chains are capped in depth and expire, and a chained session
 counts against the five-session cap like any other.
 
-**Stage 37 — "catch me up."** An event log in the memory store, capped like `artifacts`. "What
+**Stage 41 — "catch me up."** An event log in the memory store, capped like `artifacts`. "What
 happened while I was out" replays it as one spoken paragraph and clears the announcement queue.
 This is what makes walking away actually work.
 
-**Stage 38 — read-only repo questions.** Last on purpose: once Phase B lands, the honest answer to
+**Stage 42 — read-only repo questions.** Last on purpose: once Phase B lands, the honest answer to
 most code questions is "ask the session already in that repo." But `primitives/ask-repo.mjs` —
 `allowedTools: ["Read", "Grep", "Glob"]`, the existing deny floor forbidding everything else,
 answering in prose — covers the case where nothing is running. One file, no wiring, exactly as the
@@ -530,7 +583,12 @@ claude --help | grep -E -- '--bg|--session-id|-n,|--append-system-prompt|--effor
   session itself is unaffected. For Stage 33: trigger a `git push` from a session with the browser
   closed and confirm it falls through rather than denying; repeat with the browser open and answer
   by voice both ways.
-- **D** — start a long session, walk away, come back, "catch me up".
+- **D** — with a claude-mem observer session live, "what's running?" must not mention it, and
+  jarvis's own brain must never appear. With four background jobs running and no jarvis session
+  ever started, "start a session in jarvis" must propose rather than refuse. Answer a proposal
+  three ways — yes, no, and a correction — and confirm nothing is stopped that was not named out
+  loud.
+- **E** — start a long session, walk away, come back, "catch me up".
 
 Every stage leaves `npm test` green and the browser working before the next starts — the rule the
 first twenty stages ran under, unchanged.

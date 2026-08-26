@@ -12,7 +12,7 @@ import { summarizeSession } from "./lib/transcript.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { createRosterPoller, isWorking, matchSessions } from "./lib/agents.js";
+import { createRosterPoller, isWorking, matchSessions, visibleSessions } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -81,6 +81,19 @@ const sessionKinds = await loadSessionKinds();
 // Started below, after the store is loaded, because the events name sessions
 // using the workspace aliases the store holds.
 const rosterPoller = createRosterPoller({
+  // Jarvis's business, and nothing else. `claude agents --json` lists every
+  // session on this machine, including other tools' internals and jarvis's own
+  // children, and reading those out loud was the least of it -- being able to
+  // stop one is a bug with a process on the end of it.
+  //
+  // Evaluated per tick rather than captured once, so naming a repository
+  // mid-conversation widens it on the next tick with no restart.
+  filter: (roster) => visibleSessions(roster, {
+    roots: Object.values(workspacePaths(memoryStore)),
+    hideIds: ownSessionIds(),
+    hideRoots: [BUILDS],
+  }),
+
   onEvents: (events, roster) => {
     for (const { kind, session } of events) {
       log(`session ${kind}: ${session.name ?? session.sessionId}`);
@@ -184,6 +197,19 @@ async function reportAttention(event) {
   const line = formatEvent({ kind: "needs-attention", name: remembered.name, detail: event.detail });
   log(`session needs attention: ${line}`);
   await postForSession(event.sessionId, line);
+}
+
+// The session ids of jarvis's own Claude processes: the warm brain, and
+// whatever a live tab is resumed against. Exact ids rather than names, because
+// "never offer to stop my own brain" has to be impossible, not unlikely.
+//
+// Builds are not here -- they carry no id jarvis assigned -- but they do run in
+// BUILDS, which the filter excludes by path instead.
+function ownSessionIds() {
+  const ids = new Set(sessions.values());
+  const remembered = getProject(memoryStore, PROJECT_KEY)?.sessionId;
+  if (remembered) ids.add(remembered);
+  return ids;
 }
 
 // ---------------------------------------------------------------------------

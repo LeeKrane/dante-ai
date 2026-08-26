@@ -14,6 +14,7 @@ import {
   diffRoster,
   listAgents,
   parseRoster,
+  visibleSessions,
 } from "../lib/agents.js";
 
 // A real listing, copied verbatim off this machine. Six sessions, and the point
@@ -661,4 +662,138 @@ test("a name that merely shares a word is not a match", () => {
   const roster = rosterOf(session({ sessionId: "a", name: "review" }));
   assert.deepEqual(matchSessions(roster, "review-the-changes"), []);
   assert.deepEqual(matchSessions(roster, "code review please"), []);
+});
+
+// ---------------------------------------------------------------------------
+// visibleSessions
+// ---------------------------------------------------------------------------
+
+const JARVIS = "/home/krane/development/jarvis";
+const FITNESS = "/home/krane/development/KraneticFitness";
+
+test("a session in a repository you never named does not exist", () => {
+  // The one that started this: a claude-mem skill keeps a session running in
+  // its own directory, and jarvis was reading it out loud.
+  const roster = rosterOf(
+    session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: JARVIS }),
+    session({ sessionId: "b-0000000-0000-0000-0000-000000000000", cwd: "/home/krane/.claude-mem/observer-sessions" }),
+  );
+  const visible = visibleSessions(roster, { roots: [JARVIS] });
+  assert.deepEqual(visible.map((r) => r.cwd), [JARVIS]);
+});
+
+test("a repository named out loud widens what is visible, with no restart", () => {
+  const roster = rosterOf(
+    session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: JARVIS }),
+    session({ sessionId: "b-0000000-0000-0000-0000-000000000000", cwd: FITNESS }),
+  );
+  assert.equal(visibleSessions(roster, { roots: [JARVIS] }).length, 1);
+  assert.equal(visibleSessions(roster, { roots: [JARVIS, FITNESS] }).length, 2);
+});
+
+test("a subdirectory of a named repository is inside it", () => {
+  const roster = rosterOf(session({ cwd: `${JARVIS}/lib` }));
+  assert.equal(visibleSessions(roster, { roots: [JARVIS] }).length, 1);
+  assert.equal(visibleSessions(roster, { roots: [`${JARVIS}/`] }).length, 1, "a trailing slash is the same root");
+});
+
+test("a sibling that merely starts with the same name is outside", () => {
+  // The failure a plain startsWith would produce, and the reason within() is
+  // the same rule resolveWorkspacePath uses.
+  const roster = rosterOf(session({ cwd: `${JARVIS}-notes` }));
+  assert.deepEqual(visibleSessions(roster, { roots: [JARVIS] }), []);
+});
+
+test("a session that cannot be placed anywhere is nobody's business", () => {
+  const roster = rosterOf(session({ cwd: null }), session({ cwd: "" }));
+  assert.deepEqual(visibleSessions(roster, { roots: [JARVIS] }), []);
+});
+
+test("with nothing named, nothing is visible", () => {
+  // A whitelist that is empty means empty. Defaulting to "everything" here
+  // would put the bug back the first time the store failed to load.
+  const roster = rosterOf(session({ cwd: JARVIS }));
+  assert.deepEqual(visibleSessions(roster, {}), []);
+  assert.deepEqual(visibleSessions(roster, { roots: [] }), []);
+  assert.deepEqual(visibleSessions(roster, { roots: [null, 42, ""] }), []);
+});
+
+test("jarvis's own brain is hidden by id, not by name", () => {
+  // Exact, because "never offer to stop my own brain" must be impossible
+  // rather than unlikely -- and the brain runs in the jarvis repo, which is a
+  // named workspace, so the whitelist alone would show it.
+  const brain = "1111aaaa-0000-0000-0000-000000000000";
+  const roster = rosterOf(
+    session({ sessionId: brain, cwd: JARVIS, name: "jarvis" }),
+    session({ sessionId: "2222bbbb-0000-0000-0000-000000000000", cwd: JARVIS, name: "jarvis-1-fix" }),
+  );
+  const visible = visibleSessions(roster, { roots: [JARVIS], hideIds: [brain] });
+  assert.deepEqual(visible.map((r) => r.name), ["jarvis-1-fix"]);
+  assert.deepEqual(
+    visibleSessions(roster, { roots: [JARVIS], hideIds: new Set([brain]) }).map((r) => r.name),
+    ["jarvis-1-fix"],
+    "a Set works as well as an array",
+  );
+});
+
+test("a build is hidden by where it runs, because it has no id jarvis knows", () => {
+  const builds = `${JARVIS}/builds`;
+  const roster = rosterOf(
+    session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: `${builds}/2026-08-26T10-00-00`, name: "landing-page" }),
+    session({ sessionId: "b-0000000-0000-0000-0000-000000000000", cwd: JARVIS, name: "jarvis-1-fix" }),
+  );
+  const visible = visibleSessions(roster, { roots: [JARVIS], hideRoots: [builds] });
+  assert.deepEqual(visible.map((r) => r.name), ["jarvis-1-fix"]);
+});
+
+test("a roster jarvis could not read is not an empty one", () => {
+  assert.deepEqual(visibleSessions(null, { roots: [JARVIS] }), []);
+  assert.deepEqual(visibleSessions(undefined, { roots: [JARVIS] }), []);
+  assert.deepEqual(visibleSessions("not a roster", { roots: [JARVIS] }), []);
+});
+
+test("the poller filters before it diffs, so a hidden session never becomes an event", () => {
+  // The whole point of putting the filter in the poller: if it ran later, a
+  // hidden session appearing would still fire a "started" event, and something
+  // downstream would report on a session nobody may see.
+  const hidden = "/home/krane/.claude-mem/observer-sessions";
+  const seen = [];
+  const poller = createRosterPoller({
+    list: scripted(
+      rosterOf(session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: JARVIS })),
+      rosterOf(
+        session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: JARVIS }),
+        session({ sessionId: "b-0000000-0000-0000-0000-000000000000", cwd: hidden }),
+      ),
+    ),
+    filter: (roster) => visibleSessions(roster, { roots: [JARVIS] }),
+    maxAgeMs: 0,
+    onEvents: (events) => seen.push(...events),
+  });
+  return (async () => {
+    await poller.read();
+    await poller.read();
+    poller.stop();
+    assert.deepEqual(seen, []);
+    assert.equal(poller.current().length, 1);
+  })();
+});
+
+test("a filter that throws reads as a failed listing, never as an empty machine", () => {
+  // Empty would mean every live session just ended, which is a pile of false
+  // completion reports and a dropped queue.
+  const seen = [];
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session({ cwd: JARVIS }))),
+    filter: () => { throw new Error("store unreadable"); },
+    maxAgeMs: 0,
+    onEvents: (events) => seen.push(...events),
+  });
+  return (async () => {
+    await poller.read();
+    await poller.read();
+    poller.stop();
+    assert.deepEqual(seen, []);
+    assert.equal(poller.current(), null);
+  })();
 });
