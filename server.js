@@ -8,6 +8,7 @@ import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
+import { describeIntent, isAnswerable, readAnswer } from "./lib/confirm.js";
 import { summarizeSession } from "./lib/transcript.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
@@ -308,6 +309,68 @@ async function answerApproval(send, text) {
   log(`approval ${answer}: ${question.name}`);
   question.finish(buildDecision(answer, `${answer === "yes" ? "approved" : "denied"} by voice`));
   await say(send, answer === "yes" ? `Allowed, sir.` : `Denied, sir.`);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Propose, then act
+// ---------------------------------------------------------------------------
+
+// Everything jarvis can do to a live process used to run the moment a model
+// wrote a tag. It showed: a request to start a session once ended with a
+// different, working session stopped. So a tag becomes a proposal, and the next
+// thing said decides it.
+//
+// propose(send, conv, intent, run) -> true when it was held for an answer.
+//
+// The spoken sentence comes from lib/confirm.js, built from the parsed tag --
+// the model's own reply is dropped for any turn that carried one, so what is
+// heard is always what will run. A tag nothing can describe is not held back:
+// the dispatcher explains itself better than a confirmation nobody understands.
+async function propose(send, conv, intent, run) {
+  const spoken = describeIntent(intent);
+  if (!spoken) return false;
+
+  conv.proposal = { run, spoken, at: Date.now() };
+  log(`proposed: ${spoken}`);
+  await say(send, spoken);
+  return true;
+}
+
+// The answer, if that is what this was. Returns true when the words were spent
+// on the proposal, which is what stops them from also being a new turn.
+async function answerProposal(send, conv, text) {
+  const proposal = conv.proposal;
+  if (!proposal) return false;
+
+  // Expired proposals are not answerable at all -- not even by "no". Agreeing
+  // ten minutes later is agreeing to something the person stopped thinking
+  // about, and there is a real process on the end of it.
+  if (!isAnswerable(proposal.at)) {
+    conv.proposal = null;
+    log("proposal expired");
+    return false;
+  }
+
+  const answer = readAnswer(text);
+  // A correction is not an answer. The proposal is dropped and the sentence
+  // goes on to be an ordinary turn -- the warm CLI still holds its own proposal
+  // in context, so "no, the whole repo" re-proposes correctly by itself.
+  if (answer === "amend") {
+    conv.proposal = null;
+    log(`proposal amended: ${JSON.stringify(text)}`);
+    return false;
+  }
+
+  conv.proposal = null;
+  if (answer === "no") {
+    log("proposal declined");
+    await say(send, "Very good, sir. Leaving it.");
+    return true;
+  }
+
+  log(`proposal accepted: ${proposal.spoken}`);
+  await proposal.run();
   return true;
 }
 
@@ -1187,7 +1250,7 @@ wss.on("connection", (ws) => {
   // the call in flight, and `settled` is how the next one waits for the abandoned
   // child to finish dying -- two of them resuming one session id at the same
   // time is the race this whole arrangement exists to avoid.
-  const conv = { pending: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
+  const conv = { pending: null, proposal: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
   const gate = createTurnGate();
 
   // Read fresh from the store rather than from a boot-time snapshot: a second
@@ -1210,6 +1273,10 @@ wss.on("connection", (ws) => {
       // An approval outranks everything, including a half-finished build
       // question: a real process is blocked on it right now.
       if (await answerApproval(send, msg.text)) return;
+
+      // Then a proposal waiting on a yes. Above conv.pending because a build
+      // question is part of a build already agreed to; this is the agreement.
+      if (await answerProposal(send, conv, msg.text)) return;
 
       // An outstanding question owns the next thing said: it is an answer, not a
       // new turn, so it goes to the build rather than to the chat model.
@@ -1331,16 +1398,23 @@ wss.on("connection", (ws) => {
       // sentences this reply addressed come off, so one said during synthesis is
       // still waiting afterwards.
       if (session) {
-        // Same commitment as a build: whatever is said next, the session either
-        // started or was refused by the time this returns.
+        // The request is settled either way: it is now a proposal waiting on a
+        // yes, or it was undescribable and dispatched as before.
         dropAnswered(conv.unanswered, answering);
-        await dispatchSession(send, session, reply, roster);
+        // No preamble on the dispatch. The model's reply was already replaced
+        // by the proposal, and repeating it after the yes would say the same
+        // thing twice.
+        const held = await propose(send, conv, { session, workspace: getWorkspace(memoryStore, session.repo) },
+          // Read again on the way in: the roster that produced the proposal is
+          // however many seconds old the answer took to arrive, and a stop
+          // resolves a name against a real process.
+          async () => dispatchSession(send, session, "", await rosterPoller.read()));
+        if (!held) await dispatchSession(send, session, reply, roster);
       } else if (action) {
-        // Dispatch is the commitment: the build is running from here, whatever is
-        // said next, so the request that started it is settled even though the
-        // kickoff line is still being synthesized.
         dropAnswered(conv.unanswered, answering);
-        await dispatchAction(send, conv, action, reply);
+        const held = await propose(send, conv, { action, primitive: registry.get(action.primitive) },
+          () => dispatchAction(send, conv, action, ""));
+        if (!held) await dispatchAction(send, conv, action, reply);
       } else if (reply) {
         if (await say(send, reply, undefined, () => gate.isCurrent(token))) {
           dropAnswered(conv.unanswered, answering);
@@ -1375,6 +1449,7 @@ wss.on("connection", (ws) => {
     const sessionId = sessions.get(ws);
     sessions.delete(ws);
     conv.pending = null;
+    conv.proposal = null;
     // A question already asked is left to time out rather than answered by a
     // closing tab. Nothing is decided by a page going away.
     if (voice === send) voice = null;
