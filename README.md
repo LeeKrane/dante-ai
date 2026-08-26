@@ -134,7 +134,24 @@ it sees the ones you started in a terminal too — and you can drive them:
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and sessions in it are then
-`fitness-1`, `fitness-2`.
+`fitness-1`, `fitness-2`. That list is also the **whitelist**: jarvis only sees
+sessions running inside a repository you named out loud, so another tool's
+background sessions — and jarvis's own brain and builders — never appear, and
+cannot be named, told anything, or stopped.
+
+**It proposes; you decide.** Nothing above runs on the model's say-so. Every
+session command and every build is spoken back as one sentence first, built from
+the parsed tag rather than from what the model said around it, so what you hear
+is what will run:
+
+> *"make me a README summary session"*
+> — **"Start a session in jarvis to summarize the README. Shall I, sir?"**
+> — *"yes"* → it starts. *"no"* → nothing runs. *"no, the whole repo"* → it
+> re-proposes the corrected version.
+
+A proposal expires after two minutes and is then not answerable at all. The
+five-session ceiling counts only sessions jarvis itself started — your terminals
+and other tools' background jobs are not its business.
 
 These sessions run under **your** settings, permissions, hooks and MCP servers —
 the same session you'd have started by typing `claude` there. Jarvis imposes no

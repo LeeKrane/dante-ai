@@ -128,3 +128,32 @@ test("the persona explains how a repository is named, or the workspace tag is ne
   assert.match(persona, /workspace:<name>/);
   assert.match(persona, /\[MEMORY:SET workspace:/);
 });
+
+// ---------------------------------------------------------------------------
+// Proposing rather than assuming
+// ---------------------------------------------------------------------------
+
+// The kinds map buildPersona reads: id and triggers are all the sessions block
+// takes off each entry.
+const kinds = new Map([["review", { id: "review", triggers: ["review"] }]]);
+
+test("a build tag is taught as a proposal, not as something already done", () => {
+  const persona = brain.buildPersona(registry);
+  assert.match(persona, /A tag is a PROPOSAL, not an act/);
+  assert.match(persona, /Jesse is asked to confirm it before anything runs/);
+});
+
+test("the persona forbids stopping or telling a session nobody asked about", () => {
+  // The rule that exists because a request to START one ended with a
+  // different, working session STOPPED.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /NEVER emit verb=tell or verb=stop unless Jesse asked you, in this turn/);
+  assert.match(persona, /running-sessions line is something\s+you were told about/);
+});
+
+test("the persona says to ask rather than fill a gap in, on both tags", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  // Once for builds, once for sessions: a model that guesses a repository is
+  // the same failure as one that guesses a subject.
+  assert.equal(persona.match(/ask him\b/g)?.length, 2);
+});
