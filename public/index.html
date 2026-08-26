@@ -73,9 +73,10 @@
     display: grid; justify-items: center; gap: 12px;
     padding: 0 20px calc(30px + env(safe-area-inset-bottom));
   }
-  /* The record button stays centred whether or not the cancel button is beside
-     it: #cancel is positioned against this wrapper rather than laid out next to
-     #mic, so its appearance cannot shove #mic sideways mid-sentence. */
+  /* The record button stays centred whether or not the cancel or volume
+     controls are beside it: both are positioned against this wrapper rather
+     than laid out next to #mic, the same trick on opposite sides, so neither
+     one's appearance (or a longer/shorter fader) can shove #mic sideways. */
   #talk { position: relative; display: inline-flex; }
   #cancel {
     position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
@@ -92,6 +93,11 @@
      the way out sits under it rather than off the edge of the display. */
   @media (max-width: 520px) {
     #cancel { left: 50%; top: 100%; transform: translate(-50%, 0); margin: 10px 0 0; }
+    /* Mirrors #cancel's move under the button; shifted off its centreline so
+       the two don't land on top of each other on the rare occasion both are
+       visible (a build's own confirmation clip landing while the fader is
+       still open from the last one). */
+    #volume { right: auto; left: 50%; top: 100%; transform: translate(-135%, 0); margin: 10px 0 0; }
   }
   #mic {
     appearance: none; display: inline-flex; align-items: center; gap: 12px;
@@ -117,6 +123,61 @@
   }
   #mic.pressed .dot { animation: none; transform: scale(1.55); }
   #hint { font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+  /* A speaker button that reveals a vertical fader above it on hover, focus, or
+     tap — the fader itself is a horizontal range input rotated -90deg, which is
+     the one styling trick that behaves the same across Chrome, Safari and
+     Firefox; the alternative (a native `orient="vertical"` attribute) is
+     Firefox-only. */
+  /* Mirrors #cancel on the opposite side of #talk (see the comment up there):
+     absolutely positioned against the wrapper so #mic never moves for it. */
+  #volume {
+    position: absolute; right: 100%; top: 50%; transform: translateY(-50%);
+    margin-right: 12px; display: inline-flex;
+  }
+  #vol-btn {
+    appearance: none; width: 28px; height: 28px; border-radius: 50%;
+    border: 1px solid var(--line); background: rgba(255,255,255,.03);
+    color: var(--muted); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: color .18s ease, border-color .18s ease, background .18s ease;
+  }
+  #vol-btn svg { width: 15px; height: 15px; display: block; }
+  #vol-btn:hover, #volume.open #vol-btn { color: var(--ink); border-color: rgba(120,210,240,.5); background: rgba(255,255,255,.06); }
+  #vol-pop {
+    position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 14px 10px 12px; border-radius: 14px;
+    border: 1px solid var(--line); background: rgba(6,13,20,.92); backdrop-filter: blur(6px);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  /* Shown/hidden by .open alone, not :hover — app.js adds it on
+     mouseenter/focusin and only removes it after a delay on
+     mouseleave/focusout, so the fader outlives the pointer crossing the dead
+     space back to it, and outlives a drag that strays outside both elements.
+     A plain :hover rule can't linger; it drops the instant the pointer leaves. */
+  #volume.open #vol-pop { opacity: 1; visibility: visible; pointer-events: auto; }
+  #vol-track { width: 32px; height: 104px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #vol-range {
+    appearance: none; -webkit-appearance: none;
+    width: 96px; height: 22px; margin: 0; background: transparent;
+    transform: rotate(-90deg); cursor: pointer; touch-action: none;
+  }
+  #vol-range::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--line); }
+  #vol-range::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line); }
+  #vol-range::-webkit-slider-thumb {
+    appearance: none; -webkit-appearance: none;
+    width: 16px; height: 16px; border-radius: 50%; margin-top: -6px;
+    background: var(--cyan); box-shadow: 0 0 10px var(--cyan); border: none;
+  }
+  #vol-range::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--cyan); box-shadow: 0 0 10px var(--cyan); border: none;
+  }
+  #vol-label {
+    font: 500 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--muted); letter-spacing: .04em; font-variant-numeric: tabular-nums;
+  }
   kbd {
     font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; border-radius: 5px;
     border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--ink);
@@ -265,6 +326,21 @@
     </div>
     <div id="controls">
       <div id="talk">
+        <div id="volume">
+          <div id="vol-pop">
+            <div id="vol-track">
+              <input id="vol-range" type="range" min="0" max="4" step="0.1" value="1" aria-label="Volume" aria-orientation="vertical">
+            </div>
+            <span id="vol-label">100%</span>
+          </div>
+          <button id="vol-btn" type="button" aria-label="Volume">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="4,10 8,10 12,6 12,18 8,14 4,14" fill="currentColor" stroke="none"></polygon>
+              <path d="M15.5 9a4 4 0 0 1 0 6"></path>
+              <path d="M18 6.5a8 8 0 0 1 0 11"></path>
+            </svg>
+          </button>
+        </div>
         <button id="mic" type="button"><span class="dot"></span> Hold to talk</button>
         <button id="cancel" class="hidden" type="button" aria-label="Stop speaking">Stop</button>
       </div>

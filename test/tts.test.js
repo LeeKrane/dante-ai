@@ -18,6 +18,16 @@ test("omits prosody at speed 1", () => {
   assert.equal(r.body.prosody, undefined);
 });
 
+test("sends volume in prosody when set", () => {
+  const r = buildTtsRequest("hi", { ...cfg, speed: 1, volume: 5 });
+  assert.deepEqual(r.body.prosody, { volume: 5 });
+});
+
+test("carries both speed and volume together", () => {
+  const r = buildTtsRequest("hi", { ...cfg, volume: -3 });
+  assert.deepEqual(r.body.prosody, { speed: 1.1, volume: -3 });
+});
+
 test("fish is asked to start sending before the clip is finished", () => {
   // "normal" holds the whole clip server-side and sends it in one go: measured
   // 2213 ms to the first byte against 2256 ms for the last. "balanced" puts the

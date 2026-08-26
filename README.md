@@ -43,7 +43,8 @@ mkdir -p ~/.config/fish-audio && cat > ~/.config/fish-audio/speak.json <<'EOF'
   "voiceId": "e13fa398a7f445a685316a3de6089ce7",
   "model": "s2.1-pro-free",
   "format": "mp3",
-  "speed": 1.1
+  "speed": 1.1,
+  "volume": 5.0
 }
 EOF
 ```
@@ -91,6 +92,18 @@ the on-screen button), talk, release.
 about 800 ms a turn. Interrupt yourself and the sentences merge rather than
 queue; the answer to a superseded turn is never spoken. Audio streams as it
 arrives, so the first sound lands well before the sentence is finished.
+
+**Volume.** A speaker button to the left of the record button reveals a
+vertical fader on hover (or a tap, on touch) that raises or lowers how loud
+replies play on this browser, remembered per browser (`localStorage`) rather
+than per server. The label reads 0–200%, with 100% the clip exactly as Fish
+sent it; the actual `GainNode` ceiling behind that "200%" is a 4x boost, not
+2x — the label names what "as loud as this goes" means rather than the raw
+multiplier, so it can be raised for more headroom later without the number on
+screen changing what it promises. Separate from the `volume` set in
+`speak.json` — that one asks Fish to synthesize a louder clip once for
+everyone; this one is local, and it is the only way to go louder than the clip
+Fish actually sent.
 
 **Memory** — `~/.config/jarvis/memory.json`, keyed by the directory the server was
 started in. It keeps the resumable session id, a rolling summary written when you
@@ -222,7 +235,8 @@ prompt-injected tool description argue for its own approval.
   as a "JARVIS" character and calls you *sir*. It is the only half of the system
   prompt written by hand; what it can build is generated from `primitives/`
   underneath, so rewriting the voice never breaks the builds.
-- **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed.
+- **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed, and
+  `volume` (-20 to 20, omit for Fish's default).
 - **`server.js` → `WG_IP`** — the one non-loopback address allowed to reach the
   server. Set it to your VPN address, or drop it to stay local-only.
 

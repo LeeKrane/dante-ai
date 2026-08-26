@@ -9,6 +9,14 @@ import {
   shouldShowCancel,
   stateAfterClip,
 } from "./playback-policy.js";
+import {
+  clampVolume,
+  parseStoredVolume,
+  formatVolumePercent,
+  MIN_VOLUME,
+  MAX_VOLUME,
+  VOLUME_STEP,
+} from "./volume-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
@@ -19,6 +27,10 @@ const canvas = document.getElementById("orb");
 const ctx = canvas.getContext("2d");
 const dbgEl = document.getElementById("dbg");
 const audioEl = document.getElementById("clip");
+const volumeEl = document.getElementById("volume");
+const volBtn = document.getElementById("vol-btn");
+const volRange = document.getElementById("vol-range");
+const volLabel = document.getElementById("vol-label");
 const progEl = document.getElementById("progress");
 const artifactEl = document.getElementById("artifact");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -196,6 +208,98 @@ let playbackHandoff = null;
 // The clip being received off the wire, which is not always the clip being
 // heard: without MediaSource nothing is audible until the last chunk has landed.
 let incoming = null;
+
+// ---- Volume (a GainNode shared by both playback paths) ----
+//
+// Local to this browser and this machine, and separate from the `volume` a
+// person can set in ~/.config/fish-audio/speak.json: that one asks Fish to
+// synthesize a louder clip, once, for everyone who ever hears it; this one
+// turns a knob on the way from the speakers on this one machine, and it is the
+// only way to go louder than the clip Fish actually sent. Wrapped in try/catch
+// throughout because a private tab or a browser with storage disabled throws on
+// touching localStorage at all, and a volume button must not be able to break
+// the rest of the page over that.
+const VOLUME_KEY = "jarvis-volume";
+let volume = loadVolume();
+function loadVolume() {
+  try { return parseStoredVolume(localStorage.getItem(VOLUME_KEY)); }
+  catch { return clampVolume(1); }
+}
+let gainNode = null;
+
+// Created once the AudioContext exists and reused by both the streamed and the
+// buffered playback path, so turning the knob mid-clip is heard immediately
+// either way rather than only on the next reply.
+function ensureGain() {
+  if (gainNode) return gainNode;
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = volume;
+  gainNode.connect(audioCtx.destination);
+  return gainNode;
+}
+
+function renderVolume() {
+  if (volLabel) volLabel.textContent = formatVolumePercent(volume);
+  // Only touched when it does not already match: dragging is `input` firing on
+  // every pointer move, and writing `.value` back mid-drag on some browsers
+  // resets the pointer's grab offset and makes the thumb stutter.
+  if (volRange && volRange.value !== String(volume)) volRange.value = String(volume);
+}
+
+function setVolume(v) {
+  volume = clampVolume(v);
+  if (gainNode) gainNode.gain.value = volume;
+  try { localStorage.setItem(VOLUME_KEY, String(volume)); } catch { /* storage unavailable */ }
+  // The one bit of this that is genuinely hard to eyeball: whether the fader
+  // reached the node at all. Visible in the diagnostics panel (key `d`) without
+  // needing a clip in flight to hear the difference.
+  dbg(`volume ${formatVolumePercent(volume)}${gainNode ? "" : " (no clip has played yet — applied on the next one)"}`);
+  renderVolume();
+}
+
+if (volRange) {
+  volRange.min = String(MIN_VOLUME);
+  volRange.max = String(MAX_VOLUME);
+  volRange.step = String(VOLUME_STEP);
+}
+volRange?.addEventListener("input", () => setVolume(Number(volRange.value)));
+
+// The fader's visibility is driven entirely by #volume.open (CSS above), not
+// by :hover — a plain :hover rule drops the instant the pointer leaves, and
+// the whole point here is that it doesn't: leaving the button (or the dead
+// space on the way to the track, or the track mid-drag) starts a timer rather
+// than closing immediately, so a slightly wobbly mouse never slams the fader
+// shut under the cursor.
+let volCloseTimer = null;
+function openVolume() {
+  clearTimeout(volCloseTimer);
+  volumeEl?.classList.add("open");
+}
+function scheduleCloseVolume() {
+  clearTimeout(volCloseTimer);
+  volCloseTimer = setTimeout(() => volumeEl?.classList.remove("open"), 250);
+}
+function closeVolumeNow() {
+  clearTimeout(volCloseTimer);
+  volumeEl?.classList.remove("open");
+}
+// mouseenter/mouseleave (unlike mouseover/mouseout) don't fire when the
+// pointer merely crosses from the button to the track or back — both live
+// inside #volume — so these only fire on the real boundary of the component.
+volumeEl?.addEventListener("mouseenter", openVolume);
+volumeEl?.addEventListener("mouseleave", scheduleCloseVolume);
+// focusin/focusout cover keyboard tabbing to the range input, and touch:
+// tapping the range thumb focuses it same as a click would.
+volumeEl?.addEventListener("focusin", openVolume);
+volumeEl?.addEventListener("focusout", scheduleCloseVolume);
+// A tap on the button itself, on a device with no hover at all, has to open
+// it outright rather than wait on a mouseenter that will never come.
+volBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  volumeEl?.classList.contains("open") ? closeVolumeNow() : openVolume();
+});
+document.addEventListener("click", closeVolumeNow);
+renderVolume();
 
 // ---- WebSocket ----
 const ws = new WebSocket(`ws://${location.host}`);
@@ -469,7 +573,9 @@ function ensureGraph() {
   an.fftSize = 512;
   an.smoothingTimeConstant = 0.78;
   node.connect(an);
-  an.connect(audioCtx.destination);
+  // Through the shared gain node rather than straight to the speakers, so the
+  // volume buttons reach a clip already streaming, not just the next one.
+  an.connect(ensureGain());
   mediaGraph = { analyser: an };
   return mediaGraph;
 }
@@ -655,7 +761,7 @@ async function playBuffered(chunks, nextState) {
   const an = audioCtx.createAnalyser();
   an.fftSize = 512;
   an.smoothingTimeConstant = 0.78;
-  src.connect(an); an.connect(audioCtx.destination);
+  src.connect(an); an.connect(ensureGain());
   analyser = an;
   freqBins = new Uint8Array(an.frequencyBinCount);
   timeBins = new Uint8Array(an.fftSize);
