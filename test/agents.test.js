@@ -13,6 +13,7 @@ import {
   matchSessions,
   diffRoster,
   listAgents,
+  ownRunning,
   parseRoster,
   visibleSessions,
 } from "../lib/agents.js";
@@ -796,4 +797,78 @@ test("a filter that throws reads as a failed listing, never as an empty machine"
     assert.deepEqual(seen, []);
     assert.equal(poller.current(), null);
   })();
+});
+
+// ---------------------------------------------------------------------------
+// ownRunning
+// ---------------------------------------------------------------------------
+
+const MINE = "1111aaaa-0000-0000-0000-000000000000";
+const YOURS = "2222bbbb-0000-0000-0000-000000000000";
+
+test("a background job jarvis did not start does not fill the ceiling", () => {
+  // The bug this function exists for. Four background sessions were live, none
+  // of them jarvis's, and every start was refused at four of five.
+  const roster = rosterOf(
+    session({ sessionId: YOURS, kind: "background", name: "roadmap-expansion" }),
+    session({ sessionId: "3333cccc-0000-0000-0000-000000000000", kind: "background", name: "Empty Environment" }),
+  );
+  assert.deepEqual(ownRunning(roster, {}), { running: 0, oldestIdle: null });
+});
+
+test("only the sessions the store recorded starting are counted", () => {
+  const roster = rosterOf(
+    session({ sessionId: MINE, name: "jarvis-1-fix" }),
+    session({ sessionId: YOURS, name: "some terminal" }),
+  );
+  assert.equal(ownRunning(roster, { [MINE]: { name: "jarvis-1-fix" } }).running, 1);
+});
+
+test("a session jarvis started that has since died does not count either", () => {
+  // The store keeps the last twenty, live or not; the roster is what says which
+  // of them still exist.
+  const roster = rosterOf(session({ sessionId: MINE, name: "jarvis-1-fix" }));
+  const remembered = { [MINE]: {}, [YOURS]: {}, "4444dddd-0000-0000-0000-000000000000": {} };
+  assert.equal(ownRunning(roster, remembered).running, 1);
+});
+
+test("the oldest idle one of jarvis's own is the one worth naming", () => {
+  const roster = rosterOf(
+    session({ sessionId: MINE, name: "jarvis-1-old", startedAt: 1000, state: "done", status: "idle" }),
+    session({ sessionId: YOURS, name: "jarvis-2-newer", startedAt: 9000, state: "done", status: "idle" }),
+  );
+  const remembered = { [MINE]: {}, [YOURS]: {} };
+  assert.equal(ownRunning(roster, remembered).oldestIdle, "jarvis-1-old");
+});
+
+test("a working session is never offered as the one to stop", () => {
+  // Including a blocked one: it is waiting on a person, not finished.
+  const roster = rosterOf(
+    session({ sessionId: MINE, name: "jarvis-1-busy", state: "working" }),
+    session({ sessionId: YOURS, name: "jarvis-2-blocked", state: "blocked" }),
+  );
+  const remembered = { [MINE]: {}, [YOURS]: {} };
+  assert.deepEqual(ownRunning(roster, remembered), { running: 2, oldestIdle: null });
+});
+
+test("a session with no start time sorts last rather than first", () => {
+  // An unknown age is not evidence of being the stalest one.
+  const roster = rosterOf(
+    session({ sessionId: MINE, name: "jarvis-1-unknown", startedAt: null, state: "done", status: "idle" }),
+    session({ sessionId: YOURS, name: "jarvis-2-known", startedAt: 5000, state: "done", status: "idle" }),
+  );
+  assert.equal(ownRunning(roster, { [MINE]: {}, [YOURS]: {} }).oldestIdle, "jarvis-2-known");
+});
+
+test("a store key that is not a session id cannot inflate the count", () => {
+  // The store is JSON off disk. `in` would report every session as jarvis's own
+  // for a store carrying a key called "constructor".
+  const roster = rosterOf(session({ sessionId: MINE, name: "jarvis-1-fix" }));
+  assert.equal(ownRunning(roster, { constructor: {}, __proto__: {} }).running, 0);
+});
+
+test("nothing to count is not an error", () => {
+  assert.deepEqual(ownRunning(null, {}), { running: 0, oldestIdle: null });
+  assert.deepEqual(ownRunning([], null), { running: 0, oldestIdle: null });
+  assert.deepEqual(ownRunning(rosterOf(session()), "not a store"), { running: 0, oldestIdle: null });
 });

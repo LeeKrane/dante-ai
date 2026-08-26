@@ -12,7 +12,7 @@ import { summarizeSession } from "./lib/transcript.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { createRosterPoller, isWorking, matchSessions, visibleSessions } from "./lib/agents.js";
+import { createRosterPoller, isWorking, matchSessions, ownRunning, visibleSessions } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -25,7 +25,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
-  queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord,
+  queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord, getSessions,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -874,20 +874,22 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 
   const workspace = getWorkspace(memoryStore, session.repo);
   const live = Array.isArray(roster) ? roster : [];
-  // Background sessions only. An interactive session is a terminal somebody is
-  // sitting at; counting those means a machine in ordinary use is already over
-  // the ceiling before jarvis has started anything, and every request is
-  // refused. What the ceiling is really bounding is how many unattended
-  // sessions are running with nobody watching them.
-  const unattended = live.filter((record) => record.kind === "background");
+  // Only the sessions jarvis itself started. Counting every background session
+  // on the machine was a real bug: a Claude Code background job is
+  // indistinguishable from one of jarvis's, so a machine in ordinary use sat at
+  // four of five before jarvis had done anything, every start was refused, and
+  // the refusal named somebody else's session as the thing to stop. What the
+  // ceiling bounds is unattended sessions jarvis is responsible for.
+  const own = ownRunning(live, getSessions(memoryStore));
   const refusal = refuseStart(session, {
     workspace,
     workspaces: workspacePaths(memoryStore),
-    running: unattended.length,
+    running: own.running,
     max: MAX_SESSIONS,
     // The oldest idle one is the obvious thing to stop, and naming it is what
-    // makes a refusal actionable rather than a dead end.
-    oldestIdle: unattended.filter((r) => !isWorking(r)).map((r) => r.name).find(Boolean),
+    // makes a refusal actionable rather than a dead end -- now that it can only
+    // ever be a session jarvis started.
+    oldestIdle: own.oldestIdle ?? undefined,
   });
   if (refusal) {
     log(`session refused: ${refusal}`);
