@@ -3,6 +3,7 @@ import { getVisibilityToggle } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
+import { panelIsVisible, rowsFromRoster } from "./roster-panel.js";
 import {
   canStartListening,
   handoffAfterPreempt,
@@ -196,6 +197,8 @@ function toggleVisibility(target) {
     buildHud.setChromeHidden(document.body.classList.contains("interface-hidden"));
     // A hidden button that is merely invisible still answers the keyboard.
     refreshCancel();
+    // Same for a list nobody can see: it is still read out.
+    renderSessions();
   }
   else if (target === "diagnostics" && dbgEl) dbgEl.classList.toggle("hidden");
 }
@@ -340,6 +343,10 @@ ws.onmessage = async (ev) => {
   }
   else if (msg.type === "progress") pushProgress(msg.line);
   else if (msg.type === "announce") receiveAnnouncement(msg);
+  else if (msg.type === "roster") {
+    roster = Array.isArray(msg.sessions) ? msg.sessions : [];
+    watchSessions();
+  }
   else if (msg.type === "ask") {
     // A build needs a detail Jarvis doesn't have yet; the question is spoken as
     // well, so the caption just mirrors it.
@@ -396,6 +403,59 @@ ws.onmessage = async (ev) => {
     }
   }
 };
+
+// ---- What is running ----
+//
+// The roster the server already keeps, painted beside the orb. It arrives
+// whenever it changes rather than on a timer, and the elapsed times are ticked
+// locally -- a session's age changes every second and none of that is worth a
+// message.
+//
+// Only sessions jarvis may see reach here: the server filters to the
+// repositories that were named out loud before any of this is sent.
+const sessionsEl = document.getElementById("sessions");
+let roster = [];
+
+function renderSessions() {
+  if (!sessionsEl) return;
+  const rows = rowsFromRoster(roster);
+  sessionsEl.classList.toggle(
+    "hidden",
+    !panelIsVisible(rows, document.body.classList.contains("interface-hidden")),
+  );
+  // Rebuilt wholesale rather than diffed: six rows of text is not a thing worth
+  // reconciling, and a stale row would describe a session that has ended.
+  sessionsEl.replaceChildren(...rows.map((row) => {
+    const line = document.createElement("div");
+    line.className = `sess ${row.condition}`;
+    // textContent throughout: a session name is written by whoever started the
+    // session, which is not always jarvis.
+    const name = document.createElement("span");
+    name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
+    const cond = document.createElement("span");
+    cond.className = "cond";
+    cond.textContent = `  ${row.condition}`;
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = row.elapsed ? `  ${row.elapsed}` : "";
+    line.append(name, cond, when);
+    return line;
+  }));
+}
+
+// One timer for the whole panel, and only while there is something in it: the
+// only thing that changes between roster messages is how long each has been
+// running.
+let sessionsTimer = null;
+function watchSessions() {
+  renderSessions();
+  if (roster.length > 0 && sessionsTimer === null) {
+    sessionsTimer = setInterval(renderSessions, 1000);
+  } else if (roster.length === 0 && sessionsTimer !== null) {
+    clearInterval(sessionsTimer);
+    sessionsTimer = null;
+  }
+}
 
 // ---- Announcements ----
 //

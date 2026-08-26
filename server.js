@@ -109,6 +109,8 @@ const rosterPoller = createRosterPoller({
           .catch((e) => log("report failed:", e.message || e));
       }
     }
+    // Whatever changed, the panel is now describing a machine that has moved on.
+    broadcastRoster(roster);
     // A queue for a session that ended is a promise that can never be kept, and
     // leaving it behind means a reused id would deliver it to a stranger.
     if (events.some((event) => event.kind === "gone")) {
@@ -322,6 +324,47 @@ async function answerApproval(send, text) {
   question.finish(buildDecision(answer, `${answer === "yes" ? "approved" : "denied"} by voice`));
   await say(send, answer === "yes" ? `Allowed, sir.` : `Denied, sir.`);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// What is running, on screen
+// ---------------------------------------------------------------------------
+
+// The same roster the turn carries, sent to the page so the panel beside the
+// orb can paint it. Only what a row needs -- no pid, no path, no session id
+// beyond the one that keys the row -- because everything sent here is written
+// by whoever started the session and lands in a browser.
+//
+// Sent when it changes rather than on a timer: a session's age changes every
+// second and the page can count that itself.
+// More than this is a wall of text beside an orb, and the panel caps itself
+// again anyway. Cut here as well so the message stays small whatever a machine
+// running twenty sessions does.
+const MAX_ROSTER_ROWS = 8;
+
+function rosterForClient(roster, aliases) {
+  if (!Array.isArray(roster)) return [];
+  const byPath = Object.entries(aliases ?? {});
+  return roster.slice(0, MAX_ROSTER_ROWS).map((record) => ({
+    sessionId: record.sessionId,
+    name: record.name,
+    // The alias rather than the path: a repository is called "jarvis" out loud,
+    // and a page has no business being told where it lives on disk.
+    alias: byPath.find(([, path]) => record.cwd === path || record.cwd?.startsWith(`${path}/`))?.[0] ?? "",
+    state: record.state,
+    status: record.status,
+    startedAt: record.startedAt,
+  }));
+}
+
+function sendRoster(send, roster) {
+  send({ type: "roster", sessions: rosterForClient(roster, workspacePaths(memoryStore)) });
+}
+
+function broadcastRoster(roster) {
+  for (const ws of sessions.keys()) {
+    if (ws.readyState === 1) sendRoster((o) => ws.send(JSON.stringify(o)), roster);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,6 +1369,9 @@ wss.on("connection", (ws) => {
   voice = send;
 
   log("client connected");
+  // The first poller tick is a baseline and fires no events, so a page opened
+  // after it would sit empty until something changed.
+  sendRoster(send, rosterPoller.current());
   ws.on("message", async (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
     // The page reporting that the floor is free and it will take one of the

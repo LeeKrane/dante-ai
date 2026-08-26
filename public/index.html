@@ -9,6 +9,10 @@
     --ink: #dcedf6;
     --muted: #7ea3b5;
     --cyan: #4fd8ff;
+    /* The build HUD's amber, named here so the sessions panel can use the same
+       one: a session blocked on a person and a line a build actually reported
+       are both "something happened that you might want to look at". */
+    --amber: #ffb35c;
     --line: rgba(120,200,230,.18);
   }
   * { box-sizing: border-box; }
@@ -63,6 +67,22 @@
   /* One long path must never widen the HUD and reflow the orb. */
   #progress div { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
   #progress div:last-child { color: var(--cyan); opacity: .95; }
+  /* What is running, beside the orb. Same monospace readout as #progress --
+     they are the same kind of thing: a machine's state, not prose. */
+  #sessions {
+    display: inline-block; margin: 12px auto 0; text-align: left;
+    max-width: min(52ch, 92vw);
+    font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: .04em; color: var(--muted);
+  }
+  #sessions .sess { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  /* The condition is the only part worth colour: working is alive, blocked is
+     waiting on a person, and idle is neither. */
+  #sessions .cond { opacity: .75; }
+  #sessions .working .cond { color: var(--cyan); opacity: 1; }
+  #sessions .blocked .cond { color: var(--amber); opacity: 1; }
+  #sessions .when { opacity: .55; }
+
   /* Shown only if the browser blocked the automatic tab for a finished build. */
   #artifact {
     display: inline-block; margin: 12px auto 0;
@@ -186,6 +206,7 @@
   @media (prefers-reduced-motion: reduce) { #mic .dot { animation: none; } }
   body.interface-hidden #status,
   body.interface-hidden #progress,
+  body.interface-hidden #sessions,
   body.interface-hidden #artifact,
   body.interface-hidden #build-hud,
   body.interface-hidden #controls { display: none; }
@@ -321,6 +342,7 @@
         <div id="status">idle</div>
         <div id="caption"></div>
         <div id="progress" class="hidden"></div>
+        <div id="sessions" class="hidden" aria-live="off"></div>
         <a id="artifact" class="hidden" target="_blank" rel="noopener">Open the finished page</a>
       </div>
     </div>
