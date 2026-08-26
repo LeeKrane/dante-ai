@@ -6,3 +6,6 @@ builds/
 .gstack/
 .worktrees/
 .codegraph/
+
+# Worktrees other sessions create here are theirs, not this repository's.
+.claude/worktrees/

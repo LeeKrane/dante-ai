@@ -6,8 +6,10 @@ import { normalizeProgress, progressRowText, pushProgressEntry } from "./progres
 import {
   canStartListening,
   handoffAfterPreempt,
+  queueAnnouncement,
   shouldShowCancel,
   stateAfterClip,
+  takeAnnouncement,
 } from "./playback-policy.js";
 import {
   clampVolume,
@@ -143,6 +145,9 @@ function setState(nextState) {
     buildHud.finish();
   }
   dbg(`state → ${nextState}`);
+  // Settling into idle is the other way the floor comes free -- a turn that
+  // ended without a clip, an error, a cancelled build.
+  if (nextState === "idle") pumpAnnouncements();
 }
 function setCaption(text, who) { capEl.textContent = text; capEl.dataset.who = who || ""; }
 
@@ -334,6 +339,7 @@ ws.onmessage = async (ev) => {
     dbg(`reply: ${msg.text}`);
   }
   else if (msg.type === "progress") pushProgress(msg.line);
+  else if (msg.type === "announce") receiveAnnouncement(msg);
   else if (msg.type === "ask") {
     // A build needs a detail Jarvis doesn't have yet; the question is spoken as
     // well, so the caption just mirrors it.
@@ -390,6 +396,45 @@ ws.onmessage = async (ev) => {
     }
   }
 };
+
+// ---- Announcements ----
+//
+// Lines nobody asked for: a session finished, a session wants something. Slack
+// always has them, durably, so speaking one is a convenience and a convenience
+// does not get to interrupt. They queue here and are spoken only when the floor
+// is genuinely free -- the policy is in playback-policy.js, where it can be
+// tested.
+//
+// The text is the server's; the timing is ours, because the floor is a client
+// fact. The mic being open, a clip being audible and a question waiting on an
+// answer are all things only this page knows.
+let announcements = [];
+
+// `at` is stamped on arrival rather than taken from the server, so staleness is
+// measured on one clock -- the one the person is standing next to.
+function receiveAnnouncement(msg) {
+  announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now() });
+  dbg(`announcement queued: ${msg.text}`);
+  pumpAnnouncements();
+}
+
+// Called wherever the floor might have just been given up: a clip ending or
+// being cancelled, the mic closing, the orb settling. Cheap and idempotent, so
+// calling it too often costs nothing and missing a moment costs a silence.
+function pumpAnnouncements() {
+  const { speak, queue, dropped } = takeAnnouncement(announcements, {
+    state,
+    holding,
+    listening,
+    playing: playbackSource,
+    awaitingAnswer,
+  });
+  announcements = queue;
+  if (dropped > 0) dbg(`${dropped} announcement(s) dropped as stale`);
+  if (!speak) return;
+  // The server holds the text and does the speaking; this only says when.
+  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "announce_ready", id: speak.id }));
+}
 
 // ---- Speech-to-text (Chrome Web Speech API, free) ----
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -489,6 +534,9 @@ function stopListening() {
   if (!holding) return;
   holding = false;
   try { rec.stop(); } catch {}
+  // Not spoken yet: what was just said is on its way to the server, and the
+  // orb moves to thinking. This is here for the release that said nothing.
+  pumpAnnouncements();
 }
 
 // Press on the button; release ANYWHERE (window) so a tiny drag off the button
@@ -592,6 +640,9 @@ function clipEnded(handoff) {
   level = 0;
   dbg("playback ended");
   setState(stateAfterClip(handoff));
+  // The floor was just given up, which is the commonest moment for a queued
+  // announcement to become sayable.
+  pumpAnnouncements();
 }
 
 function dropIncoming() {

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
-import { formatEvent } from "./lib/notify.js";
+import { formatEvent, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import { describeIntent, isAnswerable, readAnswer } from "./lib/confirm.js";
@@ -171,21 +171,32 @@ async function reportComplete(sessionId, context = {}) {
   if (!reported.accept(`${sessionId}:complete`)) return;
 
   const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
+  // Up to ~25 s of Haiku, and worth it: "done" without it is not news. Read
+  // once and used twice -- the posted line and the spoken one say the same
+  // thing about the same session, at different lengths.
+  const summary = await summarizeSession({
+    cwd: context.cwd || remembered.cwd,
+    sessionId,
+    task: remembered.task,
+  });
   const line = formatEvent({
     kind: "complete",
     name: remembered.name ?? context.name,
     durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
-    // Up to ~25 s of Haiku, and worth it: "done" without it is not news.
-    summary: await summarizeSession({
-      cwd: context.cwd || remembered.cwd,
-      sessionId,
-      task: remembered.task,
-    }),
+    summary,
     detail: remembered.stoppedAt ? "stopped from here" : "",
   });
 
   log(`session complete: ${line}`);
+  // Slack first, unconditionally. The spoken form is shorter and only reaches
+  // anyone if a page is open and the floor comes free before it goes stale.
   await postForSession(sessionId, line);
+  announce(formatSpoken({
+    kind: "complete",
+    name: remembered.name ?? context.name,
+    durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
+    summary,
+  }));
 }
 
 // A session that is blocked on a person. The one thing polling can never see,
@@ -198,6 +209,7 @@ async function reportAttention(event) {
   const line = formatEvent({ kind: "needs-attention", name: remembered.name, detail: event.detail });
   log(`session needs attention: ${line}`);
   await postForSession(event.sessionId, line);
+  announce(formatSpoken({ kind: "needs-attention", name: remembered.name, detail: event.detail }));
 }
 
 // The session ids of jarvis's own Claude processes: the warm brain, and
@@ -310,6 +322,56 @@ async function answerApproval(send, text) {
   question.finish(buildDecision(answer, `${answer === "yes" ? "approved" : "denied"} by voice`));
   await say(send, answer === "yes" ? `Allowed, sir.` : `Denied, sir.`);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Announcements
+// ---------------------------------------------------------------------------
+
+// Lines nobody asked for. Slack always gets them and is the durable channel;
+// speaking one is the convenience, and a convenience does not get to interrupt.
+//
+// The timing decision is the browser's, because the floor is a client fact --
+// only the page knows whether the mic is open or a clip is audible. So this
+// offers the announcement, the page says when, and the text stays here until
+// then rather than crossing the wire twice.
+const MAX_PENDING_ANNOUNCEMENTS = 10;
+const ANNOUNCEMENT_TTL_MS = 5 * 60 * 1000;
+let announceSeq = 0;
+const pendingAnnouncements = new Map();
+
+function announce(text) {
+  const line = typeof text === "string" ? text.trim() : "";
+  // No page open is not a failure. It already went to Slack, which is the whole
+  // reason Slack is unconditional.
+  if (!line || !voice) return false;
+
+  const now = Date.now();
+  for (const [id, held] of pendingAnnouncements) {
+    if (now - held.at >= ANNOUNCEMENT_TTL_MS) pendingAnnouncements.delete(id);
+  }
+  const id = `announce-${++announceSeq}`;
+  pendingAnnouncements.set(id, { text: line, at: now });
+  // Oldest out first, so a page that never asks for any of them cannot make
+  // this grow for the life of the process.
+  while (pendingAnnouncements.size > MAX_PENDING_ANNOUNCEMENTS) {
+    pendingAnnouncements.delete(pendingAnnouncements.keys().next().value);
+  }
+
+  voice({ type: "announce", id, text: line });
+  return true;
+}
+
+// The page has the floor free and is asking for one it was offered. Unknown or
+// expired ids are ignored in silence: the page is entitled to ask late, and a
+// dropped announcement is not worth a spoken apology.
+async function speakAnnouncement(send, id) {
+  const held = pendingAnnouncements.get(id);
+  if (!held) return;
+  pendingAnnouncements.delete(id);
+  if (Date.now() - held.at >= ANNOUNCEMENT_TTL_MS) return;
+  log(`announced: ${held.text}`);
+  await say(send, held.text);
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,6 +1328,13 @@ wss.on("connection", (ws) => {
   log("client connected");
   ws.on("message", async (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
+    // The page reporting that the floor is free and it will take one of the
+    // announcements it was offered. Handled before the "say" guard because it
+    // carries no text at all.
+    if (msg.type === "announce_ready") {
+      if (typeof msg.id === "string") await speakAnnouncement(send, msg.id);
+      return;
+    }
     if (msg.type !== "say" || !msg.text?.trim()) return;
     log("say:", JSON.stringify(msg.text));
     send({ type: "debug", stage: "stt", msg: `heard "${msg.text}"` });
