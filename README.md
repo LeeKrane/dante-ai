@@ -44,7 +44,8 @@ mkdir -p ~/.config/fish-audio && cat > ~/.config/fish-audio/speak.json <<'EOF'
   "model": "s2.1-pro-free",
   "format": "mp3",
   "speed": 1.1,
-  "volume": 5.0
+  "volume": 5.0,
+  "pitch": 0
 }
 EOF
 ```
@@ -91,12 +92,20 @@ the on-screen button), talk, release.
 **Conversation.** One warm `claude -p` per server lifetime, tools off, Haiku —
 about 800 ms a turn. Interrupt yourself and the sentences merge rather than
 queue; the answer to a superseded turn is never spoken. Audio streams as it
-arrives, so the first sound lands well before the sentence is finished.
+arrives, so the first sound lands well before the sentence is finished. What is
+on screen can be selected and copied — the reply, the build log and the
+diagnostics panel — while a drag that starts on the orb or the record button
+still does nothing, which is what the page-wide `user-select: none` used to be
+buying at the cost of the text.
 
 **Volume.** A speaker button to the left of the record button reveals a
 vertical fader on hover (or a tap, on touch) that raises or lowers how loud
 replies play on this browser, remembered per browser (`localStorage`) rather
-than per server. The label reads 0–200%, with 100% the clip exactly as Fish
+than per server. Clicking the button mutes, and clicking again comes back to
+the level it was at rather than to 100% — muting remembers what it interrupted.
+There is no separate mute flag: muted simply *is* a volume of zero, which is
+why dragging the fader to the bottom shows the muted icon too, and why the
+icon, the fader and what you actually hear can never disagree. The label reads 0–200%, with 100% the clip exactly as Fish
 sent it; the actual `GainNode` ceiling behind that "200%" is a 4x boost, not
 2x — the label names what "as loud as this goes" means rather than the raw
 multiplier, so it can be raised for more headroom later without the number on
@@ -252,8 +261,14 @@ prompt-injected tool description argue for its own approval.
   as a "JARVIS" character and calls you *sir*. It is the only half of the system
   prompt written by hand; what it can build is generated from `primitives/`
   underneath, so rewriting the voice never breaks the builds.
-- **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed, and
-  `volume` (-20 to 20, omit for Fish's default).
+- **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed,
+  `volume` (-20 to 20, omit for Fish's default), and `pitch` (-12 to 12
+  semitones, 0 for the voice as Fish recorded it). Pitch is the odd one out:
+  Fish's API has no pitch parameter at all, so the server forwards the number to
+  the browser and the clip is resampled there. Resampling moves tempo with
+  pitch — a deeper voice also reads slower, a higher one faster. That is the
+  trade-off, not a bug; there is no way to shift the pitch of a clip that was
+  already synthesized at a fixed rate without it.
 - **`server.js` → `WG_IP`** — the one non-loopback address allowed to reach the
   server. Set it to your VPN address, or drop it to stay local-only.
 

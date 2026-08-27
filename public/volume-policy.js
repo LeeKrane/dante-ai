@@ -64,3 +64,50 @@ export function formatVolumePercent(v) {
     : 100 + ((clamped - DEFAULT_VOLUME) / (MAX_VOLUME - DEFAULT_VOLUME)) * (DISPLAY_MAX_PERCENT - 100);
   return `${Math.round(percent)}%`;
 }
+
+// isMuted(volume) -> whether that level reads as silent.
+//
+// There is no separate mute flag anywhere in this file or in app.js: the
+// icon, the fader position and the gain node all read this instead, which
+// is what keeps them from ever disagreeing with each other. Dragging the
+// fader to the bottom is indistinguishable from pressing mute, on purpose.
+export function isMuted(volume) {
+  return clampVolume(volume) === MIN_VOLUME;
+}
+
+// nextMuteState(volume, restore) -> the whole next state of the control
+// after the mute button is pressed, given the level playing now and the
+// level to fall back to on the way back up.
+//
+// Toggles off the current volume rather than a stored flag, for the same
+// reason isMuted above does: unmuted -> muted remembers the level being
+// left behind as the new restore point; muted -> unmuted returns to it.
+// The way up guards against a restore point of 0 -- reachable when the fader
+// was already at the bottom the first time mute was pressed, or when nothing
+// had ever been stored -- because a restore point of 0 would make the unmute
+// button do nothing at all, which is the one failure a mute toggle must never
+// have. The way down needs no such guard: a level of 0 is already muted and
+// takes the branch above. Both fields are folded through the existing
+// clampVolume before use: `restore` comes back out of localStorage exactly as
+// untrusted as `volume` does (see parseStoredVolume above).
+export function nextMuteState(volume, restore) {
+  const level = clampVolume(volume);
+  const fallback = clampVolume(restore);
+  if (isMuted(level)) {
+    return { volume: fallback > MIN_VOLUME ? fallback : DEFAULT_VOLUME, restore: fallback };
+  }
+  return { volume: MIN_VOLUME, restore: level };
+}
+
+// volumeButtonAction({ hoverCapable, faderOpen }) -> "mute" | "open".
+//
+// The one real decision in the click handler, which is why it lives here
+// instead of in app.js. On a hover-capable device mouseenter has already
+// opened the fader by the time a click lands, so the click has nothing left
+// to reveal and always means mute. Without hover there is no mouseenter to
+// do that job, so the first tap has to open the fader itself; only a second
+// tap, with the fader already open, reaches for mute.
+export function volumeButtonAction({ hoverCapable, faderOpen }) {
+  if (hoverCapable) return "mute";
+  return faderOpen ? "mute" : "open";
+}

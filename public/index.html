@@ -24,6 +24,13 @@
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
     overflow: hidden;
+  }
+  /* A drag that starts on the record button, the orb, the volume control, the
+     status readout, or the build HUD must not paint a stray text selection.
+     This used to sit on `body` and inherit everywhere, which also made the
+     model's own replies uncopyable, so it is scoped to just the controls. */
+  #mic, #cancel, #orb, #volume, #status, #build-hud {
+    -webkit-user-select: none;
     user-select: none;
   }
   /* Sits above the build HUD overlay, so the orb canvas paints over the groove
@@ -51,6 +58,14 @@
   #caption[data-who="you"]::before    { content: "you   "; color: var(--muted); font-size: .78em; letter-spacing: .12em; }
   #caption[data-who="jarvis"]::before { content: "jarvis   "; color: var(--cyan); opacity: .8; font-size: .78em; letter-spacing: .12em; }
   #caption[data-who="error"] { color: #ff9a8a; }
+  /* These three are the only prose on the page: the assistant's reply, the
+     build log, and the diagnostics panel. The I-beam cursor tells the
+     pointer they're selectable before the drag even starts. */
+  #caption, #progress, #progress div, #dbg {
+    -webkit-user-select: text;
+    user-select: text;
+    cursor: text;
+  }
 
   /* Live build progress. Left-aligned inside the centred HUD so the lines form a
      tidy column, and inline-block so it takes no room at all when empty. */
@@ -163,6 +178,13 @@
   }
   #vol-btn svg { width: 15px; height: 15px; display: block; }
   #vol-btn:hover, #volume.open #vol-btn { color: var(--ink); border-color: rgba(120,210,240,.5); background: rgba(255,255,255,.06); }
+  /* Two glyphs sharing one speaker cone, swapped by CSS rather than redrawn
+     from JavaScript: the waves are the default, the mute glyph is a cross
+     sitting where they were. #volume.muted is set from app.js and read here
+     -- app.js never touches the SVG itself. */
+  #vol-btn .vol-mute { display: none; }
+  #volume.muted #vol-btn .vol-waves { display: none; }
+  #volume.muted #vol-btn .vol-mute { display: block; }
   #vol-pop {
     position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
     display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -296,12 +318,21 @@
   body.build-hud-live #progress { display: none; }
   #dbg {
     position: fixed; top: 10px; left: 10px; z-index: 20;
-    max-width: 46ch; max-height: 62vh; overflow: hidden;
+    max-width: 46ch; max-height: 62vh; overflow: auto;
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
     background: rgba(3,10,16,.72); color: #7fe6d0;
     font: 11px/1.55 ui-monospace, "SF Mono", monospace;
-    white-space: pre-wrap; pointer-events: none; backdrop-filter: blur(2px);
+    white-space: pre-wrap; backdrop-filter: blur(2px);
+    /* Needed for the panel to receive a mouse drag at all, regardless of
+       user-select. It's harmless: #dbg is `.hidden` unless the `d` key is
+       pressed, so nothing in normal use sits under it waiting to be blocked. */
+    pointer-events: auto;
   }
+  /* The highlight itself, so it reads against the dark background instead of
+     the browser's default blue. #03050a is the same near-black already used
+     as body's darkest gradient stop. */
+  ::selection { background: var(--cyan); color: #03050a; }
+  ::-moz-selection { background: var(--cyan); color: #03050a; }
 </style>
 </head>
 <body>
@@ -358,8 +389,14 @@
           <button id="vol-btn" type="button" aria-label="Volume">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="4,10 8,10 12,6 12,18 8,14 4,14" fill="currentColor" stroke="none"></polygon>
-              <path d="M15.5 9a4 4 0 0 1 0 6"></path>
-              <path d="M18 6.5a8 8 0 0 1 0 11"></path>
+              <g class="vol-waves">
+                <path d="M15.5 9a4 4 0 0 1 0 6"></path>
+                <path d="M18 6.5a8 8 0 0 1 0 11"></path>
+              </g>
+              <g class="vol-mute">
+                <path d="M15.5 8.5l6.5 7"></path>
+                <path d="M22 8.5l-6.5 7"></path>
+              </g>
             </svg>
           </button>
         </div>

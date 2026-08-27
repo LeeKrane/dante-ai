@@ -16,10 +16,15 @@ import {
   clampVolume,
   parseStoredVolume,
   formatVolumePercent,
+  isMuted,
+  nextMuteState,
+  volumeButtonAction,
   MIN_VOLUME,
   MAX_VOLUME,
+  DEFAULT_VOLUME,
   VOLUME_STEP,
 } from "./volume-policy.js";
+import { centsForPitch, rateForPitch } from "./pitch-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
@@ -235,6 +240,20 @@ function loadVolume() {
 }
 let gainNode = null;
 
+// The level to bring back on unmute, kept in a key of its own rather than
+// folded into VOLUME_KEY: the two need to survive independently of each
+// other across a reload, since mute is derived from `volume` alone and a
+// reload happening mid-mute must not lose what the fader was at before it.
+const PREMUTE_KEY = "jarvis-volume-premute";
+let premuteRestore = loadPremute();
+function loadPremute() {
+  try { return parseStoredVolume(localStorage.getItem(PREMUTE_KEY)); }
+  catch { return DEFAULT_VOLUME; }
+}
+function savePremute(v) {
+  try { localStorage.setItem(PREMUTE_KEY, String(v)); } catch { /* storage unavailable */ }
+}
+
 // Created once the AudioContext exists and reused by both the streamed and the
 // buffered playback path, so turning the knob mid-clip is heard immediately
 // either way rather than only on the next reply.
@@ -252,6 +271,15 @@ function renderVolume() {
   // every pointer move, and writing `.value` back mid-drag on some browsers
   // resets the pointer's grab offset and makes the thumb stutter.
   if (volRange && volRange.value !== String(volume)) volRange.value = String(volume);
+  // Mute is derived from `volume`, not tracked separately, so dragging the
+  // fader all the way down shows the muted icon for free -- this runs on
+  // every render, not just the ones the mute button itself causes.
+  const muted = isMuted(volume);
+  volumeEl?.classList.toggle("muted", muted);
+  if (volBtn) {
+    volBtn.setAttribute("aria-pressed", String(muted));
+    volBtn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+  }
 }
 
 function setVolume(v) {
@@ -300,11 +328,26 @@ volumeEl?.addEventListener("mouseleave", scheduleCloseVolume);
 // tapping the range thumb focuses it same as a click would.
 volumeEl?.addEventListener("focusin", openVolume);
 volumeEl?.addEventListener("focusout", scheduleCloseVolume);
-// A tap on the button itself, on a device with no hover at all, has to open
-// it outright rather than wait on a mouseenter that will never come.
+// On a hover-capable device mouseenter has already opened the fader by the
+// time this click lands, so the click has nothing left to reveal and always
+// means mute -- see volume-policy.js for the decision itself. Without hover
+// the first tap has to open the fader outright, the way mouseenter would
+// have; a second tap, with the fader already open, reaches for mute too.
 volBtn?.addEventListener("click", (e) => {
   e.stopPropagation();
-  volumeEl?.classList.contains("open") ? closeVolumeNow() : openVolume();
+  const hoverCapable = window.matchMedia?.("(hover: hover)").matches ?? true;
+  const faderOpen = volumeEl?.classList.contains("open") ?? false;
+  if (volumeButtonAction({ hoverCapable, faderOpen }) === "open") {
+    openVolume();
+    return;
+  }
+  const next = nextMuteState(volume, premuteRestore);
+  premuteRestore = next.restore;
+  savePremute(premuteRestore);
+  // Through setVolume(), same as the fader itself, so the gain node, the
+  // label, the slider and storage all update through the one path they
+  // already go through -- mute is just another point on the same volume.
+  setVolume(next.volume);
 });
 document.addEventListener("click", closeVolumeNow);
 renderVolume();
@@ -744,7 +787,7 @@ async function startClip(msg) {
     // check the button yet: on this path those decisions still belong at the
     // moment sound would actually start, which is a chunk or two from now.
     dropIncoming();
-    incoming = { id: msg.id, nextState: msg.nextState, chunks: [] };
+    incoming = { id: msg.id, nextState: msg.nextState, pitch: msg.pitch, chunks: [] };
     dbg(`audio: buffering ${msg.format} whole (no MediaSource)`);
     return;
   }
@@ -814,6 +857,17 @@ async function startClip(msg) {
   refreshCancel();
   setState("speaking");
   dbg("playing as it arrives");
+  // preservesPitch defaults to true in every current browser, which means
+  // playbackRate alone would change tempo and NOT pitch. This is the
+  // load-bearing line that turns the rate change below into an actual pitch
+  // shift, at the cost of tempo moving with it -- the resampling trade-off
+  // documented in pitch-policy.js.
+  audioEl.preservesPitch = false;
+  audioEl.playbackRate = rateForPitch(msg.pitch);
+  // Only worth a line when it is actually doing something: the diagnostics log
+  // is capped, and a neutral pitch on every single clip would push out the
+  // lines that do carry news.
+  if (audioEl.playbackRate !== 1) dbg(`pitch: rate ${audioEl.playbackRate.toFixed(3)} (streamed)`);
   // Autoplay is allowed: the record button that started this turn was the
   // gesture. The catch is for the clip being torn down before it ever started.
   audioEl.play().catch((e) => dbg(`audio play: ${e.message || e}`));
@@ -834,13 +888,13 @@ async function endClip(msg) {
   const clip = incoming;
   incoming = null;
   if (clip.queue) { clip.queue.finish(); return; }
-  await playBuffered(clip.chunks, clip.nextState);
+  await playBuffered(clip.chunks, clip.nextState, clip.pitch);
 }
 
 // The fallback, and the path this took for every clip before Fish was asked to
 // send as it synthesizes. decodeAudioData needs the complete buffer, which is
 // the whole reason MediaSource exists above.
-async function playBuffered(chunks, nextState) {
+async function playBuffered(chunks, nextState, pitch) {
   const total = chunks.reduce((n, c) => n + c.length, 0);
   dbg(`audio: ~${Math.round(total / 1024)}kb received`);
   audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -869,6 +923,10 @@ async function playBuffered(chunks, nextState) {
 
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
+  // Unlike the streamed path's <audio> element, an AudioBufferSourceNode has a
+  // real detune AudioParam -- no preservesPitch workaround needed here.
+  src.detune.value = centsForPitch(pitch);
+  if (src.detune.value !== 0) dbg(`pitch: detune ${src.detune.value}c (buffered)`);
   const an = audioCtx.createAnalyser();
   an.fftSize = 512;
   an.smoothingTimeConstant = 0.78;
