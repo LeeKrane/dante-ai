@@ -33,6 +33,9 @@ These are enforced by the existing code but written down nowhere else:
   `opts.home`, `opts.repo`, `loadRegistry(dirUrl)`). Keep new logic on that side of the line.
 - **`server.js` has no test file.** That is a known gap, not a licence: put new logic in a
   `lib/` or `public/` module that can be tested, and keep `server.js` to wiring.
+- **The interview's stopping rule lives in `docs/interview.md`.** `FACETS` in `lib/interview.js`,
+  the INTERVIEW paragraph in `lib/brain.js`, and that doc must agree — change one, change all
+  three. `test/brain.test.js` and `test/interview.test.js` pin them.
 
 ## Security-critical
 

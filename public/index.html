@@ -43,7 +43,10 @@
     padding: 24px 20px 0;
     min-height: 0;
   }
-  #orb { width: min(72vmin, 720px); height: min(72vmin, 720px); display: block; }
+  /* Named as an anchor so #brief, a root-level fixed element outside #stage's
+     stacking context, can still centre itself on this box -- see the comment
+     above #brief for why that indirection is necessary. */
+  #orb { width: min(72vmin, 720px); height: min(72vmin, 720px); display: block; anchor-name: --orb; }
   #hud { text-align: center; }
   #status {
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -151,15 +154,49 @@
   /* The brief a proposal is asking someone to approve. Its own panel rather
      than folding into #sessions or the key-toggled set: it is up only for as
      long as a proposal awaits a yes, and the server -- not a key -- decides
-     when that is, so it has no place in the visibility-policy toggle list. */
+     when that is, so it has no place in the visibility-policy toggle list.
+
+     This bottom-right placement is now only the fallback for a browser
+     without anchor positioning -- the @supports block below overrides it to
+     centre the brief on the orb, which is where a browser that can do it
+     actually renders it. Every other declaration here (border, background,
+     font, the pointer-events needed for a mouse drag) is shared by both. */
   #brief {
     position: fixed; bottom: 10px; right: 10px; z-index: 20;
-    max-width: min(70ch, 92vw); max-height: 40vh; overflow: auto;
+    /* A structured brief (Goal / Where / Constraints / Done when) runs taller
+       than the old one-line paragraph, so it gets more of the viewport. */
+    max-width: min(70ch, 92vw); max-height: 55vh; overflow: auto;
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
     background: rgba(3,10,16,.72); backdrop-filter: blur(2px);
     font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
     letter-spacing: .04em; color: var(--muted);
     white-space: pre-wrap; pointer-events: auto;
+  }
+  /* #stage -- and the orb inside it -- is a stacking context pinned to
+     z-index: 1, below both #sessions and #dbg at z-index: 20, so nothing
+     painted inside #stage can ever cover those two panels. #brief has to
+     stay the fixed, root-level element it already is (third child of body,
+     a sibling of #stage rather than a descendant) to be able to outrank
+     them, which is also why this can't just be a box positioned relative to
+     the orb from inside #main.
+
+     That leaves the problem anchor positioning actually solves: reaching
+     across stacking contexts to sit on top of a box -- the orb -- that
+     lives inside a different one, without measuring it in JS. #mic sits in
+     #controls, the grid row below #main, so #brief anchored to #orb and
+     sized to it can never grow into #mic's rectangle -- confining #brief to
+     the orb's box is what makes "never over the button" true by
+     construction rather than by a z-index guess. The trade is that on a
+     narrow phone the orb is only ~72vw across, so #brief -- still capped at
+     70ch/92vw wide by the base rule above -- can be wider than the orb it's
+     centred on, and is shorter than the 55vh fallback allows. That's the
+     price of the never-over-the-button guarantee, not a bug. */
+  @supports (position-area: center) {
+    #brief {
+      position-anchor: --orb; position-area: center;
+      inset: auto; z-index: 30;
+      max-height: anchor-size(height);
+    }
   }
 
   /* Shown only if the browser blocked the automatic tab for a finished build. */

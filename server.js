@@ -1955,12 +1955,23 @@ wss.on("connection", (ws) => {
         // through to dispatchSession below -- that is the bug this branch
         // exists to prevent.
         if (session.verb === "interview") {
-          conv.interview = noteInterview(conv.interview, session);
+          // msg.text alone is only the newest sentence. A turn that answered
+          // this interview question can have been a merged one -- someone
+          // interrupted themselves and mergeTurns folded up to MAX_UNANSWERED
+          // sentences into the one turn askResilient was actually asked --
+          // and every one of them was said in answer to the question, not
+          // just the last. conv.unanswered.slice(0, answering) is exactly
+          // that set: the same prefix dropAnswered below is about to remove,
+          // captured before the await above could let a newer sentence arrive
+          // and grow the list underneath it.
+          conv.interview = noteInterview(conv.interview, session, Date.now(), conv.unanswered.slice(0, answering));
           activity(send, "interviewing", { subject: conv.interview.repo || undefined });
-          log(`interview asked ${conv.interview.asked} (repo=${conv.interview.repo || "none"}, notes=${conv.interview.notes.length})`);
+          log(`interview asked ${conv.interview.asked} (repo=${conv.interview.repo || "none"}, ` +
+              `notes=${conv.interview.notes.length}, covered=${conv.interview.covered.join(",") || "none"})`);
           // A tag with no question in front of it is a model that forgot the
-          // question. It still counts -- the tally is what stops an interview
-          // going on forever -- but there is nothing to speak.
+          // question. It still counts -- asked is logged and reported, never
+          // enforced -- but there is nothing to speak. What actually ends an
+          // interview is the TTL, or the escape phrase read earlier this turn.
           if (!reply) {
             dropAnswered(conv.unanswered, answering);
             log("interview tag carried no question");
@@ -1977,7 +1988,10 @@ wss.on("connection", (ws) => {
         // the state is cleared here so a later, unrelated session tag never
         // folds stale notes into a brief that has nothing to do with them.
         if (isLive(conv.interview) && matchesInterview(conv.interview, session)) {
-          session.brief = composeBrief({ task: session.task, brief: session.brief, notes: conv.interview.notes });
+          session.brief = composeBrief({
+            task: session.task, brief: session.brief,
+            notes: conv.interview.notes, said: conv.interview.said, repo: conv.interview.repo,
+          });
           conv.interview = null;
         }
 

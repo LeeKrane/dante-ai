@@ -550,9 +550,9 @@ registry promises.
 **Stage 43 — ask first.** A one-line spoken request is rarely a brief a session can work from.
 When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what
 must not be touched, what done looks like), Dante interviews you with **one question per turn**, at
-most four, most important first; *"just start it"* or *"that's enough"* ends it early. The pure half
+most four (the cap since replaced by Stage 44's confidence rule), most important first; *"just start it"* or *"that's enough"* ends it early. The pure half
 is `lib/interview.js` — `noteInterview`, `interviewBlock`, `composeBrief`, `wantsToProceed`, a
-four-question cap and a ten-minute TTL. Each question carries an `[ACTION:SESSION verb=interview …]`
+four-question cap (since replaced, Stage 44) and a ten-minute TTL. Each question carries an `[ACTION:SESSION verb=interview …]`
 marker so the server can count questions and keep the notes; `mergeTurns` folds that tally into
 every turn as a machine-state line, which is what makes the cap and the escape phrase enforced
 rather than hoped for, and what lets the interview survive a brain restart. When the picture is
@@ -564,9 +564,32 @@ message add a line below the state label naming what Dante is doing right now (*
 *awaiting your yes*, *starting jarvis*, *telling jarvis-1*, *reading jarvis-2*, *building landing
 page*), blank when nothing is. A request that is already specific gets no interview.
 
+**Stage 44 — confident, not counted.** The four-question cap was a guess at a number standing in
+for a real check, and it was wrong in both directions: sometimes one question too many, sometimes
+three too few. It is replaced by a rubric — `FACETS` in `lib/interview.js` names the four things a
+brief needs (`goal`, `where`, `constraints`, `done`), and an interview is over once every one is
+covered and no answer left something open, not once a tally hits a number. Each interview tag now
+carries `have=<facets>`, the model's own claim about which facets it is now sure of; the
+machine-state INTERVIEW line reports both sides back — covered and still open — every turn, so
+that claim is checked rather than trusted. What still bounds a runaway interview is the ten-minute
+TTL and the escape phrases (`wantsToProceed` grew several — `"stop asking"`, `"that'll do"`,
+`"you know enough"` among them), not a count. Alongside `notes` (the model's own summaries),
+`noteInterview` now keeps `said` — what Jesse actually said, verbatim, every turn — because a note
+can drop a detail a summary didn't think mattered and `said` cannot. The brief is no longer a
+paragraph: `composeBrief` produces (or, when the model wrote its own, preserves) a structured
+document — `Goal:`, `Where:`, `Constraints:` and `Done when:` as dash bullets, `Also:` only when
+there's something special — carrying every detail from the interview rather than a summary of it.
+`cleanBrief` replaces `clean` wherever a brief passes through, because a document's line breaks are
+its structure and a line-collapsing clean would flatten them. `docs/interview.md` is the rule this
+stage is built on, and the same rule `FACETS` and the INTERVIEW paragraph in `lib/brain.js`'s
+persona both have to keep agreeing with. The brief panel itself moved from the
+bottom-right corner to the centre of the orb — anchored to it with CSS anchor positioning, above
+the sessions and diagnostics panels, and confined to the orb's own box so it can never sit over
+the hold-to-talk button.
+
 Phases D and E shipped too, and are in daily use like A–C before them: the visibility and
 confirmation guardrails, and Phase E's announcements, sessions panel, chaining, recap and read-only
-primitive, are all running today. Stage 43 is the newest and, like the rest, has had no manual
+primitive, are all running today. Stage 44 is the newest and, like the rest, has had no manual
 walk-through yet.
 
 ---
@@ -622,7 +645,7 @@ doing the thing, and for every phase, A through E, that check is still owed.
   three ways — yes, no, and a correction — and confirm nothing is stopped that was not named out
   loud.
 - **E** — start a long session, walk away, come back, "catch me up".
-- **F** — start a vague session by voice, confirm one question per turn and the "interviewing" line, say "that's enough", confirm the proposal mentions the brief and the page shows it, say yes, and confirm the session's first user message in its transcript is the brief rather than the one-liner; then a specific request ("run npm test in jarvis") gets no interview.
+- **F** — start a vague session by voice, confirm one question per turn and the "interviewing" line, and confirm the INTERVIEW machine-state line reports which facets are covered and which are still open. Confirm the questions stop once all four are covered, with no count involved. Say "stop asking" partway through and confirm it ends the interview early. Confirm the proposal mentions the brief and the on-screen brief has Goal / Where / Constraints / Done when sections carrying every detail spoken, say yes, and confirm the session's first user message in its transcript is that brief rather than the one-liner; then a specific request ("run npm test in jarvis") gets no interview.
 
 Every stage leaves `npm test` green and the browser working before the next starts — the rule the
 first twenty stages ran under, unchanged.

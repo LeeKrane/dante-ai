@@ -56,6 +56,7 @@ import {
   getEvents,
   clearEvents,
 } from "../lib/memory.js";
+import { MAX_BRIEF_CHARS } from "../lib/interview.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
 // tested as plain data in/data out, the same way test/builder.test.js tests
@@ -714,10 +715,21 @@ test("nothing worth queueing is not queued", () => {
   assert.deepEqual(store.queued ?? {}, {});
 });
 
-test("a queued line is capped and stripped like everything else that is stored", () => {
+test("a queued line is capped and stripped like everything else that is stored, at the brief's own larger cap", () => {
+  // MAX_QUEUED_CHARS (400) no longer bounds this: a queued follow-up can be a
+  // whole brief, so it is cleaned and capped at MAX_BRIEF_CHARS instead --
+  // see the comment on queueForSession.
   const store = emptyStore();
-  const queued = queueForSession(store, SESSION_ID, "x".repeat(MAX_QUEUED_CHARS * 3), T);
-  assert.equal(queued.length, MAX_QUEUED_CHARS);
+  const queued = queueForSession(store, SESSION_ID, "x".repeat(MAX_BRIEF_CHARS * 3), T);
+  assert.equal(queued.length, MAX_BRIEF_CHARS);
+});
+
+test("a queued brief survives whole, line breaks and all, because the store is one JSON file", () => {
+  const store = emptyStore();
+  const brief = "Goal: fix the tests\nWhere: jarvis\nDone when:\n- npm test is green";
+  const queued = queueForSession(store, SESSION_ID, brief, T);
+  assert.equal(queued, brief);
+  assert.deepEqual(peekQueued(store, SESSION_ID, T), [brief]);
 });
 
 test("queues for sessions that ended are dropped rather than left for a reused id", () => {
