@@ -103,7 +103,10 @@ vertical fader on hover (or a tap, on touch) that raises or lowers how loud
 replies play on this browser, remembered per browser (`localStorage`) rather
 than per server. Clicking the button mutes, and clicking again comes back to
 the level it was at rather than to 100% — muting remembers what it interrupted.
-There is no separate mute flag: muted simply *is* a volume of zero, which is
+On a phone, with no hover to open the fader ahead of the tap, tapping the
+speaker instead opens and closes the fader; click-to-mute stays a desktop
+affordance, and sliding to 0 is how a phone mutes. There is no separate mute
+flag: muted simply *is* a volume of zero, which is
 why dragging the fader to the bottom shows the muted icon too, and why the
 icon, the fader and what you actually hear can never disagree. The label reads 0–200%, with 100% the clip exactly as Fish
 sent it; the actual `GainNode` ceiling behind that "200%" is a 4x boost, not
