@@ -76,6 +76,42 @@ test("landing-page renders a prompt and a spoken done line", async () => {
   assert.ok(done.length > 0);
 });
 
+test("loads the real ask-repo primitive", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const askRepo = registry.get("ask-repo");
+
+  assert.ok(askRepo, "ask-repo should be registered");
+  assert.equal(askRepo.id, "ask-repo");
+  assert.equal(askRepo.outputContract, "index.html");
+  assert.ok(askRepo.timeoutMs > 0, "timeoutMs should be a positive duration");
+  // The read-only floor the roadmap promises: no Write, no Edit, nothing that
+  // reaches past the repository it is pointed at.
+  assert.deepEqual(askRepo.allowedTools, ["Read", "Grep", "Glob"]);
+  assert.deepEqual(
+    askRepo.questions.map((q) => q.key),
+    ["repo", "question"],
+  );
+});
+
+test("ask-repo renders a prompt that carries the repo and question through, and a spoken done line", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const askRepo = registry.get("ask-repo");
+  const params = { repo: "/home/jesse/dev/widgets", question: "how is auth checked?" };
+
+  const prompt = askRepo.systemPrompt(params);
+  assert.equal(typeof prompt, "string");
+  assert.ok(prompt.includes(params.repo), "prompt should name the repository");
+  assert.ok(prompt.includes(params.question), "prompt should carry the question through");
+  assert.ok(prompt.includes("index.html"), "prompt should name the output file");
+  // The whole point of the primitive: it must say, in its own instructions,
+  // that it is not to touch the repository it was asked about.
+  assert.match(prompt, /not write, edit or delete/);
+
+  const done = askRepo.doneLine(params);
+  assert.equal(typeof done, "string");
+  assert.ok(done.length > 0);
+});
+
 test("skips files whose name starts with an underscore", async () => {
   const registry = await loadRegistry(PRIMITIVES);
   assert.equal(registry.has("_template"), false);
