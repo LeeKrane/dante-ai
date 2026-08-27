@@ -936,7 +936,7 @@ async function say(send, text, nextState, stillCurrent) {
     started = true;
     send({ type: "debug", stage: "tts", ms, msg: "fish first byte" });
     send({ type: "state", value: "speaking" });
-    send({ type: "audio_start", id, format: cfg.format, nextState });
+    send({ type: "audio_start", id, format: cfg.format, pitch: cfg.pitch, nextState });
     return true;
   };
 

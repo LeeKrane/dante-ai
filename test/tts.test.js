@@ -28,6 +28,20 @@ test("carries both speed and volume together", () => {
   assert.deepEqual(r.body.prosody, { speed: 1.1, volume: -3 });
 });
 
+test("never sends pitch to fish -- there is no such prosody field", () => {
+  const r = buildTtsRequest("hi", { ...cfg, speed: 1, pitch: 7 });
+  // Whole-object comparison on purpose: a leaked pitch key would still pass a
+  // narrower assertion that only checked for the fields fish does define.
+  assert.deepEqual(r.body.prosody, undefined);
+  const withVolume = buildTtsRequest("hi", { ...cfg, speed: 1, volume: 2, pitch: 7 });
+  assert.deepEqual(withVolume.body.prosody, { volume: 2 });
+});
+
+test("omits volume 0 from prosody, fish's own default", () => {
+  const r = buildTtsRequest("hi", { ...cfg, speed: 1, volume: 0 });
+  assert.equal(r.body.prosody, undefined);
+});
+
 test("fish is asked to start sending before the clip is finished", () => {
   // "normal" holds the whole clip server-side and sends it in one go: measured
   // 2213 ms to the first byte against 2256 ms for the last. "balanced" puts the

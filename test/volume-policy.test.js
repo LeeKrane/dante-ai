@@ -4,6 +4,9 @@ import {
   clampVolume,
   parseStoredVolume,
   formatVolumePercent,
+  isMuted,
+  nextMuteState,
+  volumeButtonAction,
   MIN_VOLUME,
   MAX_VOLUME,
   DEFAULT_VOLUME,
@@ -61,4 +64,46 @@ test("formatVolumePercent scales linearly on each side of the default", () => {
   const mid = DEFAULT_VOLUME + (MAX_VOLUME - DEFAULT_VOLUME) / 2;
   assert.equal(formatVolumePercent(half), "50%");
   assert.equal(formatVolumePercent(mid), "150%");
+});
+
+test("isMuted is true exactly at the minimum", () => {
+  assert.equal(isMuted(MIN_VOLUME), true);
+});
+
+test("isMuted is false at the default", () => {
+  assert.equal(isMuted(DEFAULT_VOLUME), false);
+});
+
+test("isMuted is false just above the minimum", () => {
+  assert.equal(isMuted(MIN_VOLUME + 0.01), false);
+});
+
+test("nextMuteState muting from a normal level sends it to the minimum and remembers the level", () => {
+  assert.deepEqual(nextMuteState(0.7, DEFAULT_VOLUME), { volume: MIN_VOLUME, restore: 0.7 });
+});
+
+test("nextMuteState unmuting brings back the remembered level", () => {
+  assert.deepEqual(nextMuteState(MIN_VOLUME, 0.7), { volume: 0.7, restore: 0.7 });
+});
+
+test("nextMuteState unmuting when the remembered level is itself 0 falls back to DEFAULT_VOLUME rather than staying silent", () => {
+  assert.deepEqual(nextMuteState(MIN_VOLUME, 0), { volume: DEFAULT_VOLUME, restore: 0 });
+});
+
+test("nextMuteState treats a tampered or corrupt restore level as untrusted input", () => {
+  assert.deepEqual(nextMuteState(MIN_VOLUME, "banana"), { volume: DEFAULT_VOLUME, restore: DEFAULT_VOLUME });
+  assert.deepEqual(nextMuteState(MIN_VOLUME, 99), { volume: MAX_VOLUME, restore: MAX_VOLUME });
+});
+
+test("volumeButtonAction always mutes on a hover-capable device, whether or not the fader is already open", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: true, faderOpen: false }), "mute");
+  assert.equal(volumeButtonAction({ hoverCapable: true, faderOpen: true }), "mute");
+});
+
+test("volumeButtonAction opens the fader on a device with no hover, when it isn't open yet", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: false, faderOpen: false }), "open");
+});
+
+test("volumeButtonAction mutes on a device with no hover, once the fader is already open", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: false, faderOpen: true }), "mute");
 });
