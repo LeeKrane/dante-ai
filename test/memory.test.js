@@ -41,6 +41,13 @@ import {
   rememberSession,
   getSessionRecord,
   getSessions,
+  MAX_CHAIN_DEPTH,
+  CHAIN_TTL_MS,
+  MAX_CHAINS,
+  chainAfter,
+  takeChain,
+  dropChainsExcept,
+  CHAIN_GRACE_MS,
 } from "../lib/memory.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
@@ -790,4 +797,111 @@ test("a session with no id is not remembered", () => {
 test("a store written before sessions existed still reads", () => {
   assert.deepEqual(getSessions({ version: 1, projects: {} }), {});
   assert.equal(getSessionRecord({ sessions: "nonsense" }, SESSION_ID), null);
+});
+
+// ---------------------------------------------------------------------------
+// Chains: a successor task, named for when a session ends
+// ---------------------------------------------------------------------------
+
+test("a chained task waits for the session it follows and is taken once", () => {
+  const store = emptyStore();
+  const saved = chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis", depth: 0 }, T);
+  assert.deepEqual(saved, { task: "run the linter", alias: "jarvis", depth: 0, at: T });
+  assert.deepEqual(takeChain(store, SESSION_ID, T), { task: "run the linter", alias: "jarvis", depth: 0 });
+});
+
+test("taking a chain removes it, so a second take finds nothing", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  assert.ok(takeChain(store, SESSION_ID, T));
+  assert.equal(takeChain(store, SESSION_ID, T), null);
+});
+
+test("a chain older than CHAIN_TTL_MS is not handed back", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  assert.equal(takeChain(store, SESSION_ID, T + CHAIN_TTL_MS + 1), null);
+});
+
+test("a chain at the depth cap is refused rather than recorded", () => {
+  const store = emptyStore();
+  assert.equal(chainAfter(store, SESSION_ID, { task: "x", alias: "jarvis", depth: MAX_CHAIN_DEPTH }, T), null);
+  // One shy of the cap still succeeds, so the refusal is the cap itself and not
+  // an off-by-one.
+  const under = chainAfter(store, SESSION_ID, { task: "x", alias: "jarvis", depth: MAX_CHAIN_DEPTH - 1 }, T);
+  assert.ok(under);
+});
+
+test("the chain table is bounded the way remembered sessions are", () => {
+  const store = emptyStore();
+  for (let i = 0; i < MAX_CHAINS + 5; i += 1) {
+    chainAfter(store, `id-${i}`, { task: "run the linter", alias: "jarvis" }, T + i);
+  }
+  assert.equal(Object.keys(store.chains).length, MAX_CHAINS);
+  assert.equal(takeChain(store, "id-0", T + MAX_CHAINS + 5), null);
+  assert.ok(takeChain(store, `id-${MAX_CHAINS + 4}`, T + MAX_CHAINS + 5));
+});
+
+test("a hostile chain task is capped and stripped like a queued follow-up", () => {
+  const store = emptyStore();
+  const saved = chainAfter(store, SESSION_ID, { task: "x".repeat(MAX_QUEUED_CHARS * 3) + "", alias: "jarvis" }, T);
+  assert.equal(saved.task.length, MAX_QUEUED_CHARS);
+});
+
+test("chainAfter refuses a session id, task or alias that does not survive cleaning", () => {
+  const store = emptyStore();
+  assert.equal(chainAfter(store, SESSION_ID, { task: "", alias: "jarvis" }, T), null);
+  assert.equal(chainAfter(store, SESSION_ID, { task: "run it", alias: "" }, T), null);
+  assert.equal(chainAfter(store, "", { task: "run it", alias: "jarvis" }, T), null);
+});
+
+test("taking a chain that was never set finds nothing", () => {
+  assert.equal(takeChain(emptyStore(), SESSION_ID, T), null);
+  assert.equal(takeChain({ chains: "nonsense" }, SESSION_ID, T), null);
+});
+
+test("chains for sessions that ended are dropped rather than left for a reused id", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "for the live one", alias: "jarvis" }, T);
+  chainAfter(store, "dead-1", { task: "for the dead one", alias: "jarvis" }, T);
+  // Past the grace window: the sweep that matters here is the one that happens
+  // after a session has actually run and ended, not seconds after it spawned.
+  const later = T + CHAIN_GRACE_MS + 1;
+  assert.equal(dropChainsExcept(store, [SESSION_ID], later), 1);
+  assert.ok(takeChain(store, SESSION_ID, later));
+  assert.equal(takeChain(store, "dead-1", later), null);
+});
+
+test("a chain younger than the grace window survives a cleanup its session is too new for", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  // The roster has never seen SESSION_ID -- it was spawned seconds ago, and an
+  // unrelated session ending is what triggered this sweep.
+  assert.equal(dropChainsExcept(store, ["someone-else"], T + 5000), 0);
+  assert.ok(takeChain(store, SESSION_ID, T + 5000));
+});
+
+test("a chain older than the grace window is dropped once its session is gone", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  assert.equal(dropChainsExcept(store, ["someone-else"], T + CHAIN_GRACE_MS + 1), 1);
+  assert.equal(takeChain(store, SESSION_ID, T + CHAIN_GRACE_MS + 1), null);
+});
+
+test("dropping chains on a store that never had any is harmless", () => {
+  assert.equal(dropChainsExcept(emptyStore(), []), 0);
+  assert.equal(dropChainsExcept({}, null), 0);
+});
+
+test("a chain survives a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, Date.now());
+    assert.equal(saveStore(store, path), true);
+    assert.ok(takeChain(loadStore(path), SESSION_ID));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

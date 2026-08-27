@@ -27,6 +27,7 @@ import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
   queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord, getSessions,
+  chainAfter, takeChain, dropChainsExcept,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -105,19 +106,22 @@ const rosterPoller = createRosterPoller({
       // The report someone walked away for. Not awaited: a poller tick must
       // not be held open by a Slack round trip and a summary behind it.
       if (kind === "gone") {
-        reportComplete(session.sessionId, { cwd: session.cwd, name: session.name, startedAt: session.startedAt })
-          .catch((e) => log("report failed:", e.message || e));
+        reportComplete(session.sessionId, {
+          cwd: session.cwd, name: session.name, startedAt: session.startedAt, roster,
+        }).catch((e) => log("report failed:", e.message || e));
       }
     }
     // Whatever changed, the panel is now describing a machine that has moved on.
     broadcastRoster(roster);
-    // A queue for a session that ended is a promise that can never be kept, and
-    // leaving it behind means a reused id would deliver it to a stranger.
+    // A queue or a chain for a session that ended is a promise that can never
+    // be kept, and leaving either behind means a reused id would inherit a
+    // stranger's follow-up or successor.
     if (events.some((event) => event.kind === "gone")) {
-      const dropped = dropQueuesExcept(memoryStore, roster.map((record) => record.sessionId));
+      const live = roster.map((record) => record.sessionId);
+      const dropped = dropQueuesExcept(memoryStore, live) + dropChainsExcept(memoryStore, live);
       if (dropped > 0) {
         saveStore(memoryStore);
-        log(`dropped ${dropped} queue(s) for sessions that ended`);
+        log(`dropped ${dropped} queue/chain entr${dropped === 1 ? "y" : "ies"} for sessions that ended`);
       }
     }
   },
@@ -172,6 +176,14 @@ async function reportComplete(sessionId, context = {}) {
   if (!remembered) return;
   if (!reported.accept(`${sessionId}:complete`)) return;
 
+  // Taken here, synchronously and before anything below awaits: the roster
+  // poller calls dropChainsExcept for this same "gone" event right after
+  // invoking this function (without awaiting it), and a chain still sitting in
+  // the table when that runs would be deleted out from under the dispatch at
+  // the end of this function.
+  const chain = takeChain(memoryStore, sessionId);
+  if (chain) saveStore(memoryStore);
+
   const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
   // Up to ~25 s of Haiku, and worth it: "done" without it is not news. Read
   // once and used twice -- the posted line and the spoken one say the same
@@ -199,6 +211,77 @@ async function reportComplete(sessionId, context = {}) {
     durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
     summary,
   }));
+
+  await dispatchChain(sessionId, remembered, chain, context.roster);
+}
+
+// A session named a successor and this one just ended -- start it now, if it
+// still should run at all.
+//
+// "On completion", deliberately, not "on success": a Claude Code session
+// exposes no pass/fail verdict for this to condition on (see the comment on
+// chainAfter in lib/memory.js). The one thing that does cancel a chain is
+// jarvis having stopped this session itself -- ending something on purpose is
+// not the same as it finishing the work it was asked to do -- which is why
+// `remembered.stoppedAt` is checked here rather than folded into "did it
+// finish" upstream.
+async function dispatchChain(sessionId, remembered, chain, roster) {
+  if (!chain) return;
+  if (remembered.stoppedAt) {
+    log(`chain dropped: ${sessionId} was stopped from here`);
+    return;
+  }
+
+  // The workspace is looked up fresh rather than assumed still there -- the
+  // alias was real when the chain was recorded, but a person can remove a
+  // workspace in the meantime, and guessing at a repository to run in is
+  // exactly the mistake lib/confirm.js exists to prevent for a spoken start.
+  const workspace = getWorkspace(memoryStore, chain.alias);
+  if (!workspace) {
+    log(`chain dropped: workspace ${JSON.stringify(chain.alias)} is no longer known`);
+    await postForSession(
+      sessionId,
+      `I could not start the next session, sir -- I no longer know a workspace called ${chain.alias}.`,
+    );
+    return;
+  }
+
+  // Same ceiling, same counting as a spoken start: only sessions jarvis itself
+  // started count against it, and a chained one is no exception.
+  const live = Array.isArray(roster) ? roster : [];
+  const own = ownRunning(live, getSessions(memoryStore));
+  const refusal = refuseStart(
+    { task: chain.task, repo: chain.alias },
+    {
+      workspace,
+      workspaces: workspacePaths(memoryStore),
+      running: own.running,
+      max: MAX_SESSIONS,
+      oldestIdle: own.oldestIdle ?? undefined,
+    },
+  );
+  if (refusal) {
+    log(`chain refused: ${refusal}`);
+    await postForSession(sessionId, `I could not start the next session, sir. ${refusal}`);
+    return;
+  }
+
+  const started = await beginSession({
+    workspace, task: chain.task, kind: null, taken: live, then: null, depth: chain.depth + 1,
+  });
+  if (!started.ok) {
+    // beginSession has already posted its own "failed" parent to Slack -- there
+    // is no thread yet to reply into, the same reason a failed spoken start
+    // gets one there and not a reply here.
+    log(`chained session start failed name=${started.name} ${started.error}`);
+    return;
+  }
+
+  log(`chain started: ${sessionId} -> ${started.name}`);
+  // beginSession already opened the session's own Slack thread with a
+  // "started" parent; this is the voice half of the same announcement, for
+  // whoever still has a page open.
+  announce(formatSpoken({ kind: "started", name: started.name }));
 }
 
 // A session that is blocked on a person. The one thing polling can never see,
@@ -656,8 +739,12 @@ const server = createServer(async (req, res) => {
 
     const event = parseHookEvent(body);
     if (!event) return;
+    // No roster from a poller tick here -- this is the fast-path hook, firing
+    // straight off the CLI's own Stop/SessionEnd event. rosterPoller.current()
+    // is the best available answer to "what else is running" without paying
+    // for a fresh listing on a path that already raced to answer the hook.
     const work = event.kind === "complete"
-      ? reportComplete(event.sessionId, { cwd: event.cwd })
+      ? reportComplete(event.sessionId, { cwd: event.cwd, roster: rosterPoller.current() })
       : reportAttention(event);
     work.catch((e) => log("hook report failed:", e.message || e));
     return;
@@ -1065,7 +1152,31 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     return;
   }
 
-  const kind = sessionKinds.get(session.kind) ?? null;
+  const started = await beginSession({ workspace, task: session.task, kind: session.kind, taken: live, then: session.then });
+
+  if (!started.ok) {
+    log(`session start failed name=${started.name} ${started.error}`);
+    send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
+    await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
+    return;
+  }
+
+  send({ type: "debug", stage: "session", msg: `started ${started.name}` });
+  // The preamble is the model's own confirmation, which is usually the whole
+  // sentence. The name is added because it is how every later command refers to
+  // this session, and hearing it once is what makes "stop jarvis three" possible.
+  await say(send, joinSpoken(preamble, `Running as ${started.name}.`));
+}
+
+// Everything about starting a session that has nothing to do with a browser:
+// naming it, spawning it, remembering it, opening its Slack thread.
+//
+// Split out because a chained session is started by a poller tick with no
+// socket in sight, and it must be started exactly the way a spoken one is --
+// same numbering, same naming, same thread. A second implementation would drift
+// on the first change to either.
+async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0 }) {
+  const kind = sessionKinds.get(kindId) ?? null;
   // Reserved before the spawn, not after: two requests in flight must not be
   // handed the same number, and a number burned by a failed start is cheaper
   // than two sessions called jarvis-3.
@@ -1073,8 +1184,8 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   saveStore(memoryStore);
 
   const name = buildName(
-    { alias: workspace.alias, number, task: session.task, hint: kind?.nameHint?.({ task: session.task }) },
-    live.map((r) => r.name),
+    { alias: workspace.alias, number, task, hint: kind?.nameHint?.({ task }) },
+    (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
   const sessionId = newSessionId();
 
@@ -1082,46 +1193,42 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     name,
     sessionId,
     cwd: workspace.path,
-    task: session.task,
-    systemPrompt: kind?.systemPrompt?.({ task: session.task, alias: workspace.alias }),
+    task,
+    systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
     effort: kind?.effort,
   });
 
   if (!started.ok) {
-    log(`session start failed name=${name} ${started.error}`);
-    send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
     // Its own parent message, not a reply: there is no thread, because there
     // was never a session to start one.
     slack.postParent(formatEvent({ kind: "failed", name, detail: started.error }));
-    await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
-    return;
+    return { ok: false, name, error: started.error };
   }
 
   // Its own bucket, not the artifacts list: artifacts answer "what did we build
   // lately", and ten sessions would push every build out of that answer.
   rememberSession(memoryStore, sessionId, {
-    name, alias: workspace.alias, cwd: workspace.path, task: session.task, kind: session.kind ?? null,
+    name, alias: workspace.alias, cwd: workspace.path, task, kind: kindId ?? null,
   });
+  // What to do once it finishes, if anything was asked for. Recorded now rather
+  // than looked up later: by the time it ends, the turn that asked is long over.
+  if (then) chainAfter(memoryStore, sessionId, { task: then, alias: workspace.alias, depth });
   saveStore(memoryStore);
-  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}`);
-  send({ type: "debug", stage: "session", msg: `started ${name}` });
+  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
 
   // Not awaited. A Slack round trip is up to five seconds and the confirmation
-  // below is the answer to something someone just said out loud; making them
-  // wait on a notification would be exactly backwards. The thread id lands in
-  // memory whenever it arrives, and every later event for this session looks
-  // it up there.
-  slack.postParent(formatEvent({ kind: "started", name, task: session.task })).then((ts) => {
+  // is the answer to something someone just said out loud; making them wait on
+  // a notification would be exactly backwards. The thread id lands in memory
+  // whenever it arrives, and every later event for this session looks it up
+  // there.
+  slack.postParent(formatEvent({ kind: "started", name, task })).then((ts) => {
     if (!ts) return;
     rememberSession(memoryStore, sessionId, { slackTs: ts });
     saveStore(memoryStore);
   });
 
-  // The preamble is the model's own confirmation, which is usually the whole
-  // sentence. The name is added because it is how every later command refers to
-  // this session, and hearing it once is what makes "stop jarvis three" possible.
-  await say(send, joinSpoken(preamble, `Running as ${name}.`));
+  return { ok: true, name, sessionId };
 }
 
 async function dispatchAction(send, conv, action, preamble = "") {

@@ -20,6 +20,29 @@ test("a session to start is described by where and what", () => {
   );
 });
 
+test("a named successor is read back as part of the same sentence", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "start", repo: "jarvis", task: "fix the tests", then: "run the linter" },
+    }),
+    "Start a session in jarvis to fix the tests, then run the linter. Shall I, sir?",
+  );
+});
+
+test("a successor with nothing to follow is dropped rather than said with no clause to hang off", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", then: "run the linter" } }),
+    "Start a session in jarvis. Shall I, sir?",
+  );
+});
+
+test("a successor is only described for verb start, not tell or stop", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "tell", name: "jarvis-1", task: "run it", then: "run the linter" } }),
+    "Tell jarvis-1 to run it. Shall I, sir?",
+  );
+});
+
 test("the workspace jarvis resolved beats the alias the model wrote", () => {
   // They can differ, and the resolved one is where the session actually runs.
   assert.match(
