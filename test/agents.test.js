@@ -217,26 +217,41 @@ test("a date string is tolerated in case the CLI ever switches to one", () => {
 // or the parser rightly refuses it.
 const NOW = 1_800_000_000_000;
 
+// describeRoster reads an already-ordered, already-numbered roster --
+// orderRoster's own job, tested in the section above -- so these fixtures set
+// `alias`/`number` by hand rather than going through orderRoster themselves.
+// `session()` is used directly (not rosterOf/parseRoster): parseListing keeps
+// only the fields a live CLI actually sends, and would silently drop `alias`
+// and `number` off a fixture that tried to carry them through it.
+const numbered = (overrides = {}) => session({ alias: "jarvis", number: 1, ...overrides });
+
 test("an empty roster says so out loud rather than saying nothing", () => {
-  assert.equal(describeRoster([], {}, NOW), "Nothing is running.");
-  assert.equal(describeRoster(null, {}, NOW), "Nothing is running.");
-  assert.equal(describeRoster("not a roster", {}, NOW), "Nothing is running.");
+  assert.equal(describeRoster([], NOW), "Nothing is running.");
+  assert.equal(describeRoster(null, NOW), "Nothing is running.");
+  assert.equal(describeRoster("not a roster", NOW), "Nothing is running.");
 });
 
-test("a working session is reported with how long it has been at it", () => {
-  const roster = rosterOf(session({ startedAt: NOW - 4 * 60_000 }));
-  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis-1-builder-test-fix working, 4 minutes in");
+test("a numbered line names the session, where it lives, and what it is doing", () => {
+  const roster = [numbered({ startedAt: NOW - 4 * 60_000 })];
+  assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix in jarvis, working, 4 minutes in");
 });
 
 test("an idle session is not told how long it has been idle", () => {
   // Three hours of idleness is not an answer to "what's running" — it is noise
   // in a channel that costs a second per word.
-  const roster = rosterOf(session({ status: "idle", state: null, startedAt: NOW - 3 * 3_600_000 }));
-  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis-1-builder-test-fix idle");
+  const roster = [numbered({ status: "idle", state: null, startedAt: NOW - 3 * 3_600_000 })];
+  assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix in jarvis, idle");
+});
+
+test("a blocked session gets the same elapsed suffix a working one does", () => {
+  // "blocked" is waiting on a person, which is exactly the kind of thing worth
+  // saying how long it has been waiting for.
+  const roster = [numbered({ state: "blocked", status: "idle", startedAt: NOW - 4 * 60_000 })];
+  assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix in jarvis, blocked, 4 minutes in");
 });
 
 test("elapsed time is rounded to something a person would say", () => {
-  const at = (ms) => describeRoster(rosterOf(session({ startedAt: NOW - ms })), {}, NOW);
+  const at = (ms) => describeRoster([numbered({ startedAt: NOW - ms })], NOW);
   assert.match(at(20_000), /just started/);
   assert.match(at(90_000), /a minute in/);
   assert.match(at(25 * 60_000), /25 minutes in/);
@@ -245,90 +260,59 @@ test("elapsed time is rounded to something a person would say", () => {
 });
 
 test("a clock that ran backwards says nothing about elapsed time rather than counting down", () => {
-  const roster = rosterOf(session({ startedAt: NOW + 60_000 }));
-  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis-1-builder-test-fix working");
+  const roster = [numbered({ startedAt: NOW + 60_000 })];
+  assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix in jarvis, working");
 });
 
-test("a session named after its own repo is not named twice", () => {
-  const roster = rosterOf(session({ name: "jarvis-1-fix", startedAt: NOW }));
-  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis-1-fix working, just started");
+test("an empty alias is left out of the line rather than shown as blank", () => {
+  // A session Dante cannot place in any workspace (orderRoster's own leftover
+  // bucket) still gets a line -- it just names no repository.
+  const roster = [numbered({ alias: "", status: "idle", state: null })];
+  assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix, idle");
 });
 
-test("a session started by hand is prefixed with the repo it lives in", () => {
-  const roster = rosterOf(session({ name: "Empty Session", status: "idle", state: null }));
-  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis: Empty Session idle");
+test("a session with no name at all falls back to an unnamed session", () => {
+  const roster = [numbered({ name: null, status: "idle", state: null })];
+  assert.equal(describeRoster(roster, NOW), "1: an unnamed session in jarvis, idle");
 });
 
-test("an alias someone chose beats the directory basename", () => {
-  const roster = rosterOf(
-    session({ cwd: "/home/krane/development/KraneticFitness", name: "Empty Session", state: "done" }),
+test("several sessions are several lines, one per session, in the order given", () => {
+  const roster = [
+    numbered({ sessionId: "a", number: 1, name: "bug-hunt", status: "idle", state: null }),
+    numbered({ sessionId: "b", number: 2, alias: "fitness", name: "readme-summary", status: "idle", state: null }),
+  ];
+  assert.equal(
+    describeRoster(roster, NOW),
+    "1: bug-hunt in jarvis, idle\n2: readme-summary in fitness, idle",
   );
-  assert.match(describeRoster(roster, {}, NOW), /KraneticFitness: Empty Session done/);
-  assert.match(
-    describeRoster(roster, { fitness: "/home/krane/development/KraneticFitness" }, NOW),
-    /fitness: Empty Session done/,
-  );
-});
-
-test("a session running in a worktree of a workspace is named by that workspace's alias", () => {
-  // Dante's own sessions call EnterWorktree and move under
-  // .claude/worktrees/<name>, which is still inside the repo (visibleSessions
-  // already treats it that way), so the spoken label must agree or the model
-  // hears a repository - "repo-persistence" - that does not exist and later
-  // reads it back into an [ACTION:SESSION ...] tag verbatim.
-  const JARVIS = "/home/krane/development/jarvis";
-  const aliases = { jarvis: JARVIS };
-
-  const worktree = session({
-    cwd: `${JARVIS}/.claude/worktrees/repo-persistence`,
-    name: "jarvis-10-add-persistent-whitelist-main",
-  });
-  const line = describeRoster(rosterOf(worktree), aliases, NOW);
-  assert.ok(line.includes("jarvis-10-add-persistent-whitelist-main"), line);
-  assert.ok(!line.includes("repo-persistence:"), line);
-
-  // A hand-named session in the same worktree still gets the repo prefix,
-  // because unlike a Dante-named one its name says nothing about where it lives.
-  const handNamed = session({
-    cwd: `${JARVIS}/.claude/worktrees/repo-persistence`,
-    name: "Empty Session",
-    status: "idle",
-    state: null,
-  });
-  const handLine = describeRoster(rosterOf(handNamed), aliases, NOW);
-  assert.ok(handLine.includes("jarvis: Empty Session"), handLine);
-});
-
-test("a session with no name at all is still described", () => {
-  const roster = rosterOf(session({ name: null, status: "idle", state: null }));
-  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis idle");
 });
 
 test("a spoken roster never contains a uuid, a pid or a path", () => {
   // The whole output channel is a voice. Any of these three read aloud is a
   // wasted turn and an irritated user.
-  const line = describeRoster(parseRoster(LIVE_LISTING), {}, NOW);
+  const line = describeRoster(parseRoster(LIVE_LISTING), NOW);
   assert.ok(!line.includes("3b139d5b-d998"), line);
   assert.ok(!line.includes("1308510"), line);
   assert.ok(!line.includes("/home/krane"), line);
 });
 
-test("a long roster is summarised rather than recited", () => {
+test("a roster past the cap is listed up to it, with the rest counted rather than named", () => {
   const many = Array.from({ length: MAX_LISTED + 3 }, (_, i) =>
-    session({ sessionId: `id-${i}`, name: `jarvis-${i}`, status: "idle", state: null }),
+    numbered({ sessionId: `id-${i}`, number: i + 1, name: `jarvis-${i}`, status: "idle", state: null }),
   );
-  const line = describeRoster(parseRoster(JSON.stringify(many)), {}, NOW);
-  assert.match(line, new RegExp(`^${MAX_LISTED + 3} sessions:`));
-  assert.match(line, /and three more$/);
+  const line = describeRoster(many, NOW);
+  const lines = line.split("\n");
+  assert.equal(lines.length, MAX_LISTED + 1);
+  assert.equal(lines.at(-1), "(three more not shown)");
   assert.ok(!line.includes(`jarvis-${MAX_LISTED}`), line);
 });
 
 test("an unrecognised state is never read aloud verbatim", () => {
   // A CLI that grows a new state must not put its jargon in someone's ear.
-  const roster = rosterOf(session({ state: "reticulating", status: "unheard-of" }));
-  const line = describeRoster(roster, {}, NOW);
+  const roster = [numbered({ state: "reticulating", status: "unheard-of" })];
+  const line = describeRoster(roster, NOW);
   assert.ok(!line.includes("reticulating"), line);
-  assert.match(line, /jarvis-1-builder-test-fix running/);
+  assert.match(line, /jarvis-1-builder-test-fix in jarvis, running/);
 });
 
 // ---------------------------------------------------------------------------

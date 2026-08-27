@@ -9,6 +9,7 @@ import {
   findTarget,
   isAnswerable,
   needsConfirmation,
+  parseSessionNumber,
   readAnswer,
 } from "../lib/confirm.js";
 
@@ -38,8 +39,61 @@ test("an interview question is never held for a confirmation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseSessionNumber
+// ---------------------------------------------------------------------------
+
+test("a positive integer, or a numeral string, both parse as a session number", () => {
+  assert.equal(parseSessionNumber(3), 3);
+  assert.equal(parseSessionNumber("3"), 3);
+  assert.equal(parseSessionNumber(" 3 "), 3);
+  assert.equal(parseSessionNumber(15), 15);
+});
+
+test("zero, negative, fractional and partial numbers are all refused", () => {
+  for (const bad of [0, -1, -4242, 1.5, "0", "-1", "3a", "a3", "", "  ", null, undefined, NaN, Infinity, {}, []]) {
+    assert.equal(parseSessionNumber(bad), null, String(bad));
+  }
+});
+
+// ---------------------------------------------------------------------------
 // findTarget
 // ---------------------------------------------------------------------------
+
+test("a number matches the session numbered that, exclusively, never falling back to the name", () => {
+  // The whole point of asking for a number: a model that guessed wrong about
+  // it must not still land on the right session by name.
+  const roster = [
+    { name: "jarvis-1-fix-tests", sessionId: "a", number: 1 },
+    { name: "bug-hunt", sessionId: "b", number: 2 },
+  ];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { number: 1 }), { record: roster[0], refusal: null });
+  assert.deepEqual(findTarget(roster, "nonsense", { number: 2 }), { record: roster[1], refusal: null });
+});
+
+test("a number nothing answers to names the count, in words, rather than refusing blind", () => {
+  const roster = [
+    { name: "jarvis-1-fix-tests", sessionId: "a", number: 1 },
+    { name: "bug-hunt", sessionId: "b", number: 2 },
+  ];
+  assert.deepEqual(findTarget(roster, "", { number: 9 }), {
+    record: null,
+    refusal: "There is no session nine, sir. I count two.",
+  });
+});
+
+test("a number against an empty roster counts none rather than saying no", () => {
+  assert.deepEqual(findTarget([], "", { number: 3 }), {
+    record: null,
+    refusal: "There is no session three, sir. I count none.",
+  });
+});
+
+test("a listing that could not be read is refused the same way whether addressed by number or by name", () => {
+  assert.deepEqual(findTarget(null, "", { number: 3 }), {
+    record: null,
+    refusal: "I cannot see what is running just now, sir.",
+  });
+});
 
 test("a query that cleans to nothing asks which session, before the roster is even consulted", () => {
   assert.deepEqual(findTarget([{ name: "jarvis-1" }], ""), {
@@ -336,6 +390,37 @@ test("the session Dante resolved beats the name the model wrote", () => {
       target: { name: "jarvis-1-fix-failing-builder-test" },
     }),
     "Tell jarvis-1-fix-failing-builder-test to run it. Shall I, sir?",
+  );
+});
+
+test("a session addressed by number is confirmed by number, with the resolved name appended", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "stop", number: "3" },
+      target: { name: "bug-hunt" },
+    }),
+    "Stop session three, bug-hunt. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({
+      session: { verb: "tell", number: "3", task: "run the tests" },
+      target: { name: "bug-hunt" },
+    }),
+    "Tell session three, bug-hunt to run the tests. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({
+      session: { verb: "interrupt", number: "3", task: "check the other file first" },
+      target: { name: "bug-hunt" },
+    }),
+    "Interrupt session three, bug-hunt and tell it to check the other file first. Shall I, sir?",
+  );
+});
+
+test("a session addressed by number with nothing yet resolved says the number alone", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "stop", number: "3" } }),
+    "Stop session three. Shall I, sir?",
   );
 });
 

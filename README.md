@@ -143,9 +143,15 @@ Claude Code sessions running on this machine — from `claude agents --json`, so
 it sees the ones you started in a terminal too — and you can drive them:
 
 - *"What's running?"* — the roster, spoken. Never a uuid, a pid or a path.
+- The panel numbers every row 1..N, main repository first, oldest session
+  first within each repository — the same order and the same numbers the
+  model is told. *"Stop session three"* addresses a session by that number
+  instead of its name; a number is only ever resolved against the current
+  list, and a number said about one that has since stopped is refused rather
+  than guessed at.
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `jarvis-3-fix-failing-builder-test`.
-  Five at a time, counted from the roster so terminal sessions count too.
+  Fifteen at a time, counted from the roster so terminal sessions count too.
   Naming no repository at all starts it in your **main** repository instead —
   the one you last named as such, or whichever was current when the server
   first ran with none set.
@@ -162,8 +168,8 @@ it sees the ones you started in a terminal too — and you can drive them:
   successor and starts it the moment the first session **finishes**, not when it
   succeeds: a Claude Code session exposes no pass/fail verdict, so there is
   nothing to condition on. A session you stop by voice drops its chain rather
-  than starting it. A chained session counts against the five-session cap like
-  any other.
+  than starting it. A chained session counts against the fifteen-session cap
+  like any other.
 - *"What did jarvis three come up with?"* — reads that session's transcript and
   speaks the answer. Works on a session still working (*"it's still working,
   sir. So far…"*) and on one that has finished, and takes a real question:
@@ -215,8 +221,8 @@ you said it. A command missing a detail — a *tell* with nothing to say, a
 start, tell, interrupt or stop ever runs unconfirmed.
 
 A proposal expires after two minutes and is then not answerable at all. The
-five-session ceiling counts only sessions Dante itself started — your terminals
-and other tools' background jobs are not its business.
+fifteen-session ceiling counts only sessions Dante itself started — your
+terminals and other tools' background jobs are not its business.
 
 **It asks first.** A one-line spoken request is rarely a brief a session can work from. When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what must not be touched, what done looks like), Dante interviews you, **one question per turn**, most important first, until it is confident it has all four ([docs/interview.md](docs/interview.md)) or you say to stop asking or to just start it. When it is confident it proposes as usual, but the spoken sentence is a summary while the **full brief is shown centred over the orb** — above the other panels, never over the hold-to-talk button — and is what the session actually receives — a structured document (Goal / Where / Constraints / Done when) that loses nothing you said. A request that is already specific gets no interview. Below the state label, a line shows what Dante is doing right now (*interviewing*, *awaiting your yes*, *starting jarvis*, *telling jarvis-1*, *reading jarvis-2*, *building landing page*), and goes blank when nothing is.
 

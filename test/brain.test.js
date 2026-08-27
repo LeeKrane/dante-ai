@@ -200,6 +200,15 @@ test("the persona teaches the interrupt tag and when to reach for it over tell",
   assert.match(persona, /use tell - it is the safer of the two/);
 });
 
+test("the persona teaches the numbered machine-state lines and the number= tag", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /Each machine-state line is numbered/);
+  assert.match(persona, /"session N" means the line marked N/);
+  assert.match(persona, /number="<n>"/);
+  // Acknowledging the number back is taught, not just emitting the tag.
+  assert.match(persona, /"Session three\." is enough on its own/);
+});
+
 test("the guardrail against acting on an unmentioned session also covers interrupt", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(

@@ -8,7 +8,9 @@ import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
-import { clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer } from "./lib/confirm.js";
+import {
+  clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, parseSessionNumber, readAnswer,
+} from "./lib/confirm.js";
 // `matches` is imported under a longer name because dispatchRead already has a
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
@@ -620,7 +622,8 @@ async function proposeSession(send, conv, session, roster) {
     // exist is a false confirmation, and asking "shall I stop jarvis-1, sir?"
     // only to say "I cannot find jarvis-1 running" after the yes is worse than
     // saying so up front.
-    const { record, refusal } = findTarget(roster, session.name ?? session.repo);
+    const number = parseSessionNumber(session.number);
+    const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number });
     // Every hop the name takes, on one line: what the tag actually carried,
     // what query that became, and what it resolved to or why it did not -- so
     // a truncated or mismatched name shows up here rather than only as a
@@ -629,7 +632,7 @@ async function proposeSession(send, conv, session, roster) {
     // than repeated below, which used to log the same refusal a second time
     // with none of the name or repo it was refused for.
     log(
-      `${verb} target: tag name=${JSON.stringify(session.name ?? null)} repo=${JSON.stringify(session.repo ?? null)} -> ${
+      `${verb} target: tag name=${JSON.stringify(session.name ?? null)} repo=${JSON.stringify(session.repo ?? null)} number=${JSON.stringify(number)} -> ${
         record ? `resolved ${JSON.stringify(record.name)} (${record.sessionId})` : `refused: ${refusal}`
       }`,
     );
@@ -658,7 +661,14 @@ async function proposeSession(send, conv, session, roster) {
     run: async () =>
       dispatchSession(
         send,
-        { ...session, ...(target ? { name: target.name } : {}) },
+        // The number is cleared here, deliberately: the roster re-read below
+        // can have reshuffled between the proposal and this "yes" (something
+        // else finished, freeing up a number), and resolving by number a
+        // second time would then target whatever session that number belongs
+        // to NOW, not the one just confirmed. The exact name findTarget
+        // already resolved above has no such problem -- it stays that one
+        // session's name until the session itself is gone.
+        { ...session, ...(target ? { name: target.name } : {}), number: undefined },
         "",
         // Read again on the way in: the roster that produced the proposal is
         // however many seconds old the answer took to arrive, and a stop
@@ -1195,9 +1205,14 @@ function firstUnanswered(primitive, params) {
 //
 // The matching and the wording of each refusal live in lib/confirm.js's
 // findTarget, so they can be tested without a live roster; this is only the
-// wiring that speaks the refusal when there is one.
-async function resolveSession(send, roster, query, preamble) {
-  const { record, refusal } = findTarget(roster, query);
+// wiring that speaks the refusal when there is one. Takes the session itself,
+// not a pre-built query, because addressing by number needs the tag's own
+// `number` key alongside the name/repo query -- a caller building that query
+// by hand would otherwise have to remember to parse and pass the number too,
+// and a forgotten one silently falls back to name matching.
+async function resolveSession(send, roster, session, preamble) {
+  const number = parseSessionNumber(session.number);
+  const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number });
   if (refusal) {
     await say(send, joinSpoken(preamble, refusal));
     return null;
@@ -1207,7 +1222,7 @@ async function resolveSession(send, roster, query, preamble) {
 
 // Ask a session to stop, and confirm it did before saying so.
 async function dispatchStop(send, session, preamble, roster) {
-  const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
+  const record = await resolveSession(send, roster, session, preamble);
   if (!record) return;
 
   activity(send, "stopping", { subject: record.name });
@@ -1253,7 +1268,7 @@ async function dispatchStop(send, session, preamble, roster) {
 // path stays underneath as the fallback for a session that has no peer
 // address to answer to.
 async function dispatchTell(send, session, preamble, roster, verb = "tell") {
-  const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
+  const record = await resolveSession(send, roster, session, preamble);
   if (!record) return;
 
   // The name resolved above is what this actually delivers to, not necessarily
@@ -1376,25 +1391,50 @@ function recallable(roster) {
 // is simply not readable, with no cached answer standing in for it.
 async function dispatchRead(send, session, preamble, roster) {
   const candidates = recallable(roster);
-  // Deliberately not resolveSession: that one resolves against the live roster,
-  // and every session this is for has left it. The matcher is the same
-  // (matchSessions works on anything carrying a name), so "jarvis three" finds
-  // jarvis-3-fix-failing-builder-test here exactly as it does for a stop.
-  const matches = matchSessions(candidates, session.name ?? session.repo);
-  if (matches.length === 0) {
-    await say(send, joinSpoken(preamble, "I have nothing readable by that name, sir."));
-    return;
-  }
-  if (matches.length > 1) {
-    // Never the first of several. Reading the wrong session's work back is a
-    // quieter mistake than stopping the wrong process, but it is still an answer
-    // about work that was never done.
-    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
-    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
-    return;
+  const number = parseSessionNumber(session.number);
+
+  let record;
+  if (number !== null) {
+    // A number only ever names a session still on the roster this turn -- a
+    // finished one carries no number, since it is on no roster at all -- so
+    // this is resolved against the live `roster`, not `candidates`, and
+    // findTarget is reused rather than reimplemented so a miss is refused in
+    // exactly the same words a stop or a tell would use for the same number.
+    const { record: live, refusal } = findTarget(roster, "", { number });
+    if (refusal) {
+      await say(send, joinSpoken(preamble, refusal));
+      return;
+    }
+    // The live record findTarget returns carries no `task`: it comes off
+    // `claude agents --json`, not off recallableSessions. What dispatchRead
+    // needs (task, running) lives in `candidates`, keyed by the same sessionId.
+    record = candidates.find((c) => c.sessionId === live.sessionId);
+    if (!record) {
+      await say(send, joinSpoken(preamble, "I have nothing readable by that number, sir."));
+      return;
+    }
+  } else {
+    // Deliberately not resolveSession: that one resolves against the live
+    // roster, and every session named this way may have left it. The matcher
+    // is the same (matchSessions works on anything carrying a name), so
+    // "jarvis three" finds jarvis-3-fix-failing-builder-test here exactly as
+    // it does for a stop.
+    const matches = matchSessions(candidates, session.name ?? session.repo);
+    if (matches.length === 0) {
+      await say(send, joinSpoken(preamble, "I have nothing readable by that name, sir."));
+      return;
+    }
+    if (matches.length > 1) {
+      // Never the first of several. Reading the wrong session's work back is a
+      // quieter mistake than stopping the wrong process, but it is still an
+      // answer about work that was never done.
+      const names = matches.slice(0, 3).map((r) => r.name).join(", ");
+      await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
+      return;
+    }
+    record = matches[0];
   }
 
-  const record = matches[0];
   const question = session.question ?? session.task ?? session.text ?? session.message;
 
   activity(send, "reading", { subject: record.name });
