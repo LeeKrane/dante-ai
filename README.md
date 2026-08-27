@@ -354,9 +354,9 @@ Claude Code will still use a tool you leave off the list, which is why
 | **h** | the rest of the interface |
 
 Toggles are ignored while Space is held, so a stray key mid-sentence can't blank
-the screen. If part of the UI "disappeared," press the key again. Whatever is
-off is listed under the controls, key first, so the keys need no remembering;
-the line goes away once everything is on.
+the screen. If part of the UI "disappeared," press the key again. All four are
+also on screen as switches under the controls, lit while on -- on a phone,
+where there are no keys, tapping those is how the panels are toggled.
 
 ## How it's put together
 

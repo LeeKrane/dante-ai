@@ -10,11 +10,12 @@ export function getVisibilityToggle(key, holding) {
   return VISIBILITY_KEYS[String(key).toLowerCase()] || null;
 }
 
-// The hint under the controls: one entry per panel that is currently off,
-// in the same order as the key table, each `key` + `label`. The caller says
-// what is visible; this says what to print. Empty when everything is on.
-export function hiddenPanelHints(visible = {}) {
+// The switches under the controls: every panel, in key-table order, with
+// whether it is currently on. Always all four -- the line is permanent now,
+// so a person can learn the keys from it, and on a phone the switches are
+// the only way to toggle anything. The caller says what is visible; this
+// says what to paint.
+export function panelToggles(visible = {}) {
   return Object.entries(VISIBILITY_KEYS)
-    .filter(([, target]) => !visible[target])
-    .map(([key, target]) => ({ key, target, label: target }));
+    .map(([key, target]) => ({ key, target, label: target, on: Boolean(visible[target]) }));
 }

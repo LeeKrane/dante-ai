@@ -29,7 +29,7 @@
      status readout, or the build HUD must not paint a stray text selection.
      This used to sit on `body` and inherit everywhere, which also made the
      model's own replies uncopyable, so it is scoped to just the controls. */
-  #mic, #cancel, #orb, #volume, #status, #build-hud {
+  #mic, #cancel, #orb, #volume, #status, #build-hud, #keys {
     -webkit-user-select: none;
     user-select: none;
   }
@@ -109,12 +109,36 @@
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
   }
-  /* Which panels are off, and the key that brings each back. Its own row
-     under the controls rather than a corner: nothing else is ever there, and
-     it is deliberately not in the interface-hidden list -- after `h` it is
-     the one thing left that says how to undo `h`. */
-  #keys { text-align: center; padding: 0 12px 10px; font-size: 11px; color: var(--muted); letter-spacing: .04em; }
-  #keys kbd { font-size: 10px; padding: 1px 5px; }
+  /* One switch per panel, under the controls: the key that toggles it and
+     its name, lit while it is on. Permanent, so the keys can be learned from
+     it. Its own row rather than a corner because nothing else is ever there,
+     and deliberately not in the interface-hidden list -- after `h` it is
+     the one thing left that says how to undo `h`. On a phone there is no
+     keyboard, so the same buttons grow into pills and the `kbd` goes. */
+  #keys {
+    display: flex; justify-content: center; flex-wrap: wrap; gap: 4px 16px;
+    padding: 0 12px 10px; font-size: 11px; letter-spacing: .04em;
+  }
+  #keys .key {
+    appearance: none; border: 0; background: none; padding: 0; margin: 0;
+    font: inherit; letter-spacing: inherit; color: var(--muted); opacity: .55;
+    cursor: pointer;
+  }
+  #keys .key[aria-pressed="true"] { opacity: 1; }
+  #keys .key:hover { color: var(--ink); }
+  #keys .key kbd { font-size: 10px; padding: 1px 5px; }
+  /* The mic's safe-area padding is gone with the rest of the controls, so
+     the row takes it over. */
+  body.interface-hidden #keys { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  @media (max-width: 520px) {
+    #keys { gap: 8px; }
+    #keys .key {
+      padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px;
+      background: rgba(255,255,255,.03); font-size: 12px; opacity: .7;
+    }
+    #keys .key[aria-pressed="true"] { border-color: var(--cyan); color: var(--ink); opacity: 1; }
+    #keys .key kbd { display: none; }
+  }
 
   /* Shown only if the browser blocked the automatic tab for a finished build. */
   #artifact {
@@ -434,7 +458,7 @@
       </div>
       <div id="hint">hold the button, or press &amp; hold <kbd>Space</kbd></div>
     </div>
-    <div id="keys" class="hidden" aria-live="off"></div>
+    <div id="keys" aria-live="off"></div>
   </div>
   <!-- The reply is played through a media element rather than a buffer source so
        it can start before it has finished arriving; MediaSource needs somewhere

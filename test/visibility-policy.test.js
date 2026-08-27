@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getVisibilityToggle, hiddenPanelHints } from "../public/visibility-policy.js";
+import { getVisibilityToggle, panelToggles } from "../public/visibility-policy.js";
 
 test("maps visibility keys when push-to-talk is inactive", () => {
   assert.equal(getVisibilityToggle("t", false), "caption");
@@ -18,32 +18,25 @@ test("suppresses visibility toggles while push-to-talk is held", () => {
   assert.equal(getVisibilityToggle("s", true), null);
 });
 
-test("names every panel that is off, key first, in key order", () => {
+test("lists every panel in key order, saying which is on", () => {
   assert.deepEqual(
-    hiddenPanelHints({ caption: false, interface: false, diagnostics: false, sessions: false }),
+    panelToggles({ caption: true, interface: true, diagnostics: false, sessions: true }),
     [
-      { key: "t", target: "caption", label: "caption" },
-      { key: "h", target: "interface", label: "interface" },
-      { key: "d", target: "diagnostics", label: "diagnostics" },
-      { key: "s", target: "sessions", label: "sessions" },
+      { key: "t", target: "caption", label: "caption", on: true },
+      { key: "h", target: "interface", label: "interface", on: true },
+      { key: "d", target: "diagnostics", label: "diagnostics", on: false },
+      { key: "s", target: "sessions", label: "sessions", on: true },
     ],
-  );
-});
-
-test("says nothing when everything is on", () => {
-  assert.deepEqual(
-    hiddenPanelHints({ caption: true, interface: true, diagnostics: true, sessions: true }),
-    [],
   );
 });
 
 test("an unstated panel counts as off", () => {
   const allOff = [
-    { key: "t", target: "caption", label: "caption" },
-    { key: "h", target: "interface", label: "interface" },
-    { key: "d", target: "diagnostics", label: "diagnostics" },
-    { key: "s", target: "sessions", label: "sessions" },
+    { key: "t", target: "caption", label: "caption", on: false },
+    { key: "h", target: "interface", label: "interface", on: false },
+    { key: "d", target: "diagnostics", label: "diagnostics", on: false },
+    { key: "s", target: "sessions", label: "sessions", on: false },
   ];
-  assert.deepEqual(hiddenPanelHints({}), allOff);
-  assert.deepEqual(hiddenPanelHints(), allOff);
+  assert.deepEqual(panelToggles({}), allOff);
+  assert.deepEqual(panelToggles(), allOff);
 });

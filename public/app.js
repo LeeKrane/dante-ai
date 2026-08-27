@@ -1,5 +1,5 @@
 import { applyResults, interimOf, isFatalSpeechError, mergeTranscript } from "./stt-policy.js";
-import { getVisibilityToggle, hiddenPanelHints } from "./visibility-policy.js";
+import { getVisibilityToggle, panelToggles } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
@@ -552,11 +552,10 @@ function watchSessions() {
   }
 }
 
-// ---- What is off ----
+// ---- The switches ----
 //
-// One line under the controls naming every panel that is currently hidden,
-// key first, so the four keys (`t`, `h`, `d`, `s`) never need remembering.
-// Empty and hidden once everything is on.
+// One line under the controls, one button per panel, lit when on; on a
+// phone the only way to toggle them.
 const keysEl = document.getElementById("keys");
 
 function panelsVisible() {
@@ -570,15 +569,28 @@ function panelsVisible() {
 
 function renderKeys() {
   if (!keysEl) return;
-  const hints = hiddenPanelHints(panelsVisible());
-  keysEl.classList.toggle("hidden", hints.length === 0);
-  keysEl.replaceChildren(...hints.flatMap((hint, i) => {
+  keysEl.replaceChildren(...panelToggles(panelsVisible()).map((toggle) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "key";
+    button.dataset.target = toggle.target;
+    button.setAttribute("aria-pressed", String(toggle.on));
     const kbd = document.createElement("kbd");
-    kbd.textContent = hint.key;
-    const label = document.createTextNode(` ${hint.label}`);
-    return i === 0 ? [kbd, label] : [document.createTextNode(" · "), kbd, label];
+    kbd.textContent = toggle.key;
+    button.append(kbd, document.createTextNode(` ${toggle.label}`));
+    return button;
   }));
 }
+
+// Delegated, because the buttons are rebuilt on every render. The blur is
+// load-bearing: a button left focused would take the next Space as a
+// click, and Space is push-to-talk.
+keysEl?.addEventListener("click", (e) => {
+  const button = e.target.closest("button.key");
+  if (!button) return;
+  button.blur();
+  toggleVisibility(button.dataset.target);
+});
 
 renderSessions();
 renderKeys();
