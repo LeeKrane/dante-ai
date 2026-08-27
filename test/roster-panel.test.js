@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MAX_ROWS, elapsedLabel, panelIsVisible, rowsFromRoster } from "../public/roster-panel.js";
+import { MAX_ROWS, elapsedLabel, groupsFromRoster, panelIsVisible, rowsFromRoster } from "../public/roster-panel.js";
 
 const NOW = 1_800_000_000_000;
 const record = (overrides = {}) => ({
@@ -93,4 +93,87 @@ test("the panel is shown when opened, whether or not anything is running", () =>
 
 test("closing the panel hides it, however busy the machine is", () => {
   assert.equal(panelIsVisible(false), false);
+});
+
+// --- groupsFromRoster --------------------------------------------------
+
+const workspace = (overrides = {}) => ({ alias: "jarvis", main: false, ...overrides });
+
+test("groups keep the server's own order, main first", () => {
+  const workspaces = [workspace({ alias: "fitness", main: true }), workspace({ alias: "jarvis" })];
+  const roster = [record({ sessionId: "j1", alias: "jarvis" }), record({ sessionId: "f1", alias: "fitness", startedAt: NOW - 5000 })];
+  const groups = groupsFromRoster(workspaces, roster, NOW);
+  assert.deepEqual(groups.map((g) => [g.alias, g.main]), [["fitness", true], ["jarvis", false]]);
+});
+
+test("a repository with no sessions still gets a group, just an empty one", () => {
+  const workspaces = [workspace({ alias: "fitness", main: true }), workspace({ alias: "jarvis" })];
+  const groups = groupsFromRoster(workspaces, [record({ alias: "jarvis" })], NOW);
+  assert.deepEqual(groups.find((g) => g.alias === "fitness").sessions, []);
+  assert.equal(groups.find((g) => g.alias === "jarvis").sessions.length, 1);
+});
+
+test("a session whose alias names no known workspace lands in elsewhere, and only then", () => {
+  const workspaces = [workspace({ alias: "jarvis", main: true })];
+  const withoutStray = groupsFromRoster(workspaces, [record({ alias: "jarvis" })], NOW);
+  assert.equal(withoutStray.some((g) => g.alias === "elsewhere"), false);
+
+  const withStray = groupsFromRoster(
+    workspaces,
+    [record({ alias: "jarvis" }), record({ sessionId: "ghost", alias: "long-gone" })],
+    NOW,
+  );
+  const elsewhere = withStray.find((g) => g.alias === "elsewhere");
+  assert.ok(elsewhere);
+  assert.equal(elsewhere.main, false);
+  assert.equal(elsewhere.other, true);
+  assert.deepEqual(elsewhere.sessions.map((r) => r.id), ["ghost"]);
+});
+
+test("a real workspace named elsewhere does not lose sessions to the catch-all group", () => {
+  // Both groups end up carrying the same label, which is not the property
+  // under test -- "other" is: it is the one field that tells a real
+  // workspace's own group apart from the synthetic catch-all, and app.js
+  // is only allowed to branch on it, never on the alias string.
+  const workspaces = [workspace({ alias: "elsewhere", main: true })];
+  const groups = groupsFromRoster(
+    workspaces,
+    [record({ sessionId: "real", alias: "elsewhere" }), record({ sessionId: "ghost", alias: "long-gone" })],
+    NOW,
+  );
+  const real = groups.find((g) => g.alias === "elsewhere" && !g.other);
+  const stray = groups.find((g) => g.alias === "elsewhere" && g.other);
+  assert.ok(real);
+  assert.equal(real.main, true);
+  assert.deepEqual(real.sessions.map((r) => r.id), ["real"]);
+  assert.ok(stray);
+  assert.equal(stray.main, false);
+  assert.deepEqual(stray.sessions.map((r) => r.id), ["ghost"]);
+});
+
+test("every real group says other: false, whether or not it is main", () => {
+  const workspaces = [workspace({ alias: "fitness", main: true }), workspace({ alias: "jarvis" })];
+  const groups = groupsFromRoster(workspaces, [], NOW);
+  assert.deepEqual(groups.map((g) => g.other), [false, false]);
+});
+
+test("the MAX_ROWS cap applies across every group, newest first, not per group", () => {
+  const workspaces = [workspace({ alias: "jarvis", main: true })];
+  const roster = Array.from({ length: 20 }, (_, i) =>
+    record({ sessionId: `s${i}`, alias: "jarvis", startedAt: NOW - i * 1000 }));
+  const groups = groupsFromRoster(workspaces, roster, NOW);
+  const total = groups.reduce((sum, g) => sum + g.sessions.length, 0);
+  assert.equal(total, MAX_ROWS);
+  assert.equal(groups[0].sessions[0].id, "s0");
+});
+
+test("rows inside a group are shaped exactly the way rowsFromRoster shapes them", () => {
+  const workspaces = [workspace({ alias: "jarvis", main: true })];
+  const groups = groupsFromRoster(workspaces, [record()], NOW);
+  assert.deepEqual(groups[0].sessions, rowsFromRoster([record()], NOW));
+});
+
+test("no workspaces and no sessions is an empty list of groups", () => {
+  assert.deepEqual(groupsFromRoster([], [], NOW), []);
+  assert.deepEqual(groupsFromRoster(null, null, NOW), []);
 });

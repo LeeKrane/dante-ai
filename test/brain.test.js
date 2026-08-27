@@ -129,6 +129,12 @@ test("the persona explains how a repository is named, or the workspace tag is ne
   assert.match(persona, /\[MEMORY:SET workspace:/);
 });
 
+test("the persona explains that a session with no repo named starts in the main one", () => {
+  const persona = brain.buildPersona();
+  assert.match(persona, /repo= may be left out entirely/);
+  assert.match(persona, /\[MEMORY:SET main=/);
+});
+
 // ---------------------------------------------------------------------------
 // Proposing rather than assuming
 // ---------------------------------------------------------------------------

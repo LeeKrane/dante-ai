@@ -115,6 +115,25 @@
   /* Shown in place of rows when the panel is open and nothing is running --
      otherwise pressing `s` with an empty roster would look like it did nothing. */
   #sessions .none { opacity: .55; }
+  /* One header row per repository, above its sessions. Clickable -- other than
+     main, which has nothing left to become, and "elsewhere", which names no
+     real workspace -- so the cursor says so; a little brighter than the rows
+     underneath it, the same way #dbg's own headings sit a shade lighter than
+     its body text. */
+  #sessions .repo {
+    display: flex; align-items: baseline; gap: .6ch;
+    margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--line);
+    color: var(--ink); opacity: .85; cursor: pointer;
+  }
+  #sessions .repo:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+  #sessions .repo:hover { opacity: 1; }
+  #sessions .repo.main, #sessions .repo.other { cursor: default; }
+  /* app.js only grants tabindex to a header that is actually clickable, so
+     this rule never has to exclude .main/.other itself. */
+  #sessions .repo:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
+  /* The star reserves its own column whether or not it has anything in it, so
+     every repository name lines up under the one before it. */
+  #sessions .repo .star { display: inline-block; width: 1.4ch; color: var(--amber); }
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
   }
