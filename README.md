@@ -339,6 +339,7 @@ Claude Code will still use a tool you leave off the list, which is why
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
+| **s** | sessions panel (what is running, where, for how long; off by default) |
 | **t** | the caption line |
 | **h** | the rest of the interface |
 

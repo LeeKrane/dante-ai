@@ -1,4 +1,4 @@
-// The sessions panel: what is running, next to the orb.
+// The sessions panel: what is running, in a corner of its own.
 //
 // The build HUD beside this one is a canvas groove that a build cuts for
 // itself, and it is about one build in one directory. Sessions are the more
@@ -10,10 +10,10 @@
 // The fifth pure client module. app.js paints; every decision that can be a
 // function is one here, where it can be tested.
 
-// More than a handful on screen is a wall of text beside an orb. The roster
-// Dante can see is already whitelisted to named repositories server-side, so
-// this cap is about the panel rather than about scope.
-export const MAX_ROWS = 6;
+// Matches the server's own MAX_ROSTER_ROWS (server.js): a dedicated panel has
+// room for everything the server ever sends, so the cap is about agreeing
+// with the wire shape rather than about trimming for space.
+export const MAX_ROWS = 8;
 
 // Below this, "0s" flickering on every tick says less than nothing.
 const MIN_ELAPSED_MS = 1000;
@@ -67,9 +67,9 @@ export function rowsFromRoster(roster, now = Date.now()) {
     }));
 }
 
-// The panel is shown only when it has something to say, and never when the
-// interface is hidden with `h` -- a list nobody can see is still a list the
-// screen reader reads out.
-export function panelIsVisible(rows, chromeHidden) {
-  return Array.isArray(rows) && rows.length > 0 && !chromeHidden;
+// Same reasoning as #dbg: a panel someone deliberately opened is not "the
+// rest of the interface", so it is shown iff the person opened it -- an empty
+// roster and `h` both leave it exactly where it was.
+export function panelIsVisible(open) {
+  return Boolean(open);
 }

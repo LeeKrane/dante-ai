@@ -203,10 +203,12 @@ function toggleVisibility(target) {
     buildHud.setChromeHidden(document.body.classList.contains("interface-hidden"));
     // A hidden button that is merely invisible still answers the keyboard.
     refreshCancel();
-    // Same for a list nobody can see: it is still read out.
-    renderSessions();
   }
   else if (target === "diagnostics" && dbgEl) dbgEl.classList.toggle("hidden");
+  else if (target === "sessions") {
+    sessionsOpen = !sessionsOpen;
+    renderSessions();
+  }
 }
 
 // ---- Audio (hoisted so the orb loop can read the live analyser) ----
@@ -451,38 +453,45 @@ ws.onmessage = async (ev) => {
 
 // ---- What is running ----
 //
-// The roster the server already keeps, painted beside the orb. It arrives
-// whenever it changes rather than on a timer, and the elapsed times are ticked
-// locally -- a session's age changes every second and none of that is worth a
-// message.
+// The roster the server already keeps, painted into a panel of its own,
+// opened with `s` -- same idea as diagnostics on `d`, in the opposite corner.
+// It arrives whenever it changes rather than on a timer, and the elapsed
+// times are ticked locally -- a session's age changes every second and none
+// of that is worth a message.
 //
 // Only sessions Dante may see reach here: the server filters to the
 // repositories that were named out loud before any of this is sent.
 const sessionsEl = document.getElementById("sessions");
 let roster = [];
+let sessionsOpen = false;
 
 function renderSessions() {
   if (!sessionsEl) return;
+  sessionsEl.classList.toggle("hidden", !panelIsVisible(sessionsOpen));
   const rows = rowsFromRoster(roster);
-  sessionsEl.classList.toggle(
-    "hidden",
-    !panelIsVisible(rows, document.body.classList.contains("interface-hidden")),
-  );
-  // Rebuilt wholesale rather than diffed: six rows of text is not a thing worth
-  // reconciling, and a stale row would describe a session that has ended.
+  if (rows.length === 0) {
+    const none = document.createElement("div");
+    none.className = "none";
+    none.textContent = "nothing running";
+    sessionsEl.replaceChildren(none);
+    return;
+  }
+  // Rebuilt wholesale rather than diffed: eight rows of text is not a thing
+  // worth reconciling, and a stale row would describe a session that has ended.
   sessionsEl.replaceChildren(...rows.map((row) => {
     const line = document.createElement("div");
     line.className = `sess ${row.condition}`;
     // textContent throughout: a session name is written by whoever started the
     // session, which is not always Dante.
     const name = document.createElement("span");
+    name.className = "name";
     name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
     const cond = document.createElement("span");
     cond.className = "cond";
-    cond.textContent = `  ${row.condition}`;
+    cond.textContent = row.condition;
     const when = document.createElement("span");
     when.className = "when";
-    when.textContent = row.elapsed ? `  ${row.elapsed}` : "";
+    when.textContent = row.elapsed;
     line.append(name, cond, when);
     return line;
   }));

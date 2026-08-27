@@ -61,7 +61,7 @@
   /* These three are the only prose on the page: the assistant's reply, the
      build log, and the diagnostics panel. The I-beam cursor tells the
      pointer they're selectable before the drag even starts. */
-  #caption, #progress, #progress div, #dbg {
+  #caption, #progress, #progress div, #dbg, #sessions {
     -webkit-user-select: text;
     user-select: text;
     cursor: text;
@@ -82,21 +82,33 @@
   /* One long path must never widen the HUD and reflow the orb. */
   #progress div { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
   #progress div:last-child { color: var(--cyan); opacity: .95; }
-  /* What is running, beside the orb. Same monospace readout as #progress --
-     they are the same kind of thing: a machine's state, not prose. */
+  /* What is running: a panel in a corner, on a key -- same idea as #dbg,
+     mirrored to the other side. A person who opened it deliberately keeps it,
+     regardless of what else on the page is showing or hiding. */
   #sessions {
-    display: inline-block; margin: 12px auto 0; text-align: left;
-    max-width: min(52ch, 92vw);
+    position: fixed; top: 10px; right: 10px; z-index: 20;
+    max-width: min(60ch, 92vw); max-height: 62vh; overflow: auto;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: rgba(3,10,16,.72); backdrop-filter: blur(2px);
     font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
     letter-spacing: .04em; color: var(--muted);
+    pointer-events: auto;
   }
-  #sessions .sess { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  #sessions .sess { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 1.4ch; align-items: baseline; }
+  #sessions .name { overflow-wrap: anywhere; }          /* wraps, never truncates */
+  #sessions .cond, #sessions .when { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* The condition is the only part worth colour: working is alive, blocked is
      waiting on a person, and idle is neither. */
   #sessions .cond { opacity: .75; }
   #sessions .working .cond { color: var(--cyan); opacity: 1; }
   #sessions .blocked .cond { color: var(--amber); opacity: 1; }
   #sessions .when { opacity: .55; }
+  /* Shown in place of rows when the panel is open and nothing is running --
+     otherwise pressing `s` with an empty roster would look like it did nothing. */
+  #sessions .none { opacity: .55; }
+  @media (max-width: 520px) {
+    #sessions { left: 10px; right: 10px; max-width: none; }
+  }
 
   /* Shown only if the browser blocked the automatic tab for a finished build. */
   #artifact {
@@ -232,7 +244,6 @@
   @media (prefers-reduced-motion: reduce) { #mic .dot, #mic .icon { animation: none; } }
   body.interface-hidden #status,
   body.interface-hidden #progress,
-  body.interface-hidden #sessions,
   body.interface-hidden #artifact,
   body.interface-hidden #build-hud,
   body.interface-hidden #controls { display: none; }
@@ -341,6 +352,7 @@
 </head>
 <body>
   <div id="dbg" class="hidden"></div>
+  <div id="sessions" class="hidden" aria-live="off"></div>
   <div id="build-hud" class="hidden" aria-hidden="true">
     <canvas id="bh-record"></canvas>
     <canvas id="bh-live"></canvas>
@@ -377,7 +389,6 @@
         <div id="status">idle</div>
         <div id="caption"></div>
         <div id="progress" class="hidden"></div>
-        <div id="sessions" class="hidden" aria-live="off"></div>
         <a id="artifact" class="hidden" target="_blank" rel="noopener">Open the finished page</a>
       </div>
     </div>
