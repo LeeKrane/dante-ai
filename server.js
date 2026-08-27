@@ -20,7 +20,9 @@ import { recallableSessions } from "./lib/recall.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { createRosterPoller, idleAmong, isWorking, matchSessions, ownRunning, visibleSessions } from "./lib/agents.js";
+import {
+  MAX_LISTED, createRosterPoller, idleAmong, isWorking, matchSessions, orderRoster, ownRunning, visibleSessions,
+} from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -99,11 +101,22 @@ const rosterPoller = createRosterPoller({
   //
   // Evaluated per tick rather than captured once, so naming a repository
   // mid-conversation widens it on the next tick with no restart.
-  filter: (roster) => visibleSessions(roster, {
-    roots: Object.values(workspacePaths(memoryStore)),
-    hideIds: ownSessionIds(),
-    hideRoots: [BUILDS],
-  }),
+  //
+  // orderRoster is applied here, in the one place every consumer of the roster
+  // shares -- onRoster, onEvents/broadcastRoster, current(), read() (the
+  // say-handler's own snapshot, and proposeSession's maxAgeMs: 0 re-read) and
+  // dispatchRead's recallable(roster) all see the same numbered records this
+  // produces. A workspace or main-repo change is picked up on the next poll
+  // tick, same as everything else that reads workspacePaths/workspacesForClient
+  // here -- not instantly, since the filter itself only runs once per tick.
+  filter: (roster) => orderRoster(
+    visibleSessions(roster, {
+      roots: Object.values(workspacePaths(memoryStore)),
+      hideIds: ownSessionIds(),
+      hideRoots: [BUILDS],
+    }),
+    { aliases: workspacePaths(memoryStore), order: workspacesForClient(memoryStore).map((w) => w.alias) },
+  ),
 
   // Drained on every tick a session is seen idle, not only the tick it
   // becomes idle, because a queue can gain an entry after that moment or
@@ -455,18 +468,22 @@ async function answerApproval(send, text) {
 // second and the page can count that itself.
 // More than this is a wall of text beside an orb, and the panel caps itself
 // again anyway. Cut here as well so the message stays small whatever a machine
-// running twenty sessions does.
-const MAX_ROSTER_ROWS = 8;
-
-function rosterForClient(roster, aliases) {
+// running twenty sessions does. MAX_LISTED, not a number of its own: the
+// numbering below is only meaningful if the panel and the model are looking at
+// the same cut of the same list.
+function rosterForClient(roster) {
   if (!Array.isArray(roster)) return [];
-  const byPath = Object.entries(aliases ?? {});
-  return roster.slice(0, MAX_ROSTER_ROWS).map((record) => ({
+  // The roster arrives already numbered (see the poller's own filter, above) --
+  // over the FULL list, not the slice below, so a hidden sixteenth session
+  // still has a number and "stop session sixteen" still resolves even though
+  // the panel never draws that row.
+  return roster.slice(0, MAX_LISTED).map((record) => ({
     sessionId: record.sessionId,
     name: record.name,
     // The alias rather than the path: a repository is called "jarvis" out loud,
     // and a page has no business being told where it lives on disk.
-    alias: byPath.find(([, path]) => record.cwd === path || record.cwd?.startsWith(`${path}/`))?.[0] ?? "",
+    alias: typeof record.alias === "string" ? record.alias : "",
+    number: record.number,
     state: record.state,
     status: record.status,
     startedAt: record.startedAt,
@@ -474,7 +491,7 @@ function rosterForClient(roster, aliases) {
 }
 
 function sendRoster(send, roster) {
-  send({ type: "roster", sessions: rosterForClient(roster, workspacePaths(memoryStore)) });
+  send({ type: "roster", sessions: rosterForClient(roster) });
 }
 
 function broadcastRoster(roster) {

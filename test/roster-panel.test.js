@@ -8,6 +8,7 @@ const record = (overrides = {}) => ({
   sessionId: "aaaa1111-0000-0000-0000-000000000000",
   name: "jarvis-1-fix",
   alias: "jarvis",
+  number: 1,
   state: "working",
   status: "busy",
   startedAt: NOW - 65_000,
@@ -19,6 +20,7 @@ test("a row says which session, where, how it is and how long", () => {
     id: "aaaa1111-0000-0000-0000-000000000000",
     name: "jarvis-1-fix",
     where: "jarvis",
+    number: 1,
     condition: "working",
     elapsed: "1m",
   }]);
@@ -31,31 +33,33 @@ test("blocked is its own word, because it is the one you can do something about"
   assert.equal(rowsFromRoster([record({ state: null, status: "busy" })], NOW)[0].condition, "working");
 });
 
-test("the newest sessions are the ones on screen", () => {
-  // The one started thirty seconds ago is being thought about; the one running
-  // since this morning is furniture.
+test("rows keep the server's own numbered order rather than being resorted here", () => {
+  // The server numbers the roster once (lib/agents.js's orderRoster) so a
+  // click and a spoken "session three" name the same session; a panel that
+  // reordered them by age on top of that would make the two disagree.
   const roster = [
-    record({ sessionId: "old", startedAt: NOW - 3_600_000 }),
-    record({ sessionId: "new", startedAt: NOW - 30_000 }),
+    record({ sessionId: "three", number: 3, startedAt: NOW - 30_000 }),
+    record({ sessionId: "one", number: 1, startedAt: NOW - 3_600_000 }),
+    record({ sessionId: "two", number: 2, startedAt: NOW - 1_800_000 }),
   ];
-  assert.deepEqual(rowsFromRoster(roster, NOW).map((r) => r.id), ["new", "old"]);
+  assert.deepEqual(rowsFromRoster(roster, NOW).map((r) => r.id), ["one", "two", "three"]);
 });
 
 test("more than a handful is a wall of text in the panel", () => {
   const roster = Array.from({ length: 20 }, (_, i) =>
-    record({ sessionId: `s${i}`, startedAt: NOW - i * 1000 }));
+    record({ sessionId: `s${i}`, number: i + 1, startedAt: NOW - i * 1000 }));
   const rows = rowsFromRoster(roster, NOW);
   assert.equal(rows.length, MAX_ROWS);
-  assert.equal(MAX_ROWS, 8);
-  // Cut after sorting, so what survives is the most recent rather than
-  // whatever the CLI printed first.
+  assert.equal(MAX_ROWS, 15);
+  // Cut after sorting by number, so what survives is the first fifteen numbers
+  // rather than whatever the caller happened to hand this function.
   assert.equal(rows[0].id, "s0");
 });
 
-test("a session with no start time sorts last rather than first", () => {
+test("a session with no number sorts last rather than first", () => {
   const roster = [
-    record({ sessionId: "unknown", startedAt: null }),
-    record({ sessionId: "known", startedAt: NOW - 10_000 }),
+    record({ sessionId: "unknown", number: null }),
+    record({ sessionId: "known", number: 1 }),
   ];
   assert.deepEqual(rowsFromRoster(roster, NOW).map((r) => r.id), ["known", "unknown"]);
 });
@@ -157,10 +161,10 @@ test("every real group says other: false, whether or not it is main", () => {
   assert.deepEqual(groups.map((g) => g.other), [false, false]);
 });
 
-test("the MAX_ROWS cap applies across every group, newest first, not per group", () => {
+test("the MAX_ROWS cap applies across every group, by number, not per group", () => {
   const workspaces = [workspace({ alias: "jarvis", main: true })];
   const roster = Array.from({ length: 20 }, (_, i) =>
-    record({ sessionId: `s${i}`, alias: "jarvis", startedAt: NOW - i * 1000 }));
+    record({ sessionId: `s${i}`, alias: "jarvis", number: i + 1, startedAt: NOW - i * 1000 }));
   const groups = groupsFromRoster(workspaces, roster, NOW);
   const total = groups.reduce((sum, g) => sum + g.sessions.length, 0);
   assert.equal(total, MAX_ROWS);

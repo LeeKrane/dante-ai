@@ -6,8 +6,8 @@ import { join } from "node:path";
 
 import {
   LIST_TIMEOUT_MS,
+  MAX_LISTED,
   MAX_ROSTER_AGE_MS,
-  MAX_SPOKEN,
   POLL_MS,
   createRosterPoller,
   describeRoster,
@@ -16,6 +16,7 @@ import {
   matchSessions,
   diffRoster,
   listAgents,
+  orderRoster,
   ownRunning,
   parseRoster,
   visibleSessions,
@@ -313,13 +314,13 @@ test("a spoken roster never contains a uuid, a pid or a path", () => {
 });
 
 test("a long roster is summarised rather than recited", () => {
-  const many = Array.from({ length: MAX_SPOKEN + 3 }, (_, i) =>
+  const many = Array.from({ length: MAX_LISTED + 3 }, (_, i) =>
     session({ sessionId: `id-${i}`, name: `jarvis-${i}`, status: "idle", state: null }),
   );
   const line = describeRoster(parseRoster(JSON.stringify(many)), {}, NOW);
-  assert.match(line, /^eight sessions:/);
+  assert.match(line, new RegExp(`^${MAX_LISTED + 3} sessions:`));
   assert.match(line, /and three more$/);
-  assert.ok(!line.includes(`jarvis-${MAX_SPOKEN}`), line);
+  assert.ok(!line.includes(`jarvis-${MAX_LISTED}`), line);
 });
 
 test("an unrecognised state is never read aloud verbatim", () => {
@@ -328,6 +329,123 @@ test("an unrecognised state is never read aloud verbatim", () => {
   const line = describeRoster(roster, {}, NOW);
   assert.ok(!line.includes("reticulating"), line);
   assert.match(line, /jarvis-1-builder-test-fix running/);
+});
+
+// ---------------------------------------------------------------------------
+// orderRoster
+// ---------------------------------------------------------------------------
+
+test("repositories come first main, then alphabetical, and sessions are numbered globally", () => {
+  const roster = rosterOf(
+    session({ sessionId: "z", cwd: "/home/krane/development/zebra", name: "zebra-1" }),
+    session({ sessionId: "a", cwd: "/home/krane/development/jarvis", name: "jarvis-1" }),
+    session({ sessionId: "m", cwd: "/home/krane/development/KraneticFitness", name: "fitness-1" }),
+  );
+  const aliases = {
+    jarvis: "/home/krane/development/jarvis",
+    fitness: "/home/krane/development/KraneticFitness",
+    zebra: "/home/krane/development/zebra",
+  };
+  // workspacesForClient's own shape: main first, then alphabetical.
+  const order = ["fitness", "jarvis", "zebra"];
+  const result = orderRoster(roster, { aliases, order });
+  assert.deepEqual(result.map((r) => [r.alias, r.number]), [
+    ["fitness", 1],
+    ["jarvis", 2],
+    ["zebra", 3],
+  ]);
+});
+
+test("inside a repository, the oldest session is numbered first", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const roster = rosterOf(
+    session({ sessionId: "newer", cwd: JARVIS, startedAt: 5000 }),
+    session({ sessionId: "older", cwd: JARVIS, startedAt: 1000 }),
+  );
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.deepEqual(result.map((r) => r.sessionId), ["older", "newer"]);
+  assert.deepEqual(result.map((r) => r.number), [1, 2]);
+});
+
+test("numbers only move when something stops, so a fresh session is numbered last in its bucket", () => {
+  // The whole point of oldest-first: starting a new session must not renumber
+  // one somebody already said "session three" about a moment ago.
+  const JARVIS = "/home/krane/development/jarvis";
+  const before = orderRoster(rosterOf(session({ sessionId: "a", cwd: JARVIS, startedAt: 1000 })), {
+    aliases: { jarvis: JARVIS },
+    order: ["jarvis"],
+  });
+  assert.equal(before[0].number, 1);
+
+  const after = orderRoster(
+    rosterOf(
+      session({ sessionId: "a", cwd: JARVIS, startedAt: 1000 }),
+      session({ sessionId: "b", cwd: JARVIS, startedAt: 2000 }),
+    ),
+    { aliases: { jarvis: JARVIS }, order: ["jarvis"] },
+  );
+  assert.equal(after.find((r) => r.sessionId === "a").number, 1);
+  assert.equal(after.find((r) => r.sessionId === "b").number, 2);
+});
+
+test("a session with no start time sorts last within its own repository", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const roster = rosterOf(
+    session({ sessionId: "unknown", cwd: JARVIS, startedAt: null }),
+    session({ sessionId: "known", cwd: JARVIS, startedAt: 5000 }),
+  );
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.deepEqual(result.map((r) => r.sessionId), ["known", "unknown"]);
+});
+
+test("equal start times are ordered by session id, so the order never depends on CLI print order", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const roster = rosterOf(
+    session({ sessionId: "b", cwd: JARVIS, startedAt: 1000 }),
+    session({ sessionId: "a", cwd: JARVIS, startedAt: 1000 }),
+  );
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.deepEqual(result.map((r) => r.sessionId), ["a", "b"]);
+});
+
+test("a session in a repository not named in order still gets a number, after every named one", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const STRAY = "/home/krane/development/long-gone";
+  const roster = rosterOf(
+    session({ sessionId: "stray", cwd: STRAY, startedAt: 1000 }),
+    session({ sessionId: "known", cwd: JARVIS, startedAt: 5000 }),
+  );
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.deepEqual(result.map((r) => r.sessionId), ["known", "stray"]);
+  assert.deepEqual(result.map((r) => r.number), [1, 2]);
+});
+
+test("numbering runs over the whole roster, not just what a panel would show", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const many = Array.from({ length: 20 }, (_, i) =>
+    session({ sessionId: `id-${i}`, cwd: JARVIS, startedAt: 1000 + i }),
+  );
+  const result = orderRoster(rosterOf(...many), { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.equal(result.length, 20);
+  assert.equal(result[19].number, 20);
+});
+
+test("an alias is resolved through within, so a worktree cwd carries its parent workspace's alias", () => {
+  // Dante's own start:verb sessions call EnterWorktree and move under
+  // .claude/worktrees/<name>, still inside the repo -- see aliasFor's own note.
+  const JARVIS = "/home/krane/development/jarvis";
+  const roster = rosterOf(
+    session({ sessionId: "a", cwd: `${JARVIS}/.claude/worktrees/repo-persistence` }),
+  );
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.equal(result[0].alias, "jarvis");
+});
+
+test("orderRoster tolerates a missing order and a missing roster", () => {
+  assert.deepEqual(orderRoster(null, {}), []);
+  assert.deepEqual(orderRoster(undefined), []);
+  const [record] = orderRoster(rosterOf(session()));
+  assert.equal(record.number, 1);
 });
 
 // ---------------------------------------------------------------------------

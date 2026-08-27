@@ -534,7 +534,11 @@ function sessionRowEl(row) {
   line.className = `sess ${row.condition}`;
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
+  // The repo header already names the repository, so a numbered row inside it
+  // reads "3: name" rather than repeating "jarvis/3: name" -- the number, not
+  // the path, is what a spoken "session three" refers to.
+  const label = typeof row.number === "number" ? `${row.number}: ${row.name}` : row.name;
+  name.textContent = row.where ? `${row.where}/${label}` : label;
   const cond = document.createElement("span");
   cond.className = "cond";
   cond.textContent = row.condition;
