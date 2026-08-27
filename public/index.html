@@ -29,7 +29,7 @@
      status readout, or the build HUD must not paint a stray text selection.
      This used to sit on `body` and inherit everywhere, which also made the
      model's own replies uncopyable, so it is scoped to just the controls. */
-  #mic, #cancel, #orb, #volume, #status, #build-hud, #keys {
+  #mic, #cancel, #orb, #volume, #status, #activity, #build-hud, #keys {
     -webkit-user-select: none;
     user-select: none;
   }
@@ -49,6 +49,15 @@
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 12px; letter-spacing: .34em; text-transform: uppercase;
     color: var(--cyan); opacity: .85;
+  }
+  /* What Dante is doing right now, one size down from #status and not
+     shouting -- #status already owns uppercase and the loud colour. A fixed
+     min-height keeps the layout still while this empties between activities
+     rather than the orb hopping up and down under it. */
+  #activity {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px; letter-spacing: .12em;
+    color: var(--muted); min-height: 1.4em;
   }
   #caption {
     margin: 14px auto 0; max-width: 60ch; min-height: 2.6em;
@@ -138,6 +147,19 @@
     }
     #keys .key[aria-pressed="true"] { border-color: var(--cyan); color: var(--ink); opacity: 1; }
     #keys .key kbd { display: none; }
+  }
+  /* The brief a proposal is asking someone to approve. Its own panel rather
+     than folding into #sessions or the key-toggled set: it is up only for as
+     long as a proposal awaits a yes, and the server -- not a key -- decides
+     when that is, so it has no place in the visibility-policy toggle list. */
+  #brief {
+    position: fixed; bottom: 10px; right: 10px; z-index: 20;
+    max-width: min(70ch, 92vw); max-height: 40vh; overflow: auto;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: rgba(3,10,16,.72); backdrop-filter: blur(2px);
+    font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: .04em; color: var(--muted);
+    white-space: pre-wrap; pointer-events: auto;
   }
 
   /* Shown only if the browser blocked the automatic tab for a finished build. */
@@ -383,6 +405,7 @@
 <body>
   <div id="dbg" class="hidden"></div>
   <div id="sessions" aria-live="off"></div>
+  <div id="brief" class="hidden"></div>
   <div id="build-hud" class="hidden" aria-hidden="true">
     <canvas id="bh-record"></canvas>
     <canvas id="bh-live"></canvas>
@@ -417,6 +440,7 @@
       <canvas id="orb"></canvas>
       <div id="hud">
         <div id="status">idle</div>
+        <div id="activity"></div>
         <div id="caption"></div>
         <div id="progress" class="hidden"></div>
         <a id="artifact" class="hidden" target="_blank" rel="noopener">Open the finished page</a>

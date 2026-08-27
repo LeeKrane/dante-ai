@@ -1,5 +1,6 @@
 import { applyResults, interimOf, isFatalSpeechError, mergeTranscript } from "./stt-policy.js";
 import { getVisibilityToggle, panelToggles } from "./visibility-policy.js";
+import { describeActivity } from "./activity-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
@@ -31,6 +32,8 @@ import { centsForPitch, rateForPitch } from "./pitch-policy.js";
 
 // ---- DOM ----
 const statusEl = document.getElementById("status");
+const activityEl = document.getElementById("activity");
+const briefEl = document.getElementById("brief");
 const capEl = document.getElementById("caption");
 const micBtn = document.getElementById("mic");
 const cancelBtn = document.getElementById("cancel");
@@ -443,6 +446,15 @@ ws.onmessage = async (ev) => {
     // request, which is how the HUD tells the two apart.
     awaitingAnswer = true;
     dbg(`ask: ${msg.text}`);
+  }
+  else if (msg.type === "activity") {
+    // textContent only, never innerHTML: the subject and brief in this
+    // message are written by whoever started the session, not by Dante.
+    const { label, detail } = describeActivity(msg);
+    activityEl.textContent = label;
+    briefEl.textContent = detail;
+    briefEl.classList.toggle("hidden", !detail);
+    dbg(`activity: ${label || "—"}`);
   }
   else if (msg.type === "open") {
     // The artifact URL is the only authoritative statement of what the build

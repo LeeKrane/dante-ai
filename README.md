@@ -211,6 +211,8 @@ A proposal expires after two minutes and is then not answerable at all. The
 five-session ceiling counts only sessions Dante itself started — your terminals
 and other tools' background jobs are not its business.
 
+**It asks first.** A one-line spoken request is rarely a brief a session can work from. When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what must not be touched, what done looks like), Dante interviews you, **one question per turn**, at most four, most important first; *"just start it"* or *"that's enough"* ends it early. When the picture is clear it proposes as usual, but the spoken sentence is a summary while the **full brief is shown on the page** and is what the session actually receives. A request that is already specific gets no interview. Below the state label, a line shows what Dante is doing right now (*interviewing*, *awaiting your yes*, *starting jarvis*, *telling jarvis-1*, *reading jarvis-2*, *building landing page*), and goes blank when nothing is.
+
 These sessions run under **your** settings, permissions, hooks and MCP servers —
 the same session you'd have started by typing `claude` there. Dante imposes no
 deny list, because you asked for an orchestrator and not a sandbox. What it will

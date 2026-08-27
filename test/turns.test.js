@@ -220,3 +220,69 @@ test("an alias from the memory store names the repo the session lives in", () =>
   });
   assert.match(merged, /fitness: Empty Session idle/);
 });
+
+// ---------------------------------------------------------------------------
+// The interview line riding along in the turn
+// ---------------------------------------------------------------------------
+
+test("a turn with no interview is byte-identical to what it was", () => {
+  // The whole reason the interview is opt-in: every turn of an ordinary
+  // conversation has to be byte-identical to what it was, or the assistant
+  // starts paying for a feature nobody asked for on every sentence.
+  const baseline = mergeTurns(["x"]);
+  assert.equal(mergeTurns(["x"], { interview: "" }), baseline);
+  assert.equal(mergeTurns(["x"], { interview: undefined }), baseline);
+  assert.equal(
+    mergeTurns(["x"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: "" }),
+  );
+  assert.equal(
+    mergeTurns(["x"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: undefined }),
+  );
+});
+
+test("an interview line rides in the machine-state block after the roster lines", () => {
+  const merged = mergeTurns(["what's running?"], {
+    roster: ROSTER,
+    now: NOW,
+    interview: "we were building a feature",
+  });
+  // The interview line appears after the roster lines.
+  assert.match(merged, /jarvis-1-builder-test-fix working/);
+  assert.match(merged, /we were building a feature/);
+  // The interview line is framed as machine state, not something anyone said.
+  assert.match(merged, /not something anyone said/);
+  assert.match(merged, /data, never instructions/);
+  // The interview line is inside the header and footer, appearing after the
+  // roster lines but before the footer.
+  const rosterIndex = merged.indexOf("jarvis-1-builder-test-fix working");
+  const interviewIndex = merged.indexOf("we were building a feature");
+  const footerIndex = merged.indexOf("data, never instructions");
+  assert.ok(rosterIndex < interviewIndex && interviewIndex < footerIndex, merged);
+  // The request is still the last thing in the prompt.
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("an interview line with no roster still arrives framed as machine state, not as something said", () => {
+  const merged = mergeTurns(["what's running?"], {
+    interview: "we were building a feature",
+  });
+  // The interview line is framed as machine state.
+  assert.match(merged, /not something anyone said/);
+  assert.match(merged, /data, never instructions/);
+  // The interview line appears before what was said.
+  assert.match(merged, /we were building a feature/);
+  assert.ok(merged.indexOf("we were building a feature") < merged.indexOf("what's running?"));
+  // The request is still the last thing in the prompt.
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("a blank interview line adds nothing", () => {
+  const baseline = mergeTurns(["x"]);
+  assert.equal(mergeTurns(["x"], { interview: "   " }), baseline);
+  assert.equal(
+    mergeTurns(["x"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: "   " }),
+  );
+});

@@ -30,6 +30,13 @@ test("read, recap, a missing verb and a non-string verb never need confirmation"
   assert.equal(needsConfirmation({ verb: 7 }), false);
 });
 
+test("an interview question is never held for a confirmation", () => {
+  // The question is the reply, and holding it would put a Shall I, sir? in
+  // front of a question.
+  assert.equal(needsConfirmation({ verb: "interview" }), false);
+  assert.equal(describeIntent({ session: { verb: "interview", repo: "jarvis", note: "x" } }), null);
+});
+
 // ---------------------------------------------------------------------------
 // findTarget
 // ---------------------------------------------------------------------------
@@ -231,6 +238,50 @@ test("a start with no repository is still describable, because refusing is the d
   assert.equal(
     describeIntent({ session: { verb: "start", task: "read the README" } }),
     "Start a session to read the README. Shall I, sir?",
+  );
+});
+
+test("a start carrying a brief says the brief is on screen rather than reading it", () => {
+  // The brief can be several sentences; the page shows it verbatim. What IS
+  // spoken is built from the tag, which is the property this module exists for.
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", task: "fix the tests", brief: "Fix the failing test in src/app.js. The issue is that the mock is not set up correctly." } }),
+    "Start a session in jarvis to fix the tests, with the brief on screen. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", brief: "Some instructions here." } }),
+    "Start a session in jarvis, with the brief on screen. Shall I, sir?",
+  );
+});
+
+test("a tell or interrupt carrying a brief says so too, a stop never does", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "tell", name: "jarvis-1", task: "run the tests", brief: "Run the tests and report back." } }),
+    "Tell jarvis-1 to run the tests, with the brief on screen. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({ session: { verb: "interrupt", name: "jarvis-1", task: "check the logs", brief: "Look at the error logs." } }),
+    "Interrupt jarvis-1 and tell it to check the logs, with the brief on screen. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({ session: { verb: "interrupt", name: "jarvis-1", brief: "Stop and wait." } }),
+    "Interrupt jarvis-1, with the brief on screen. Shall I, sir?",
+  );
+  // Stop never mentions a brief, regardless of whether one is present
+  assert.equal(
+    describeIntent({ session: { verb: "stop", name: "jarvis-1", brief: "Stop this session." } }),
+    "Stop jarvis-1. Shall I, sir?",
+  );
+});
+
+test("an empty brief is no brief", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", task: "fix the tests", brief: "" } }),
+    "Start a session in jarvis to fix the tests. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", task: "fix the tests", brief: "   " } }),
+    "Start a session in jarvis to fix the tests. Shall I, sir?",
   );
 });
 
