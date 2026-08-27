@@ -151,6 +151,13 @@ test("the persona forbids stopping or telling a session nobody asked about", () 
   assert.match(persona, /running-sessions line is something\s+you were told about/);
 });
 
+test("the sessions block teaches the recap verb for catching up on what was missed", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=recap\]/);
+  assert.match(persona, /what happened while he was away/);
+  assert.match(persona, /names no session and starts nothing/);
+});
+
 test("the persona says to ask rather than fill a gap in, on both tags", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   // Once for builds, once for sessions: a model that guesses a repository is

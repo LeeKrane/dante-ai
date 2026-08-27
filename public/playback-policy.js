@@ -139,3 +139,18 @@ export function takeAnnouncement(queue, floor = {}, now = Date.now(), ttlMs = AN
   const [next, ...rest] = live;
   return next ? { speak: next, queue: rest, dropped } : { speak: null, queue: live, dropped };
 }
+
+// clearAnnouncements(queue) -> { queue: [], dropped }
+//
+// A recap ("what happened while I was out") just said everything sitting in
+// this queue, out loud, in one paragraph -- so leaving it queued would repeat
+// it the moment the floor next comes free. The server clears its own pending
+// map at the same time (see server.js's clear_announcements message); this is
+// the client's half, kept pure and testable the same way every other
+// announcement decision here is. `dropped` mirrors takeAnnouncement's shape so
+// the diagnostics panel can say what happened rather than leaving a silence
+// unexplained.
+export function clearAnnouncements(queue) {
+  const list = Array.isArray(queue) ? queue : [];
+  return { queue: [], dropped: list.length };
+}

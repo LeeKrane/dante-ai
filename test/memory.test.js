@@ -48,6 +48,12 @@ import {
   takeChain,
   dropChainsExcept,
   CHAIN_GRACE_MS,
+  MAX_EVENTS,
+  MAX_EVENT_NAME_CHARS,
+  MAX_EVENT_DETAIL_CHARS,
+  recordEvent,
+  getEvents,
+  clearEvents,
 } from "../lib/memory.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
@@ -901,6 +907,82 @@ test("a chain survives a save and a load", () => {
     chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, Date.now());
     assert.equal(saveStore(store, path), true);
     assert.ok(takeChain(loadStore(path), SESSION_ID));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The event log
+// ---------------------------------------------------------------------------
+
+test("recordEvent stamps an entry with the kind, name, detail and time given", () => {
+  const store = emptyStore();
+  const recorded = recordEvent(store, { kind: "complete", name: "jarvis-1", detail: "fixed the tests" }, T);
+  assert.deepEqual(recorded, { kind: "complete", name: "jarvis-1", detail: "fixed the tests", at: T });
+  assert.deepEqual(getEvents(store), [recorded]);
+});
+
+test("recordEvent refuses a kind that is not one of lib/notify.js's KINDS", () => {
+  const store = emptyStore();
+  assert.equal(recordEvent(store, { kind: "exploded", name: "jarvis-1" }, T), null);
+  assert.equal(recordEvent(store, { kind: null, name: "jarvis-1" }, T), null);
+  assert.equal(recordEvent(store, {}, T), null);
+  assert.deepEqual(getEvents(store), []);
+});
+
+test("recordEvent caps the log at MAX_EVENTS, keeping the newest", () => {
+  const store = emptyStore();
+  for (let i = 0; i < MAX_EVENTS + 5; i++) {
+    recordEvent(store, { kind: "complete", name: `jarvis-${i}` }, T + i);
+  }
+  const events = getEvents(store);
+  assert.equal(events.length, MAX_EVENTS);
+  assert.equal(events[0].name, "jarvis-5");
+  assert.equal(events.at(-1).name, `jarvis-${MAX_EVENTS + 4}`);
+});
+
+test("recordEvent caps and flattens a name and a detail the same way every other untrusted string here is", () => {
+  const store = emptyStore();
+  const rlo = String.fromCharCode(0x202e);
+  const recorded = recordEvent(store, {
+    kind: "needs-attention",
+    name: `jarvis${rlo}-1`,
+    detail: "y".repeat(MAX_EVENT_DETAIL_CHARS * 3),
+  }, T);
+  assert.equal(recorded.name, "jarvis-1");
+  assert.equal(recorded.detail.length, MAX_EVENT_DETAIL_CHARS);
+  assert.equal(recorded.name.length <= MAX_EVENT_NAME_CHARS, true);
+});
+
+test("recordEvent creates the events array on a store that never had one", () => {
+  const store = {};
+  recordEvent(store, { kind: "started", name: "jarvis-1" }, T);
+  assert.equal(getEvents(store).length, 1);
+});
+
+test("getEvents treats a missing or malformed events field as empty", () => {
+  assert.deepEqual(getEvents(emptyStore()), []);
+  assert.deepEqual(getEvents({ events: "nonsense" }), []);
+  assert.deepEqual(getEvents(null), []);
+  assert.deepEqual(getEvents(undefined), []);
+});
+
+test("clearEvents empties the log a recap already spoke", () => {
+  const store = emptyStore();
+  recordEvent(store, { kind: "complete", name: "jarvis-1" }, T);
+  clearEvents(store);
+  assert.deepEqual(getEvents(store), []);
+});
+
+test("the event log survives a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    recordEvent(store, { kind: "complete", name: "jarvis-1", detail: "done" }, T);
+    assert.equal(saveStore(store, path), true);
+    assert.deepEqual(getEvents(loadStore(path)), [{ kind: "complete", name: "jarvis-1", detail: "done", at: T }]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
-import { formatEvent, formatSpoken } from "./lib/notify.js";
+import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import { describeIntent, isAnswerable, readAnswer } from "./lib/confirm.js";
@@ -27,7 +27,7 @@ import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
   queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord, getSessions,
-  chainAfter, takeChain, dropChainsExcept,
+  chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -201,6 +201,16 @@ async function reportComplete(sessionId, context = {}) {
     detail: remembered.stoppedAt ? "stopped from here" : "",
   });
 
+  // Recorded with the same words Slack gets -- whichever of summary or the
+  // "stopped from here" note formatEvent actually chose to say -- so a recap
+  // and the Slack thread can never disagree about what happened here.
+  recordEvent(memoryStore, {
+    kind: "complete",
+    name: remembered.name ?? context.name,
+    detail: summary || (remembered.stoppedAt ? "stopped from here" : ""),
+  });
+  saveStore(memoryStore);
+
   log(`session complete: ${line}`);
   // Slack first, unconditionally. The spoken form is shorter and only reaches
   // anyone if a page is open and the floor comes free before it goes stale.
@@ -292,6 +302,8 @@ async function reportAttention(event) {
   if (!reported.accept(`${event.sessionId}:needs-attention:${event.detail}`)) return;
 
   const line = formatEvent({ kind: "needs-attention", name: remembered.name, detail: event.detail });
+  recordEvent(memoryStore, { kind: "needs-attention", name: remembered.name, detail: event.detail });
+  saveStore(memoryStore);
   log(`session needs attention: ${line}`);
   await postForSession(event.sessionId, line);
   announce(formatSpoken({ kind: "needs-attention", name: remembered.name, detail: event.detail }));
@@ -498,6 +510,20 @@ async function speakAnnouncement(send, id) {
   if (Date.now() - held.at >= ANNOUNCEMENT_TTL_MS) return;
   log(`announced: ${held.text}`);
   await say(send, held.text);
+}
+
+// A recap ("what happened while I was out") just spoke every one of these out
+// loud in one paragraph, so leaving any of them queued means saying it again
+// the next time the floor is free -- worse than saying nothing. Both halves
+// are cleared: this server's own pending map, and every connected page's own
+// queue, which it holds client-side and does not otherwise hear about.
+function clearPendingAnnouncements() {
+  const cleared = pendingAnnouncements.size;
+  pendingAnnouncements.clear();
+  for (const ws of sessions.keys()) {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "clear_announcements" }));
+  }
+  return cleared;
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,6 +1128,23 @@ async function dispatchTell(send, session, preamble, roster) {
   await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
 }
 
+// "What happened while I was out." Reads the event log back as one spoken
+// paragraph and clears it -- and clears the announcement queue too, because
+// whatever was waiting there for a free floor is exactly what the recap just
+// said. It changes no process, which is why the caller (below) never routes
+// it through propose(): there is nothing here for a "yes" to authorize.
+async function dispatchRecap(send, preamble = "") {
+  const events = getEvents(memoryStore);
+  const recap = formatRecap(events);
+  log(`recap: ${events.length} event(s)`);
+  await say(send, joinSpoken(preamble, recap));
+
+  clearEvents(memoryStore);
+  saveStore(memoryStore);
+  const cleared = clearPendingAnnouncements();
+  if (cleared > 0) log(`recap cleared ${cleared} pending announcement(s)`);
+}
+
 // Start a real Claude Code session in one of the workspaces, and say one
 // sentence about it. Everything that decides anything lives in lib/ -- which
 // repository (getWorkspace), whether to at all (refuseStart), what to call it
@@ -1112,6 +1155,10 @@ async function dispatchTell(send, session, preamble, roster) {
 // starting one by voice: the confirmation is immediate, and the roster is what
 // reports what happened afterwards.
 async function dispatchSession(send, session, preamble = "", roster = null) {
+  if (session.verb === "recap") {
+    await dispatchRecap(send, preamble);
+    return;
+  }
   if (session.verb === "tell") {
     await dispatchTell(send, session, preamble, roster);
     return;
@@ -1200,6 +1247,8 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   });
 
   if (!started.ok) {
+    recordEvent(memoryStore, { kind: "failed", name, detail: started.error });
+    saveStore(memoryStore);
     // Its own parent message, not a reply: there is no thread, because there
     // was never a session to start one.
     slack.postParent(formatEvent({ kind: "failed", name, detail: started.error }));
@@ -1214,6 +1263,7 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   // What to do once it finishes, if anything was asked for. Recorded now rather
   // than looked up later: by the time it ends, the turn that asked is long over.
   if (then) chainAfter(memoryStore, sessionId, { task: then, alias: workspace.alias, depth });
+  recordEvent(memoryStore, { kind: "started", name, detail: task });
   saveStore(memoryStore);
   log(`session started name=${name} id=${sessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
 

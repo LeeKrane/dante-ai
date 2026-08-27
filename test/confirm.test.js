@@ -113,6 +113,13 @@ test("a tag nothing can be said about is not held back", () => {
   assert.equal(describeIntent(), null);
 });
 
+test("a recap is never described, because it is never confirmed", () => {
+  // It changes no process, so server.js dispatches it straight off the parsed
+  // tag -- the same exemption [MEMORY:SET] gets, applied here rather than
+  // there because a session tag is what a recap arrives as.
+  assert.equal(describeIntent({ session: { verb: "recap" } }), null);
+});
+
 test("a start with no repository is still describable, because refusing is the dispatcher's job", () => {
   assert.equal(
     describeIntent({ session: { verb: "start", task: "read the README" } }),

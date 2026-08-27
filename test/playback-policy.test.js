@@ -5,6 +5,7 @@ import {
   MAX_QUEUED_ANNOUNCEMENTS,
   ORB_STATES,
   canStartListening,
+  clearAnnouncements,
   floorIsFree,
   handoffAfterPreempt,
   queueAnnouncement,
@@ -197,4 +198,23 @@ test("something that is not an announcement never joins the queue", () => {
   assert.deepEqual(queueAnnouncement([], null), []);
   assert.deepEqual(queueAnnouncement([], { text: "no id" }), []);
   assert.deepEqual(queueAnnouncement("not a queue", announcement("a")).map((i) => i.id), ["a"]);
+});
+
+// ---------------------------------------------------------------------------
+// clearAnnouncements
+// ---------------------------------------------------------------------------
+
+test("a recap empties the queue and says how much it emptied", () => {
+  const queue = [announcement("a"), announcement("b"), announcement("c")];
+  assert.deepEqual(clearAnnouncements(queue), { queue: [], dropped: 3 });
+});
+
+test("clearing an already-empty queue reports nothing dropped", () => {
+  assert.deepEqual(clearAnnouncements([]), { queue: [], dropped: 0 });
+});
+
+test("clearing treats a non-array the same way every other queue helper here does", () => {
+  assert.deepEqual(clearAnnouncements(null), { queue: [], dropped: 0 });
+  assert.deepEqual(clearAnnouncements(undefined), { queue: [], dropped: 0 });
+  assert.deepEqual(clearAnnouncements("not a queue"), { queue: [], dropped: 0 });
 });

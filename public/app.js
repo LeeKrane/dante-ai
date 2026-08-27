@@ -6,6 +6,7 @@ import { normalizeProgress, progressRowText, pushProgressEntry } from "./progres
 import { panelIsVisible, rowsFromRoster } from "./roster-panel.js";
 import {
   canStartListening,
+  clearAnnouncements,
   handoffAfterPreempt,
   queueAnnouncement,
   shouldShowCancel,
@@ -343,6 +344,7 @@ ws.onmessage = async (ev) => {
   }
   else if (msg.type === "progress") pushProgress(msg.line);
   else if (msg.type === "announce") receiveAnnouncement(msg);
+  else if (msg.type === "clear_announcements") receiveClearAnnouncements();
   else if (msg.type === "roster") {
     roster = Array.isArray(msg.sessions) ? msg.sessions : [];
     watchSessions();
@@ -476,6 +478,16 @@ function receiveAnnouncement(msg) {
   announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now() });
   dbg(`announcement queued: ${msg.text}`);
   pumpAnnouncements();
+}
+
+// A recap ("what happened while I was out") just said everything in this
+// queue out loud, in one paragraph -- so leaving it here would repeat every
+// one of them the next time the floor comes free. The server clears its own
+// pending map in the same breath; this is this page's half of it.
+function receiveClearAnnouncements() {
+  const { queue, dropped } = clearAnnouncements(announcements);
+  announcements = queue;
+  if (dropped > 0) dbg(`${dropped} announcement(s) cleared by a recap`);
 }
 
 // Called wherever the floor might have just been given up: a clip ending or

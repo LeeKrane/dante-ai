@@ -4,8 +4,11 @@ import assert from "node:assert/strict";
 import {
   MAX_SUMMARY_CHARS,
   MAX_TASK_CHARS,
+  MAX_RECAP_CHARS,
+  MAX_RECAP_EVENTS,
   formatDuration,
   formatEvent,
+  formatRecap,
   formatSpoken,
 } from "../lib/notify.js";
 
@@ -151,4 +154,166 @@ test("the spoken form always names the session, because that is what you answer"
 test("an event of no known kind is not spoken either", () => {
   assert.equal(formatSpoken({ kind: "exploded", name: "jarvis-1" }), "");
   assert.equal(formatSpoken(), "");
+});
+
+// ---------------------------------------------------------------------------
+// formatRecap
+// ---------------------------------------------------------------------------
+
+test("nothing to report is a short, complete sentence rather than silence", () => {
+  assert.equal(formatRecap([]), "Nothing happened while you were out, sir.");
+  assert.equal(formatRecap(undefined), "Nothing happened while you were out, sir.");
+  assert.equal(formatRecap(null), "Nothing happened while you were out, sir.");
+});
+
+test("a session that asked for a person and has since finished is no longer said to need one", () => {
+  const now = Date.now();
+  const recap = formatRecap(
+    [
+      { kind: "needs-attention", name: "jarvis-1", detail: "waiting on a permission prompt", at: now - 600_000 },
+      { kind: "complete", name: "jarvis-1", detail: "wrote the migration", at: now - 300_000 },
+    ],
+    now,
+  );
+  assert.equal(recap, "jarvis-1 finished 5m ago, sir: wrote the migration.");
+});
+
+test("a session still waiting keeps the lead even when another one finished after it", () => {
+  const now = Date.now();
+  const recap = formatRecap(
+    [
+      { kind: "needs-attention", name: "jarvis-1", detail: "waiting on a permission prompt", at: now - 600_000 },
+      { kind: "complete", name: "jarvis-2", detail: "wrote the migration", at: now - 300_000 },
+    ],
+    now,
+  );
+  assert.equal(
+    recap,
+    "jarvis-1 still needs you, sir -- waiting on a permission prompt. That was 10m ago."
+      + " jarvis-2 finished 5m ago: wrote the migration.",
+  );
+});
+
+test("one event is one sentence, addressed to him", () => {
+  const now = Date.now();
+  assert.equal(
+    formatRecap(
+      [{ kind: "complete", name: "jarvis-1", detail: "fixed the timeout assertion", at: now - 252_000 }],
+      now,
+    ),
+    "jarvis-1 finished 4m 12s ago, sir: fixed the timeout assertion.",
+  );
+});
+
+test("a completed event with nothing further to add is still a full sentence", () => {
+  const now = Date.now();
+  assert.equal(
+    formatRecap([{ kind: "complete", name: "jarvis-1", at: now - 38_000 }], now),
+    "jarvis-1 finished 38s ago, sir.",
+  );
+});
+
+test("a failure and a start are each their own sentence", () => {
+  const now = Date.now();
+  assert.equal(
+    formatRecap([{ kind: "failed", name: "jarvis-2", detail: "the session would not start", at: now - 60_000 }], now),
+    "jarvis-2 failed 1m ago, sir: the session would not start.",
+  );
+  assert.equal(
+    formatRecap([{ kind: "started", name: "jarvis-3", at: now - 5_000 }], now),
+    "jarvis-3 started 5s ago, sir.",
+  );
+});
+
+test("needs-attention leads even when it happened after everything else", () => {
+  const now = Date.now();
+  const recap = formatRecap(
+    [
+      { kind: "complete", name: "jarvis-1", detail: "all green", at: now - 600_000 },
+      { kind: "needs-attention", name: "jarvis-2", detail: "wants to push to origin", at: now - 60_000 },
+    ],
+    now,
+  );
+  assert.match(recap, /^jarvis-2 still needs you, sir/);
+  assert.match(recap, /jarvis-1 finished/);
+  // "sir" is only said once, in the lead clause -- not after every sentence.
+  assert.equal((recap.match(/sir/g) ?? []).length, 1);
+});
+
+test("a needs-attention event with no detail still names what is owed", () => {
+  const now = Date.now();
+  assert.equal(
+    formatRecap([{ kind: "needs-attention", name: "jarvis-1", at: now - 120_000 }], now),
+    "jarvis-1 still needs you, sir, as of 2m ago.",
+  );
+});
+
+test("several events read as a paragraph, oldest first, not a table", () => {
+  const now = Date.now();
+  const recap = formatRecap(
+    [
+      { kind: "complete", name: "jarvis-1", detail: "fixed the tests", at: now - 600_000 },
+      { kind: "failed", name: "jarvis-2", detail: "never wrote index.html", at: now - 300_000 },
+    ],
+    now,
+  );
+  assert.equal(
+    recap,
+    "jarvis-1 finished 10m ago, sir: fixed the tests. jarvis-2 failed 5m ago: never wrote index.html.",
+  );
+});
+
+test("more events than the cap are summed up rather than all recited", () => {
+  const now = Date.now();
+  const events = Array.from({ length: MAX_RECAP_EVENTS + 3 }, (_, i) => ({
+    kind: "complete",
+    name: `jarvis-${i}`,
+    at: now - i * 1000,
+  }));
+  const recap = formatRecap(events, now);
+  assert.match(recap, /3 more things happened besides\.$/);
+  // Only the cap's worth of sessions are actually named.
+  for (let i = 0; i < MAX_RECAP_EVENTS; i++) assert.match(recap, new RegExp(`jarvis-${i}\\b`));
+  assert.equal(recap.includes(`jarvis-${MAX_RECAP_EVENTS}`), false);
+});
+
+test("needs-attention is never crowded out of the cap by everything else", () => {
+  const now = Date.now();
+  const events = [
+    ...Array.from({ length: MAX_RECAP_EVENTS }, (_, i) => ({ kind: "complete", name: `done-${i}`, at: now - i })),
+    { kind: "needs-attention", name: "urgent", detail: "wants a decision", at: now },
+  ];
+  const recap = formatRecap(events, now);
+  assert.match(recap, /^urgent still needs you, sir/);
+});
+
+test("an event of no known kind is dropped from the recap rather than crashing it", () => {
+  const now = Date.now();
+  assert.equal(
+    formatRecap([{ kind: "exploded", name: "jarvis-1", at: now }, null, {}], now),
+    "Nothing happened while you were out, sir.",
+  );
+});
+
+test("a recap is capped in total length, however much the events carry", () => {
+  const now = Date.now();
+  const events = Array.from({ length: MAX_RECAP_EVENTS }, (_, i) => ({
+    kind: "complete",
+    name: `jarvis-${i}`,
+    detail: "x".repeat(300),
+    at: now - i * 1000,
+  }));
+  const recap = formatRecap(events, now);
+  assert.ok(recap.length <= MAX_RECAP_CHARS, `recap was ${recap.length} chars`);
+});
+
+test("a name or detail that arrives hostile is capped and flattened like everywhere else", () => {
+  const rlo = String.fromCharCode(0x202e);
+  const now = Date.now();
+  const recap = formatRecap(
+    [{ kind: "complete", name: `jarvis${rlo}-1`, detail: "line one\nline two", at: now - 1000 }],
+    now,
+  );
+  assert.equal(recap.includes(rlo), false);
+  assert.match(recap, /^jarvis-1 finished 1s ago, sir: line one line two\.$/);
 });
