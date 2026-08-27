@@ -197,6 +197,13 @@ is what will run:
 > — *"yes"* → it starts. *"no"* → nothing runs. *"no, the whole repo"* → it
 > re-proposes the corrected version.
 
+A session command naming something Dante cannot see is refused **before** it
+is proposed, rather than after you have said yes to it — and the proposal
+names the session the way it appears on the roster, not necessarily the way
+you said it. A command missing a detail — a *tell* with nothing to say, a
+*stop* with nothing to stop — is asked about rather than run: nothing in
+start, tell, interrupt or stop ever runs unconfirmed.
+
 A proposal expires after two minutes and is then not answerable at all. The
 five-session ceiling counts only sessions Dante itself started — your terminals
 and other tools' background jobs are not its business.

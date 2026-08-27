@@ -202,6 +202,12 @@ test("the guardrail against acting on an unmentioned session also covers interru
   );
 });
 
+test("the four proposed verbs are phrased as an offer ending in Shall I, sir, never as done", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /ending in "Shall I, sir\?"/);
+  assert.match(persona, /never say a session has it, is stopped/);
+});
+
 test("the persona says to ask rather than fill a gap in, on both tags", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   // Once for builds, once for sessions: a model that guesses a repository is

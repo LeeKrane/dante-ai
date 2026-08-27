@@ -4,10 +4,83 @@ import assert from "node:assert/strict";
 import {
   MAX_TASK_CHARS,
   PROPOSAL_TTL_MS,
+  clarify,
   describeIntent,
+  findTarget,
   isAnswerable,
+  needsConfirmation,
   readAnswer,
 } from "../lib/confirm.js";
+
+// ---------------------------------------------------------------------------
+// needsConfirmation
+// ---------------------------------------------------------------------------
+
+test("start, tell, interrupt and stop all need confirmation, in any case", () => {
+  for (const verb of ["start", "tell", "interrupt", "stop", "START", "Tell", "STOP"]) {
+    assert.equal(needsConfirmation({ verb }), true, verb);
+  }
+});
+
+test("read, recap, a missing verb and a non-string verb never need confirmation", () => {
+  assert.equal(needsConfirmation({ verb: "read" }), false);
+  assert.equal(needsConfirmation({ verb: "recap" }), false);
+  assert.equal(needsConfirmation({}), false);
+  assert.equal(needsConfirmation(undefined), false);
+  assert.equal(needsConfirmation({ verb: 7 }), false);
+});
+
+// ---------------------------------------------------------------------------
+// findTarget
+// ---------------------------------------------------------------------------
+
+test("a query that cleans to nothing asks which session, before the roster is even consulted", () => {
+  assert.deepEqual(findTarget([{ name: "jarvis-1" }], ""), {
+    record: null,
+    refusal: "Which session, sir?",
+  });
+  assert.deepEqual(findTarget([{ name: "jarvis-1" }], "   "), {
+    record: null,
+    refusal: "Which session, sir?",
+  });
+});
+
+test("a roster that could not be read is a listing failure, not an unknown name", () => {
+  assert.deepEqual(findTarget(null, "jarvis-1"), {
+    record: null,
+    refusal: "I cannot see what is running just now, sir.",
+  });
+  assert.deepEqual(findTarget(undefined, "jarvis-1"), {
+    record: null,
+    refusal: "I cannot see what is running just now, sir.",
+  });
+});
+
+test("an unknown name names what was actually asked for", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a" }];
+  assert.deepEqual(findTarget(roster, "fitness-1"), {
+    record: null,
+    refusal: "I cannot find fitness-1 running, sir.",
+  });
+});
+
+test("more than one match lists at most three names, never by position", () => {
+  const roster = [
+    { name: "jarvis-1-fix-tests", sessionId: "a" },
+    { name: "jarvis-1-fix-linter", sessionId: "b" },
+    { name: "jarvis-1-fix-readme", sessionId: "c" },
+    { name: "jarvis-1-fix-build", sessionId: "d" },
+  ];
+  assert.deepEqual(findTarget(roster, "jarvis-1"), {
+    record: null,
+    refusal: "Which one, sir? jarvis-1-fix-tests, jarvis-1-fix-linter, jarvis-1-fix-readme.",
+  });
+});
+
+test("exactly one match returns the record and no refusal", () => {
+  const record = { name: "jarvis-1-fix-tests", sessionId: "a" };
+  assert.deepEqual(findTarget([record], "jarvis-1-fix-tests"), { record, refusal: null });
+});
 
 // ---------------------------------------------------------------------------
 // describeIntent
@@ -177,6 +250,56 @@ test("everything spoken is capped and stripped, because a model wrote it", () =>
 
 test("a verb is read whatever case it arrives in", () => {
   assert.match(describeIntent({ session: { verb: "START", repo: "jarvis", task: "x" } }), /^Start a session/);
+});
+
+test("the session Dante resolved beats the name the model wrote", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "stop", name: "jarvis-1" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "Stop jarvis-1-fix-failing-builder-test. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({
+      session: { verb: "interrupt", name: "jarvis-1", task: "check the other file first" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "Interrupt jarvis-1-fix-failing-builder-test and tell it to check the other file first. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({
+      session: { verb: "tell", name: "jarvis-1", task: "run it" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "Tell jarvis-1-fix-failing-builder-test to run it. Shall I, sir?",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// clarify
+// ---------------------------------------------------------------------------
+
+test("a tell with no task asks what to tell the target, by its resolved name", () => {
+  assert.equal(
+    clarify({
+      session: { verb: "tell", name: "jarvis-1" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "What should I tell jarvis-1-fix-failing-builder-test, sir?",
+  );
+});
+
+test("a stop with nothing to name asks which session, not what to say to it", () => {
+  assert.equal(clarify({ session: { verb: "stop" } }), "Which session, sir?");
+  assert.equal(clarify({ session: { verb: "interrupt" } }), "Which session, sir?");
+  assert.equal(clarify({ session: { verb: "tell" } }), "Which session, sir?");
+});
+
+test("a read is not a confirmable verb, so clarify has nothing to ask", () => {
+  assert.equal(clarify({ session: { verb: "read", name: "jarvis-1" } }), null);
+  assert.equal(clarify({ session: { verb: "recap" } }), null);
+  assert.equal(clarify({}), null);
 });
 
 // ---------------------------------------------------------------------------
