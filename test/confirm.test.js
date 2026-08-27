@@ -65,6 +65,28 @@ test("a follow-up and a stop name the session, because that is what is at stake"
   );
 });
 
+test("an interrupt names the session and, unlike tell, still confirms with no task", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "interrupt", name: "jarvis-1", task: "check the other file first" } }),
+    "Interrupt jarvis-1 and tell it to check the other file first. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({ session: { verb: "interrupt", name: "jarvis-1" } }),
+    "Interrupt jarvis-1. Shall I, sir?",
+  );
+});
+
+test("an interrupt resolves who by name, then by the repo alias, and is silent with neither", () => {
+  assert.match(
+    describeIntent({
+      session: { verb: "interrupt", repo: "fitnes", task: "stop and check the logs" },
+      workspace: { alias: "fitness", path: "/home/krane/development/KraneticFitness" },
+    }),
+    /^Interrupt fitness /,
+  );
+  assert.equal(describeIntent({ session: { verb: "interrupt" } }), null);
+});
+
 test("a task is read back as part of the sentence, not quoted at someone", () => {
   // A model writes a capitalised sentence with a full stop; this lands
   // mid-sentence, where both would be wrong.

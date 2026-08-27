@@ -166,11 +166,11 @@ test("reading is taught as the only way to know what a session did", () => {
   assert.match(persona, /never answer such a question from your own knowledge/);
 });
 
-test("a read is taught as running straight away, unlike the three that are proposed", () => {
+test("a read is taught as running straight away, unlike the four that are proposed", () => {
   // It is the one verb lib/confirm.js deliberately cannot describe, so the
   // persona must not promise a confirmation nobody is going to be asked for.
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /A start, tell or stop tag is a PROPOSAL, not an act/);
+  assert.match(persona, /A start, tell, interrupt or stop tag is a PROPOSAL, not an act/);
   assert.match(persona, /verb=read is the exception/);
 });
 
@@ -179,6 +179,27 @@ test("the sessions block teaches the recap verb for catching up on what was miss
   assert.match(persona, /\[ACTION:SESSION verb=recap\]/);
   assert.match(persona, /what happened while he was away/);
   assert.match(persona, /names no session and starts nothing/);
+});
+
+test("the persona teaches the interrupt tag and when to reach for it over tell", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(
+    persona,
+    /\[ACTION:SESSION verb=interrupt name=<session name> task="the new instruction"\]/,
+  );
+  // The choice is timing, not capability: interrupt displaces current work,
+  // tell waits for it, and tell is the fallback when the request is ambiguous.
+  assert.match(persona, /displace what the session is doing right/);
+  assert.match(persona, /use tell when it can wait for the current work to finish/);
+  assert.match(persona, /use tell - it is the safer of the two/);
+});
+
+test("the guardrail against acting on an unmentioned session also covers interrupt", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(
+    persona,
+    /the same guardrail covers verb=interrupt: never emit it unless\s+Jesse asked you, in this turn, to interrupt that session/,
+  );
 });
 
 test("the persona says to ask rather than fill a gap in, on both tags", () => {
