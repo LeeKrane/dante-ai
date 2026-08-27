@@ -9,7 +9,6 @@ import { join } from "node:path";
 import {
   PRIORITIES,
   DEFAULT_PRIORITY,
-  MAX_MESSAGE_CHARS,
   CONNECT_TIMEOUT_MS,
   buildAuthFrame,
   buildMessageFrame,
@@ -20,6 +19,7 @@ import {
   readPeerAddress,
   sendToSession,
 } from "../lib/peer.js";
+import { MAX_BRIEF_CHARS } from "../lib/interview.js";
 
 const SESSION_ID = "abcd1234-0000-4000-8000-000000000000";
 const OTHER_SESSION_ID = "ffffffff-0000-4000-8000-000000000000";
@@ -107,23 +107,42 @@ test("text that cleans to nothing leaves nothing to send", () => {
   }
 });
 
-test("whitespace is collapsed before the unprintable strip, so a newline does not fuse two words", () => {
-  // \n sits inside the UNPRINTABLE range as well as being whitespace. Strip it
-  // first and the words on either side fuse into one; collapse first and the
-  // strip is left with an ordinary space to leave alone. This is the same
-  // ordering lib/spawn-session.js's clean() uses, and for the same reason.
-  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: "fix the tests\nthen push" });
-  assert.equal(frame.message.content, "fix the tests then push");
+test("a multi-line brief keeps its line breaks through buildMessageFrame instead of being fused into one line", () => {
+  // This channel used to flatten everything with clean() -- MAX_MESSAGE_CHARS
+  // and a whitespace collapse that treated \n as just more whitespace. Now a
+  // tell or interrupt can carry a whole brief, so buildMessageFrame runs text
+  // through cleanBrief instead, and a brief's line breaks are its structure
+  // (a Goal line, a Where line, dash bullets under Constraints).
+  const brief = "Goal: fix the tests\nWhere: jarvis\nConstraints:\n- keep it isolated";
+  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: brief });
+  assert.equal(frame.message.content, brief);
 });
 
-test("control characters and bidi overrides never reach the frame", () => {
-  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: "fix\u0000 the\u202e tests" });
-  assert.equal(frame.message.content, "fix the tests");
+test("horizontal whitespace still collapses around a kept newline", () => {
+  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: "fix  the   tests\n  then push" });
+  assert.equal(frame.message.content, "fix the tests\n then push");
 });
 
-test("text longer than the cap is capped, not carried whole", () => {
-  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: "x".repeat(MAX_MESSAGE_CHARS * 3) });
-  assert.equal(frame.message.content.length, MAX_MESSAGE_CHARS);
+test("control characters and bidi overrides never reach the frame, but the newline itself survives", () => {
+  const nul = String.fromCharCode(0);
+  const rlo = String.fromCharCode(0x202e);
+  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: `fix${nul} the${rlo} tests\nthen push` });
+  assert.equal(frame.message.content, "fix the tests\nthen push");
+});
+
+test("text longer than the old 2000-char message cap survives whole, up to MAX_BRIEF_CHARS", () => {
+  // The channel now carries a brief rather than a sentence, so the cap that
+  // matters is lib/interview.js's MAX_BRIEF_CHARS (6000), not the old
+  // MAX_MESSAGE_CHARS (2000) this module no longer defines.
+  const text = "x".repeat(3000);
+  const frame = buildMessageFrame({ sessionId: SESSION_ID, text });
+  assert.equal(frame.message.content, text);
+  assert.equal(frame.message.content.length, 3000);
+});
+
+test("text longer than MAX_BRIEF_CHARS is capped, not carried whole", () => {
+  const frame = buildMessageFrame({ sessionId: SESSION_ID, text: "x".repeat(MAX_BRIEF_CHARS * 3) });
+  assert.equal(frame.message.content.length, MAX_BRIEF_CHARS);
 });
 
 // ---------------------------------------------------------------------------
@@ -168,13 +187,13 @@ test("text that cleans to nothing produces no steer at all", () => {
 });
 
 test("the cap applies to the caller's text, not to the appended sentence", () => {
-  const long = "x".repeat(MAX_MESSAGE_CHARS * 3);
+  const long = "x".repeat(MAX_BRIEF_CHARS * 3);
   const text = steerText(long);
-  // Exactly MAX_MESSAGE_CHARS worth of the caller's text survives, followed by
+  // Exactly MAX_BRIEF_CHARS worth of the caller's text survives, followed by
   // something more (the appended sentence) that is not itself more "x"s.
-  assert.ok(text.startsWith("x".repeat(MAX_MESSAGE_CHARS)));
-  assert.ok(!text.startsWith("x".repeat(MAX_MESSAGE_CHARS + 1)));
-  assert.ok(text.length > MAX_MESSAGE_CHARS);
+  assert.ok(text.startsWith("x".repeat(MAX_BRIEF_CHARS)));
+  assert.ok(!text.startsWith("x".repeat(MAX_BRIEF_CHARS + 1)));
+  assert.ok(text.length > MAX_BRIEF_CHARS);
 });
 
 test("an instruction that ends mid-sentence is stopped before the steer sentence starts", () => {
@@ -224,6 +243,25 @@ test("a plan with nothing left to say after cleaning is no plan at all", () => {
       assert.equal(planDelivery(verb, bad), null, `${verb} ${String(bad)}`);
     }
   }
+});
+
+test("a multi-line brief keeps its line breaks through a tell, the ordinary path", () => {
+  const brief = "Goal: fix the tests\nWhere: jarvis\nDone when:\n- npm test is green";
+  const plan = planDelivery("tell", brief);
+  assert.equal(plan.content, brief);
+});
+
+test("a multi-line brief keeps its line breaks through an interrupt too, ahead of the steer sentence", () => {
+  const brief = "Goal: fix the tests\nWhere: jarvis\nDone when:\n- npm test is green";
+  const plan = planDelivery("interrupt", brief);
+  assert.ok(plan.content.startsWith(brief));
+  assert.match(plan.content, /change of instruction/i);
+});
+
+test("a brief longer than the old 2000-char message cap is not truncated by either verb", () => {
+  const long = "x".repeat(3000);
+  assert.equal(planDelivery("tell", long).content, long);
+  assert.ok(planDelivery("interrupt", long).content.startsWith(long));
 });
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,10 @@
 // literal escape in this file rather than a raw control character).
 
 export const MAX_SUBJECT_CHARS = 60;
-export const MAX_BRIEF_CHARS = 2000;
+// Mirrors lib/interview.js's MAX_BRIEF_CHARS by hand, since public/ cannot
+// import lib/ -- see the comment at the top of this file. Keep the two in
+// step if either changes.
+export const MAX_BRIEF_CHARS = 6000;
 
 // The seven things worth a word, plus the null the server sends when nothing
 // is going on. Anything else is a value this page does not know yet, and
@@ -56,11 +59,20 @@ function wordsFromId(subject) {
 // The full multi-sentence prompt a proposal is asking someone to approve.
 // The spoken sentence only summarises it, so this is the one place it is
 // shown in full -- capped, because it is still text nobody has approved yet.
+// A hand-mirror of lib/interview.js's cleanBrief, not a shared import --
+// public/ is served straight off disk with no bundler, so it cannot import
+// lib/ (see the comment at the top of this file). Keep the two in step by
+// hand if either changes: collapse a run of horizontal whitespace to one
+// space, then drop a space left stranded right before a newline by that
+// collapse, the same order lib/interview.js's version uses and for the same
+// reason -- collapsing first turns a tab or a run of spaces into an ordinary
+// space, and only then is there a single space to strip before the newline.
 function cleanBrief(value) {
   if (typeof value !== "string") return "";
   const text = value
     .replace(/\r/g, "")
-    .replace(/\t/g, " ")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ +\n/g, "\n")
     .replace(UNPRINTABLE_KEEP_NEWLINE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

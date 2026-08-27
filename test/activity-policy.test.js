@@ -75,6 +75,19 @@ test("the brief is shown only while a proposal awaits a yes, capped, with its li
   assert.equal(describeActivity({ value: "proposing" }).detail, "");
 });
 
+test("a structured brief's sections survive whole, dash bullets and all", () => {
+  const brief = [
+    "Goal: fix the flaky test",
+    "Where: jarvis, test/builder.test.js",
+    "Constraints:",
+    "- do not touch lib/builder.js",
+    "- keep the existing fixtures",
+    "Done when:",
+    "- npm test is green",
+  ].join("\n");
+  assert.equal(describeActivity({ value: "proposing", brief }).detail, brief);
+});
+
 test("an unknown value is not guessed at", () => {
   assert.deepEqual(describeActivity({ value: "dancing" }), { label: "", detail: "" });
   assert.deepEqual(describeActivity({ value: 42 }), { label: "", detail: "" });

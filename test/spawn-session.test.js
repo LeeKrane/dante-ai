@@ -164,10 +164,22 @@ test("a brief is capped and cleaned like a task, at its own larger limit", () =>
   assert.equal(argsWithControl[argsWithControl.length - 1], "fix the tests");
 });
 
+test("a brief keeps its line breaks, because its sections are its structure", () => {
+  const brief = "Goal: x\nConstraints:\n- y";
+  const args = buildStartArgs(spec({ brief }));
+  assert.equal(args[args.length - 1], brief);
+});
+
 test("a follow-up no longer loses the end of a brief-length message", () => {
   const longText = "x".repeat(1500);
   const args = buildTellArgs({ sessionId: ID, text: longText });
   assert.equal(args[args.length - 1].length, 1500);
+});
+
+test("a follow-up keeps its line breaks too, for the same reason a start brief does", () => {
+  const text = "Goal: x\nConstraints:\n- y";
+  const args = buildTellArgs({ sessionId: ID, text });
+  assert.equal(args[args.length - 1], text);
 });
 
 // ---------------------------------------------------------------------------

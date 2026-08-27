@@ -234,9 +234,12 @@ test("the persona teaches the brief, and the two characters it may not contain",
   assert.match(persona, /square brackets/);
 });
 
-test("the persona skips the interview when the request is already clear, and obeys the question limit", () => {
+test("the persona skips the interview when the request is already clear, and has no question cap", () => {
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /four questions/);
+  assert.match(persona, /have=/);
+  assert.match(persona, /no question limit/i);
+  assert.match(persona, /confident/i);
+  assert.match(persona, /Done when:/);
   assert.match(persona, /machine-state lines/);
 });
 

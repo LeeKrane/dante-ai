@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  FACETS,
   INTERVIEW_TTL_MS,
   MAX_BRIEF_CHARS,
   MAX_NOTES,
-  MAX_QUESTIONS,
+  MAX_SAID,
+  cleanBrief,
   composeBrief,
   interviewBlock,
   isLive,
@@ -14,33 +16,53 @@ import {
   noteInterview,
   wantsToProceed,
 } from "../lib/interview.js";
+import { parseAction } from "../lib/action.js";
 
 // ---------------------------------------------------------------------------
 // noteInterview
 // ---------------------------------------------------------------------------
 
-test("a first interview tag starts a state that counts one question and keeps the note", () => {
-  const state = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", note: "wants the tests fixed" }, 1000);
+test("a first interview tag starts a state that counts one question, keeps the note, and keeps what was said", () => {
+  const state = noteInterview(
+    null,
+    { verb: "interview", for: "start", repo: "jarvis", have: "goal", note: "wants the tests fixed" },
+    1000,
+    "fix the failing tests in jarvis",
+  );
   assert.deepEqual(state, {
     verb: "start",
     repo: "jarvis",
     notes: ["wants the tests fixed"],
+    said: ["fix the failing tests in jarvis"],
+    covered: ["goal", "where"],
     asked: 1,
     at: 1000,
     proceed: false,
   });
 });
 
-test("a note is appended and the count goes up, and the input state is not mutated", () => {
-  const first = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", note: "first note" }, 1000);
-  const snapshot = { ...first, notes: [...first.notes] };
+test("a note and a said line are both appended and the count goes up, and the input state is not mutated", () => {
+  const first = noteInterview(
+    null,
+    { verb: "interview", for: "start", repo: "jarvis", have: "goal", note: "first note" },
+    1000,
+    "first thing said",
+  );
+  const snapshot = { ...first, notes: [...first.notes], said: [...first.said], covered: [...first.covered] };
 
-  const second = noteInterview(first, { verb: "interview", note: "second note" }, 2000);
+  const second = noteInterview(
+    first,
+    { verb: "interview", have: "goal, constraints", note: "second note" },
+    2000,
+    "second thing said",
+  );
 
   assert.deepEqual(second, {
     verb: "start",
     repo: "jarvis",
     notes: ["first note", "second note"],
+    said: ["first thing said", "second thing said"],
+    covered: ["goal", "where", "constraints"],
     asked: 2,
     at: 2000,
     proceed: false,
@@ -49,15 +71,27 @@ test("a note is appended and the count goes up, and the input state is not mutat
 });
 
 test("an interview that has expired starts over rather than continuing", () => {
-  const stale = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", note: "old note" }, 1000);
+  const stale = noteInterview(
+    null,
+    { verb: "interview", for: "start", repo: "jarvis", note: "old note" },
+    1000,
+    "old ask",
+  );
   const now = 1000 + INTERVIEW_TTL_MS;
 
-  const restarted = noteInterview(stale, { verb: "interview", for: "tell", repo: "fitness", note: "new note" }, now);
+  const restarted = noteInterview(
+    stale,
+    { verb: "interview", for: "tell", repo: "fitness", note: "new note" },
+    now,
+    "new ask",
+  );
 
   assert.deepEqual(restarted, {
     verb: "tell",
     repo: "fitness",
     notes: ["new note"],
+    said: ["new ask"],
+    covered: ["where"],
     asked: 1,
     at: now,
     proceed: false,
@@ -78,14 +112,87 @@ test("the verb comes from the tag's for key and falls back to start", () => {
   assert.equal(noteInterview(started, { verb: "interview" }, 2000).verb, "tell");
 });
 
-test("only the last few notes are kept, because a brief has to stay short", () => {
+test("said may be an array of sentences from a superseded turn, and each becomes its own entry in order", () => {
+  const state = noteInterview(
+    null,
+    { verb: "interview", note: "wants both fixed" },
+    1000,
+    ["fix the tests", "also update the docs"],
+  );
+  assert.deepEqual(state.said, ["fix the tests", "also update the docs"]);
+
+  // An empty entry inside the array is dropped, same as a single empty string
+  // would be, and the rest keep their order.
+  const withEmpty = noteInterview(state, { verb: "interview" }, 2000, ["", "one more thing", "   "]);
+  assert.deepEqual(withEmpty.said, ["fix the tests", "also update the docs", "one more thing"]);
+});
+
+test("only the last MAX_NOTES notes and the last MAX_SAID said lines are kept, because a brief has to stay bounded", () => {
   let state = null;
   for (let i = 1; i <= MAX_NOTES + 3; i++) {
-    state = noteInterview(state, { verb: "interview", note: `note ${i}` }, i * 1000);
+    state = noteInterview(state, { verb: "interview", note: `note ${i}` }, i * 1000, `said ${i}`);
   }
   assert.equal(state.notes.length, MAX_NOTES);
-  assert.deepEqual(state.notes, ["note 4", "note 5", "note 6", "note 7", "note 8", "note 9"]);
+  assert.equal(state.notes[0], "note 4");
+  assert.equal(state.notes[state.notes.length - 1], `note ${MAX_NOTES + 3}`);
+  assert.equal(state.said.length, MAX_SAID);
+  assert.equal(state.said[0], "said 4");
+  assert.equal(state.said[state.said.length - 1], `said ${MAX_SAID + 3}`);
   assert.equal(state.asked, MAX_NOTES + 3);
+});
+
+// ---------------------------------------------------------------------------
+// have= parsing (covered)
+// ---------------------------------------------------------------------------
+
+test("have= is parsed case- and spacing-insensitively, drops unknown names, and orders as FACETS regardless of input order", () => {
+  const state = noteInterview(null, { verb: "interview", have: "Done,   GOAL  where foo bar" }, 1000);
+  assert.deepEqual(state.covered, ["goal", "where", "done"]);
+  assert.deepEqual(FACETS, ["goal", "where", "constraints", "done"]);
+});
+
+test("a real tag, parsed end to end, teaches have= the way the persona now does -- no spaces, comma-separated", () => {
+  // lib/action.js's PAIR takes \S* for an unquoted value, so a have= written
+  // with a space after the comma ("goal, where") would parse as just "goal,".
+  // The persona now teaches have=goal,where with no spaces, and this is the
+  // parser actually reading a tag built that way, not just noteInterview
+  // called with an already-split value.
+  const unquoted = parseAction(
+    'Which repo? [ACTION:SESSION verb=interview for=start have=goal,constraints note="wants the tests fixed"]',
+  ).session;
+  assert.deepEqual(noteInterview(null, unquoted, 1000).covered, ["goal", "constraints"]);
+
+  // The quoted form -- have="goal, constraints" -- survives a space after the
+  // comma because the whole value is inside quotes, and parseHave's own
+  // /[\s,]+/ split tolerates it regardless.
+  const quoted = parseAction(
+    'Which repo? [ACTION:SESSION verb=interview for=start have="goal, constraints" note="wants the tests fixed"]',
+  ).session;
+  assert.deepEqual(noteInterview(null, quoted, 1000).covered, ["goal", "constraints"]);
+});
+
+test("an absent have key keeps the previous covered list, and a present-but-empty one resets it", () => {
+  const first = noteInterview(null, { verb: "interview", have: "goal" }, 1000);
+  assert.deepEqual(first.covered, ["goal"]);
+
+  const silent = noteInterview(first, { verb: "interview" }, 2000);
+  assert.deepEqual(silent.covered, ["goal"]);
+
+  const cleared = noteInterview(silent, { verb: "interview", have: "" }, 3000);
+  assert.deepEqual(cleared.covered, []);
+});
+
+test("a known repo counts as where covered, whether or not have= said so", () => {
+  const noRepo = noteInterview(null, { verb: "interview", have: "goal" }, 1000);
+  assert.deepEqual(noRepo.covered, ["goal"]);
+
+  const withRepo = noteInterview(noRepo, { verb: "interview", repo: "jarvis" }, 2000);
+  assert.deepEqual(withRepo.covered, ["goal", "where"]);
+
+  // where does not need to be named explicitly once a repo is known, and
+  // naming it explicitly changes nothing.
+  const named = noteInterview(null, { verb: "interview", repo: "jarvis", have: "where" }, 1000);
+  assert.deepEqual(named.covered, ["where"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -137,6 +244,21 @@ test("the escape phrase is read only from a short sentence", () => {
   }
 });
 
+test("the newer stop-asking phrases are read as an escape the same way", () => {
+  for (const text of [
+    "stop asking",
+    "stop the questions",
+    "stop with the questions",
+    "that'll do",
+    "that will do",
+    "you have enough",
+    "you've got enough",
+    "you know enough",
+  ]) {
+    assert.equal(wantsToProceed(text), true, text);
+  }
+});
+
 test("a long sentence that mentions go ahead is not an escape", () => {
   assert.equal(
     wantsToProceed("well I don't think we should just go ahead with that plan yet, honestly"),
@@ -156,84 +278,168 @@ test("a refusal that contains an escape phrase is not an escape", () => {
   }
 });
 
+test("stop alone is a negation rather than the stop-asking escape, and a refusal beats an escape phrase either way", () => {
+  for (const text of ["stop", "no, stop", "don't stop asking"]) {
+    assert.equal(wantsToProceed(text), false, text);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // interviewBlock
 // ---------------------------------------------------------------------------
 
-test("the block says how many questions are left and stops asking at the cap", () => {
-  let state = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", note: "first note" }, 1000);
-  state = noteInterview(state, { verb: "interview", note: "second note" }, 2000);
-
-  assert.equal(
-    interviewBlock(state, 2000),
-    "INTERVIEW in progress: planning a start in jarvis. 2 of 4 questions asked. " +
-      "Learned so far: first note; second note. Ask at most 2 more, one per turn, or propose now if the picture is clear.",
-  );
-
-  let capped = state;
-  for (let i = 0; i < MAX_QUESTIONS - 2; i++) {
-    capped = noteInterview(capped, { verb: "interview" }, 3000 + i);
-  }
-  assert.equal(capped.asked, MAX_QUESTIONS);
-  assert.match(
-    interviewBlock(capped, 3000),
-    /Question limit reached: ask nothing more, propose now with what you have\.$/,
-  );
-});
-
-test("the block omits the repo and the notes sentence when there is nothing to say", () => {
-  const state = noteInterview(null, { verb: "interview", for: "tell" }, 1000);
+test("the block reports nothing covered yet and asks for the biggest gap", () => {
+  const state = { verb: "start", repo: "", notes: [], said: [], covered: [], asked: 1, at: 1000, proceed: false };
   assert.equal(
     interviewBlock(state, 1000),
-    "INTERVIEW in progress: planning a tell. 1 of 4 questions asked. Ask at most 3 more, one per turn, or propose now if the picture is clear.",
+    "INTERVIEW in progress: planning a start. 1 question asked. " +
+      "Covered: none reported yet. Still open: goal, where, constraints, done. " +
+      "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
+      "request itself already settles what is open.",
   );
-
-  const interrupting = noteInterview(null, { verb: "interview", for: "interrupt" }, 1000);
-  assert.match(interviewBlock(interrupting, 1000), /^INTERVIEW in progress: planning an interrupt\. /);
 });
 
-test("a proceed beats the cap sentence and says Jesse asked for it", () => {
-  let capped = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis" }, 1000);
-  for (let i = 1; i < MAX_QUESTIONS; i++) {
-    capped = noteInterview(capped, { verb: "interview" }, 1000 + i);
-  }
-  assert.equal(capped.asked, MAX_QUESTIONS);
-  assert.match(interviewBlock(capped, 1000), /Question limit reached/);
-
-  const proceeding = markProceed(capped);
-  assert.match(
-    interviewBlock(proceeding, 1000),
-    /Jesse asked you to proceed: ask nothing more, propose now with what you have\.$/,
+test("the block says every facet is covered and tells it to propose", () => {
+  const state = {
+    verb: "start", repo: "jarvis", notes: ["n1", "n2"], said: [],
+    covered: ["goal", "where", "constraints", "done"], asked: 2, at: 2000, proceed: false,
+  };
+  assert.equal(
+    interviewBlock(state, 2000),
+    "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
+      "Covered: goal, where, constraints, done. Still open: nothing. " +
+      "Learned so far: n1; n2. " +
+      "Every facet is covered: propose now, unless an answer left something genuinely open - " +
+      "then ask about that one thing only.",
   );
-  assert.equal(interviewBlock(proceeding, 1000).includes("Question limit reached"), false);
+});
 
+test("the block names both the covered facets and the open ones", () => {
+  const state = {
+    verb: "start", repo: "jarvis", notes: [], said: [],
+    covered: ["goal", "where"], asked: 2, at: 2000, proceed: false,
+  };
+  assert.equal(
+    interviewBlock(state, 2000),
+    "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
+      "Covered: goal, where. Still open: constraints, done. " +
+      "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
+      "request itself already settles what is open.",
+  );
+});
+
+test("a proceed beats the facet coverage no matter how much is still open", () => {
+  const state = {
+    verb: "start", repo: "jarvis", notes: [], said: [],
+    covered: ["goal"], asked: 3, at: 1000, proceed: false,
+  };
+  const proceeding = markProceed(state);
+  assert.equal(
+    interviewBlock(proceeding, 1000),
+    "INTERVIEW in progress: planning a start in jarvis. 3 questions asked. " +
+      "Covered: goal. Still open: where, constraints, done. " +
+      "Jesse asked you to proceed: ask nothing more, propose now with what you have.",
+  );
   assert.equal(markProceed(null), null);
+});
+
+test("what Jesse said is read back in order, numbered", () => {
+  const state = {
+    verb: "start", repo: "jarvis", notes: [], said: ["fix the tests", "in jarvis"],
+    covered: [], asked: 2, at: 1000, proceed: false,
+  };
+  assert.equal(
+    interviewBlock(state, 1000),
+    "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
+      "Covered: none reported yet. Still open: goal, where, constraints, done. " +
+      "Jesse said, in order: (1) fix the tests (2) in jarvis. " +
+      "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
+      "request itself already settles what is open.",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// cleanBrief
+// ---------------------------------------------------------------------------
+
+test("cleanBrief keeps line breaks and collapses horizontal whitespace, including tabs, around them", () => {
+  assert.equal(cleanBrief("Goal:\tx  y\nWhere: z"), "Goal: x y\nWhere: z");
+});
+
+test("cleanBrief drops a trailing space left before a newline by the horizontal collapse", () => {
+  assert.equal(cleanBrief("line one   \nline two"), "line one\nline two");
+});
+
+test("cleanBrief drops carriage returns and collapses three or more newlines down to two", () => {
+  assert.equal(cleanBrief("a\r\nb\n\n\n\nc"), "a\nb\n\nc");
+});
+
+test("cleanBrief strips bidi overrides and other unprintables, but leaves the newline itself alone", () => {
+  const rlo = String.fromCharCode(0x202e);
+  assert.equal(cleanBrief(`line one${rlo}\nline two`), "line one\nline two");
+});
+
+test("cleanBrief caps at maxChars, defaulting to MAX_BRIEF_CHARS", () => {
+  const long = "x".repeat(MAX_BRIEF_CHARS * 2);
+  assert.equal(cleanBrief(long).length, MAX_BRIEF_CHARS);
+  assert.equal(cleanBrief(long, 10).length, 10);
+});
+
+test("cleanBrief is empty for anything that is not a string", () => {
+  assert.equal(cleanBrief(undefined), "");
+  assert.equal(cleanBrief(null), "");
+  assert.equal(cleanBrief(42), "");
 });
 
 // ---------------------------------------------------------------------------
 // composeBrief
 // ---------------------------------------------------------------------------
 
-test("a brief the model wrote wins over the task and notes", () => {
+test("a brief the model wrote wins over the task and notes, and keeps its own structure", () => {
+  const brief = "Goal: fix the failing builder test\nConstraints:\n- keep it isolated";
   assert.equal(
-    composeBrief({ task: "fix the tests", notes: ["it's the builder test"], brief: "Fix the failing builder test in lib/builder.js." }),
-    "Fix the failing builder test in lib/builder.js.",
+    composeBrief({ task: "fix the tests", notes: ["it's the builder test"], brief }),
+    brief,
   );
 });
 
-test("with no brief the task and the notes become one", () => {
+test("with no brief, the task, repo, notes and what was said become a structured document", () => {
+  const result = composeBrief({
+    task: "fix the tests",
+    repo: "jarvis",
+    notes: ["it's the builder test", "only that one file"],
+    said: ["fix the failing tests", "in jarvis, the builder test only"],
+  });
   assert.equal(
-    composeBrief({ task: "fix the tests", notes: ["it's the builder test", "only that one file"] }),
-    "fix the tests Context from the conversation: it's the builder test. only that one file.",
+    result,
+    [
+      "Goal: fix the tests",
+      "Where: jarvis",
+      "What the interview established:",
+      "- it's the builder test.",
+      "- only that one file.",
+      "Jesse said, in order:",
+      "- fix the failing tests",
+      "- in jarvis, the builder test only",
+    ].join("\n"),
   );
   // A note that already ends its own sentence keeps its own punctuation.
   assert.equal(
     composeBrief({ task: "fix the tests", notes: ["is it the builder test?"] }),
-    "fix the tests Context from the conversation: is it the builder test?",
+    "Goal: fix the tests\nWhat the interview established:\n- is it the builder test?",
   );
-  // No notes at all: just the cleaned task.
-  assert.equal(composeBrief({ task: "fix the tests", notes: [] }), "fix the tests");
-  assert.equal(composeBrief({ task: "fix the tests" }), "fix the tests");
+});
+
+test("with only a task, the fallback is a single Goal line", () => {
+  assert.equal(composeBrief({ task: "fix the tests" }), "Goal: fix the tests");
+  assert.equal(composeBrief({ task: "fix the tests", notes: [] }), "Goal: fix the tests");
+});
+
+test("with a repo but no notes or said, the fallback has a Where line and nothing else", () => {
+  assert.equal(
+    composeBrief({ task: "fix the tests", repo: "jarvis" }),
+    "Goal: fix the tests\nWhere: jarvis",
+  );
 });
 
 test("nothing survives when there is neither a brief nor a task", () => {
@@ -253,8 +459,14 @@ test("a brief is capped and stripped because a model wrote it", () => {
 test("a note handed straight to composeBrief is cleaned like everything else", () => {
   const rlo = String.fromCharCode(0x202e);
   const result = composeBrief({ task: "build something", notes: [`line 1\nline 2${rlo}`] });
-  // The newline is collapsed to a space, and the override character is stripped.
-  assert.ok(result.includes("line 1 line 2"), `result: ${result}`);
-  assert.equal(result.includes("\n"), false);
+  // The newline inside the note collapses to a space (notes are cleaned with
+  // clean, not cleanBrief -- a note is a single line), and the override
+  // character is stripped.
+  assert.ok(result.includes("- line 1 line 2."), `result: ${result}`);
   assert.equal(result.includes(rlo), false);
+});
+
+test("what was said is cleaned the same way, and an empty one is dropped", () => {
+  const result = composeBrief({ task: "build something", said: ["  spaced out  ", ""] });
+  assert.equal(result, "Goal: build something\nJesse said, in order:\n- spaced out");
 });
