@@ -8,7 +8,7 @@ import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
-import { describeIntent, isAnswerable, readAnswer } from "./lib/confirm.js";
+import { clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer } from "./lib/confirm.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
@@ -543,6 +543,9 @@ function clearPendingAnnouncements() {
 // the model's own reply is dropped for any turn that carried one, so what is
 // heard is always what will run. A tag nothing can describe is not held back:
 // the dispatcher explains itself better than a confirmation nobody understands.
+// That fall-through is what makes this the BUILD path only: a session tag goes
+// through proposeSession below, which has no such fall-through, because the
+// four verbs it covers reach a live process and must never run unconfirmed.
 async function propose(send, conv, intent, run) {
   const spoken = describeIntent(intent);
   if (!spoken) return false;
@@ -551,6 +554,60 @@ async function propose(send, conv, intent, run) {
   log(`proposed: ${spoken}`);
   await say(send, spoken);
   return true;
+}
+
+// The session equivalent of propose(), for the four verbs that always need a
+// yes (see lib/confirm.js's CONFIRMED_VERBS). Unlike propose(), this never
+// falls through to an unconfirmed dispatch: a tell, interrupt or stop that
+// cannot be described is a missing detail, not a green light, so the missing
+// detail is asked for instead.
+async function proposeSession(send, conv, session, roster) {
+  const verb = typeof session.verb === "string" ? session.verb.toLowerCase() : "";
+  let target = null;
+  if (verb === "tell" || verb === "interrupt" || verb === "stop") {
+    // Resolved before it is ever proposed: a yes to a session that does not
+    // exist is a false confirmation, and asking "shall I stop jarvis-1, sir?"
+    // only to say "I cannot find jarvis-1 running" after the yes is worse than
+    // saying so up front.
+    const { record, refusal } = findTarget(roster, session.name ?? session.repo);
+    if (refusal) {
+      log(`session refused before proposing: ${refusal}`);
+      await say(send, refusal);
+      return;
+    }
+    target = record;
+  }
+
+  const spoken = describeIntent({ session, workspace: getWorkspace(memoryStore, session.repo), target });
+  if (!spoken) {
+    // These four never run unconfirmed. An undescribable tag here is a missing
+    // detail (a tell with no task, a stop with nothing to name), and the fix is
+    // to ask for the detail, never to dispatch and let the dispatcher explain.
+    const question = clarify({ session, target });
+    log(`session clarified rather than proposed: ${question}`);
+    await say(send, question);
+    return;
+  }
+
+  conv.proposal = {
+    // The resolved roster name is what the dispatcher looks up after the yes,
+    // so it resolves exactly and, if the session has since gone, says so by
+    // that same name rather than the one the model happened to write.
+    run: async () =>
+      dispatchSession(
+        send,
+        { ...session, ...(target ? { name: target.name } : {}) },
+        "",
+        // Read again on the way in: the roster that produced the proposal is
+        // however many seconds old the answer took to arrive, and a stop
+        // resolves a name against a real process.
+        await rosterPoller.read(),
+      ),
+    spoken,
+    at: Date.now(),
+  };
+  log(`proposed: ${spoken}`);
+  await say(send, spoken);
 }
 
 // The answer, if that is what this was. Returns true when the words were spent
@@ -586,7 +643,18 @@ async function answerProposal(send, conv, text) {
   }
 
   log(`proposal accepted: ${proposal.spoken}`);
-  await proposal.run();
+  try {
+    await proposal.run();
+  } catch (e) {
+    // A yes that fails silently sounds, from the chair, exactly like a yes
+    // that worked -- and the failure has already been swallowed once here, so
+    // it has to be spoken before it is rethrown for whatever else reports it.
+    if (!e.aborted) {
+      log(`proposal run failed: ${e.message}`);
+      await say(send, "That did not go through, sir.");
+    }
+    throw e;
+  }
   return true;
 }
 
@@ -1030,29 +1098,17 @@ function firstUnanswered(primitive, params) {
 // stop, because "which one did you mean" is the same question either way -- and
 // because resolving a name to the wrong session is the same mistake either way,
 // except that stop signals a real process.
+//
+// The matching and the wording of each refusal live in lib/confirm.js's
+// findTarget, so they can be tested without a live roster; this is only the
+// wiring that speaks the refusal when there is one.
 async function resolveSession(send, roster, query, preamble) {
-  // null is "I could not ask", not "nothing is running". Saying "I do not know
-  // a session by that name" of a session that exists is worse than admitting
-  // the listing failed -- especially for stop, where the next thing the person
-  // does is try again louder.
-  if (!Array.isArray(roster)) {
-    await say(send, joinSpoken(preamble, "I cannot see what is running just now, sir."));
+  const { record, refusal } = findTarget(roster, query);
+  if (refusal) {
+    await say(send, joinSpoken(preamble, refusal));
     return null;
   }
-
-  const matches = matchSessions(roster, query);
-  if (matches.length === 0) {
-    await say(send, joinSpoken(preamble, "I do not know a session by that name, sir."));
-    return null;
-  }
-  if (matches.length > 1) {
-    // Never the first of several, and never by position: "the third one" is
-    // precisely the sentence that gets misheard.
-    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
-    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
-    return null;
-  }
-  return matches[0];
+  return record;
 }
 
 // Ask a session to stop, and confirm it did before saying so.
@@ -1803,17 +1859,17 @@ wss.on("connection", (ws) => {
       // still waiting afterwards.
       if (session) {
         // The request is settled either way: it is now a proposal waiting on a
-        // yes, or it was undescribable and dispatched as before.
+        // yes, or it was refused or asked about before ever becoming one.
         dropAnswered(conv.unanswered, answering);
-        // No preamble on the dispatch. The model's reply was already replaced
-        // by the proposal, and repeating it after the yes would say the same
-        // thing twice.
-        const held = await propose(send, conv, { session, workspace: getWorkspace(memoryStore, session.repo) },
-          // Read again on the way in: the roster that produced the proposal is
-          // however many seconds old the answer took to arrive, and a stop
-          // resolves a name against a real process.
-          async () => dispatchSession(send, session, "", await rosterPoller.read()));
-        if (!held) await dispatchSession(send, session, reply, roster);
+        // The model's reply is dropped here on purpose, not just left unsaid:
+        // this is the one place a "jarvis-1 has it, sir" could be spoken about
+        // a session nothing has touched yet, and these four never dispatch
+        // unconfirmed -- see needsConfirmation in lib/confirm.js.
+        if (needsConfirmation(session)) {
+          await proposeSession(send, conv, session, roster);
+        } else {
+          await dispatchSession(send, session, reply, roster);
+        }
       } else if (action) {
         dropAnswered(conv.unanswered, answering);
         const held = await propose(send, conv, { action, primitive: registry.get(action.primitive) },
