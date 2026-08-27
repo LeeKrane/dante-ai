@@ -39,7 +39,10 @@ function condition(record) {
   if (record.state === "blocked") return "blocked";
   if (record.state === "working") return "working";
   if (record.state === "done") return "done";
-  return record.status === "busy" ? "working" : "idle";
+  // "shell" is a session mid shell-command, which is exactly the state the
+  // tell path already refuses as busy -- painting it "idle" here would tell
+  // someone it is free to interrupt when the rest of Dante disagrees.
+  return record.status === "busy" || record.status === "shell" ? "working" : "idle";
 }
 
 // rowsFromRoster(roster, now) -> what to paint, newest first.
@@ -64,6 +67,10 @@ export function rowsFromRoster(roster, now = Date.now()) {
       where: typeof record.alias === "string" ? record.alias : "",
       condition: condition(record),
       elapsed: elapsedLabel(now - record.startedAt),
+      // A session Dante did not start is worth flagging in the panel: dimmed
+      // and italicised there, but nothing is spoken differently for it, and
+      // the voice actions -- tell, interrupt, stop, read -- reach it the same.
+      own: Boolean(record.own),
     }));
 }
 

@@ -103,6 +103,9 @@
   #sessions .working .cond { color: var(--cyan); opacity: 1; }
   #sessions .blocked .cond { color: var(--amber); opacity: 1; }
   #sessions .when { opacity: .55; }
+  /* A session Dante did not start: dimmed and italic here, never hidden -- nothing
+     is spoken differently for it, and the voice actions reach it the same. */
+  #sessions .foreign .name { opacity: .7; font-style: italic; }
   /* Shown in place of rows when the panel is open and nothing is running --
      otherwise pressing `s` with an empty roster would look like it did nothing. */
   #sessions .none { opacity: .55; }

@@ -521,7 +521,11 @@ function renderSessions() {
   // worth reconciling, and a stale row would describe a session that has ended.
   sessionsEl.replaceChildren(...rows.map((row) => {
     const line = document.createElement("div");
-    line.className = `sess ${row.condition}`;
+    // A session Dante did not start is flagged, not hidden -- the whitelist and
+    // the voice actions already reach it, so the panel says so rather than
+    // implying it is Dante's own.
+    line.className = row.own ? `sess ${row.condition}` : `sess ${row.condition} foreign`;
+    if (!row.own) line.title = "started outside Dante";
     // textContent throughout: a session name is written by whoever started the
     // session, which is not always Dante.
     const name = document.createElement("span");

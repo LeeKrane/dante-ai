@@ -16,6 +16,8 @@ import {
   matchSessions,
   diffRoster,
   listAgents,
+  listSessions,
+  mergeRosters,
   ownRunning,
   parseRoster,
   visibleSessions,
@@ -283,6 +285,11 @@ test("a spoken roster never contains a uuid, a pid or a path", () => {
   assert.ok(!line.includes("/home/krane"), line);
 });
 
+test("a status of shell is spoken as working, in agreement with isWorking", () => {
+  const roster = rosterOf(session({ state: null, status: "shell", startedAt: NOW - 60_000 }));
+  assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis-1-builder-test-fix working, a minute in");
+});
+
 test("a long roster is summarised rather than recited", () => {
   const many = Array.from({ length: MAX_SPOKEN + 3 }, (_, i) =>
     session({ sessionId: `id-${i}`, name: `jarvis-${i}`, status: "idle", state: null }),
@@ -406,6 +413,53 @@ test("a CLI that answers with an empty listing is saying nothing is running", as
   // the answer was "none". That is a fact worth speaking.
   const empty = await writeFake("claude-empty.cjs", 'console.log("[]");');
   assert.deepEqual(await listAgents({ bin: empty }), []);
+});
+
+// ---------------------------------------------------------------------------
+// mergeRosters
+// ---------------------------------------------------------------------------
+
+test("mergeRosters keeps the CLI's record when a session is in both", () => {
+  // The CLI record carries state ("working") that the file record never can
+  // -- only claude agents --json reports it -- so it has to be the one that
+  // survives the merge, not just any record with a matching sessionId.
+  const cliRecord = session({ sessionId: "a", state: "working", status: "busy" });
+  const fileRecord = session({ sessionId: "a", state: null, status: "idle", kind: "interactive" });
+  assert.deepEqual(mergeRosters([cliRecord], [fileRecord]), [cliRecord]);
+});
+
+test("mergeRosters fills a missing pid on the CLI record from the file", () => {
+  const cliRecord = session({ sessionId: "a", pid: null });
+  const fileRecord = session({ sessionId: "a", pid: 9999 });
+  assert.deepEqual(mergeRosters([cliRecord], [fileRecord]), [{ ...cliRecord, pid: 9999 }]);
+});
+
+test("mergeRosters adds a file-only session the CLI never listed", () => {
+  const cliRecord = session({ sessionId: "a" });
+  const fileRecord = session({ sessionId: "b", state: null, kind: "interactive" });
+  assert.deepEqual(mergeRosters([cliRecord], [fileRecord]), [cliRecord, fileRecord]);
+});
+
+// ---------------------------------------------------------------------------
+// listSessions
+// ---------------------------------------------------------------------------
+
+test("listSessions returns null when the CLI could not answer, even though the files listing did", async () => {
+  const roster = await listSessions({
+    listAgents: async () => null,
+    listSessionFiles: async () => [session({ sessionId: "a" })],
+  });
+  assert.equal(roster, null);
+});
+
+test("listSessions unions both when both answer", async () => {
+  const cliRecord = session({ sessionId: "a" });
+  const fileRecord = session({ sessionId: "b", state: null, kind: "interactive" });
+  const roster = await listSessions({
+    listAgents: async () => [cliRecord],
+    listSessionFiles: async () => [fileRecord],
+  });
+  assert.deepEqual(roster, [cliRecord, fileRecord]);
 });
 
 // ---------------------------------------------------------------------------
@@ -803,6 +857,13 @@ test("whether a session can take a follow-up is one question with one answer", (
   assert.equal(isWorking({ state: null, status: "busy" }), true);
   assert.equal(isWorking({ state: null, status: "idle" }), false);
   assert.equal(isWorking({ state: null, status: null }), false);
+});
+
+test("a status of shell counts as working", () => {
+  // Only a file-sourced record ever carries this word -- the CLI listing
+  // reports the same session busy via `status`, never "shell" -- but a
+  // terminal mid shell-command is occupied all the same.
+  assert.equal(isWorking({ state: null, status: "shell" }), true);
 });
 
 test("a session named with its repository in front is still found", () => {

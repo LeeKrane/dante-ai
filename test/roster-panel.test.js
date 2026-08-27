@@ -11,6 +11,7 @@ const record = (overrides = {}) => ({
   state: "working",
   status: "busy",
   startedAt: NOW - 65_000,
+  own: true,
   ...overrides,
 });
 
@@ -21,7 +22,23 @@ test("a row says which session, where, how it is and how long", () => {
     where: "jarvis",
     condition: "working",
     elapsed: "1m",
+    own: true,
   }]);
+});
+
+test("a session Dante did not start is flagged, not hidden", () => {
+  assert.equal(rowsFromRoster([record({ own: false })], NOW)[0].own, false);
+  // A record with no own field at all -- the shape a server that has not been
+  // upgraded yet would still send -- reads as not-Dante's, the safer default.
+  const { own, ...bare } = record();
+  assert.equal(rowsFromRoster([bare], NOW)[0].own, false);
+});
+
+test("a session mid shell-command is working, not idle", () => {
+  // isWorking (lib/agents.js) already treats "shell" as busy, because the tell
+  // path refuses to interrupt it -- the panel painting it idle would say the
+  // opposite of what the rest of Dante believes.
+  assert.equal(rowsFromRoster([record({ state: null, status: "shell" })], NOW)[0].condition, "working");
 });
 
 test("blocked is its own word, because it is the one you can do something about", () => {

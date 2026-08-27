@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   askResilient,
+  buildPersona,
   buildSessionArgs,
   createBrainSession,
   createLineReader,
@@ -370,4 +371,13 @@ test("a warm turn that fails twice is flagged so the stored id can be cleared", 
       (e) => e.sessionExhausted === true,
     );
   } finally { session.close(); }
+});
+
+test("the persona tells the model to quote a session name, because a hand-started one carries spaces", () => {
+  // A session Jesse starts from a terminal is named by whoever typed it, not by
+  // Dante, so "bug-hunt, completeness-sweep" is a real name a tag has to carry
+  // whole rather than split on its first space or comma.
+  const persona = buildPersona();
+  assert.match(persona, /Always wrap it in double quotes/);
+  assert.match(persona, /name="bug-hunt, completeness-sweep"/);
 });

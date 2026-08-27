@@ -508,3 +508,30 @@ test("a real process really does stop", async () => {
     }
   }
 });
+
+test("a procStart that no longer matches refuses to stop it, and never signs a SIGTERM", async () => {
+  // A real, still-running process stands in for the pid-recycle case here:
+  // whatever the real reason its procStart stopped matching would be, the
+  // response has to be the same -- refuse rather than guess -- and this
+  // proves the refusal actually stops the SIGTERM before it happens, not
+  // just before it is reported.
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    const result = await stopSession(
+      { pid: child.pid, procStart: "not-the-real-one" },
+      { timeoutMs: 4000, pollMs: 50 },
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.error, /no longer the one I saw/);
+    // Signal 0 throwing nothing is the process still being there -- proof the
+    // refusal happened before kill(pid, "SIGTERM"), not merely alongside it.
+    assert.doesNotThrow(() => process.kill(child.pid, 0));
+  } finally {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already stopped.
+    }
+  }
+});

@@ -135,13 +135,17 @@ Not every primitive produces a page. *"What does this repo do?"* runs
 and answers the question in prose instead of building anything.
 
 **Sessions.** The point of the thing. Every turn carries a line describing the
-Claude Code sessions running on this machine — from `claude agents --json`, so
-it sees the ones you started in a terminal too — and you can drive them:
+Claude Code sessions running on this machine — from `claude agents --json`
+plus the per-session state file the CLI writes for messaging
+(`~/.claude/sessions/<pid>.json`, the same file the peer-messaging section
+below describes), so it sees a `--bg` job and the terminal you are typing in
+alike — and you can drive them:
 
 - *"What's running?"* — the roster, spoken. Never a uuid, a pid or a path.
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `jarvis-3-fix-failing-builder-test`.
-  Five at a time, counted from the roster so terminal sessions count too.
+  Five at a time, counted from Dante's own sessions on the roster — a
+  terminal you are typing in does not count against the ceiling.
 - *"Tell jarvis three to run the tests as well"* — the message goes into that
   session's own input queue, exactly where a line you typed into its terminal
   would go, and it is picked up when the work in flight finishes.
@@ -188,7 +192,13 @@ Repositories get spoken aliases: *"the fitness repo is at
 `fitness-1`, `fitness-2`. That list is also the **whitelist**: Dante only sees
 sessions running inside a repository you named out loud, so another tool's
 background sessions — and Dante's own brain and builders — never appear, and
-cannot be named, told anything, or stopped.
+cannot be named, told anything, read or stopped. A session inside that
+whitelist is in scope whether Dante started it or a terminal did — *"stop
+jarvis three"* sends a real SIGTERM to somebody's terminal if that is what
+jarvis three is, and *"what did jarvis three come up with?"* reads back the
+transcript of the terminal you are sitting at, out loud; the same confirmation
+gate covers the stop either way, and there is no special case for a session
+you did not start.
 
 **It proposes; you decide.** Nothing above runs on the model's say-so. Every
 session command and every build is spoken back as one sentence first, built from
@@ -349,7 +359,7 @@ Claude Code will still use a tool you leave off the list, which is why
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
-| **s** | sessions panel (what is running, where, for how long; on by default) |
+| **s** | sessions panel (what is running, where, for how long; on by default — a session Dante did not start appears dimmed and in italics, never hidden) |
 | **t** | the caption line |
 | **h** | the rest of the interface |
 
@@ -417,9 +427,13 @@ session taking dictation. And the peer token is a **credential**: it takes the
 posture the Slack bot token takes — never logged, never across the WebSocket,
 never in an error string, and never in a prompt.
 
-Dante still writes nothing under `~/.claude/`. It reads two files there that
-describe sessions it can already see in the roster, and that roster is already
-narrowed to the repositories you named out loud.
+Dante still writes nothing under `~/.claude/`. It reads two files there — both
+describing sessions the roster already narrows to the repositories you named
+out loud, and one of them, `~/.claude/sessions/<pid>.json`, also revealing
+sessions `claude agents --json` omits entirely. `lib/session-files.js` reads
+that same state file for a different purpose — finding a hand-started session
+the listing omits — so there are not two competing readers of that directory,
+only two consumers of one.
 
 **A session transcript is untrusted input.** It holds whatever the session read
 off disk or off the web, which makes it the most attacker-reachable text here. It

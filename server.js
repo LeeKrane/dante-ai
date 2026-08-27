@@ -454,16 +454,28 @@ const MAX_ROSTER_ROWS = 8;
 function rosterForClient(roster, aliases) {
   if (!Array.isArray(roster)) return [];
   const byPath = Object.entries(aliases ?? {});
-  return roster.slice(0, MAX_ROSTER_ROWS).map((record) => ({
-    sessionId: record.sessionId,
-    name: record.name,
-    // The alias rather than the path: a repository is called "jarvis" out loud,
-    // and a page has no business being told where it lives on disk.
-    alias: byPath.find(([, path]) => record.cwd === path || record.cwd?.startsWith(`${path}/`))?.[0] ?? "",
-    state: record.state,
-    status: record.status,
-    startedAt: record.startedAt,
-  }));
+  return roster
+    // Sorted before the cap, the same rule rowsFromRoster applies client-side:
+    // mergeRosters appends file-only records after the CLI's own, so on a
+    // machine already running eight or more sessions an unsorted slice could
+    // cut the foreground terminal before it ever reached the browser.
+    .slice()
+    .sort((a, b) => (b.startedAt ?? -Infinity) - (a.startedAt ?? -Infinity))
+    .slice(0, MAX_ROSTER_ROWS)
+    .map((record) => ({
+      sessionId: record.sessionId,
+      name: record.name,
+      // The alias rather than the path: a repository is called "jarvis" out loud,
+      // and a page has no business being told where it lives on disk.
+      alias: byPath.find(([, path]) => record.cwd === path || record.cwd?.startsWith(`${path}/`))?.[0] ?? "",
+      state: record.state,
+      status: record.status,
+      startedAt: record.startedAt,
+      // "own" carries the same meaning ownRunning and recallableSessions already give
+      // the word: Dante started it. Not ownSessionIds() -- that is Dante's own brain,
+      // and it is hidden upstream by the poller's filter rather than flagged here.
+      own: Boolean(getSessionRecord(memoryStore, record.sessionId)),
+    }));
 }
 
 function sendRoster(send, roster) {

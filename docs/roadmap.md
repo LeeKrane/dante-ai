@@ -104,6 +104,21 @@ natively:
 start, which is exactly what tmux would have bought, without a system dependency.
 `--session-id <uuid>` lets Dante assign the id at spawn rather than scraping it back out.
 
+**The listing has a blind spot, and it is not a small one.** `claude agents --json` — even with
+`--all` — omits a plain foreground `claude` session: the terminal you are typing into right now,
+verified on this machine, never appears. What does see it is
+`~/.claude/sessions/<pid>.json`, the per-session state file the CLI writes for every live
+session including that one, so it can be messaged — the exact file `readPeerAddress` in
+`lib/peer.js` already reads to find a session's socket. Stage 43's second roster source is
+therefore a new *consumer* of a file already in production use, not a new discovery: read the
+directory, parse each file, and a `pid` that is not alive is a dead session rather than one worth
+reporting. Watch for `state.spare === true` in that directory — a pre-warmed `claude bg-spare`
+process writes a state file too, and on a live machine its `cwd` is already a real whitelisted
+workspace root with a jobId-derived name, indistinguishable from an ordinary session by cwd or
+name alone; the `spare` flag is the only thing that disqualifies it, and it must be checked the
+same way `hideIds`/`hideRoots` filter Dante's own plumbing out of the first roster source, or
+"what's running?" starts narrating a process nobody is using.
+
 **The record shape, as actually observed.** A live listing on this machine returned six sessions,
 and the important detail is how much of the record is *optional*:
 
@@ -168,6 +183,8 @@ Numbering continues the existing plan doc. **Stages 21–28 are the committed fi
 | 40 | Chaining, on completion | — | `lib/memory.js`, `server.js` |
 | 41 | "Catch me up" | — | `lib/notify.js`, `lib/memory.js`, `server.js` |
 | 42 | Read-only repo questions | `primitives/ask-repo.mjs` | — |
+| **F** | **Sessions Dante didn't start** | | |
+| 43 | The second roster source | `lib/session-files.js`, `test/session-files.test.js` | `lib/agents.js`, `test/agents.test.js`, `server.js`, `public/roster-panel.js`, `test/roster-panel.test.js`, `public/app.js`, `public/index.html`, `lib/brain.js`, `test/brain-session.test.js`, `lib/spawn-session.js`, `README.md` |
 
 ---
 
