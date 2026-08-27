@@ -11,6 +11,7 @@ import {
   POLL_MS,
   createRosterPoller,
   describeRoster,
+  idleAmong,
   isWorking,
   matchSessions,
   diffRoster,
@@ -469,6 +470,48 @@ test("no baseline reports nothing, so a restart does not announce what was alrea
 });
 
 // ---------------------------------------------------------------------------
+// idleAmong
+// ---------------------------------------------------------------------------
+
+test("idleAmong returns idle records whose session id is queued", () => {
+  const roster = rosterOf(session({ sessionId: "a", state: "done", status: "idle" }));
+  assert.deepEqual(idleAmong(roster, new Set(["a"])), roster);
+});
+
+test("idleAmong excludes a working session even if it is queued", () => {
+  const roster = rosterOf(session({ sessionId: "a", state: "working", status: "busy" }));
+  assert.deepEqual(idleAmong(roster, new Set(["a"])), []);
+});
+
+test("idleAmong excludes a queued session id that is not on the roster", () => {
+  const roster = rosterOf(session({ sessionId: "a", state: "done", status: "idle" }));
+  assert.deepEqual(idleAmong(roster, new Set(["b"])), []);
+});
+
+test("idleAmong excludes an idle session with no queue", () => {
+  const roster = rosterOf(session({ sessionId: "a", state: "done", status: "idle" }));
+  assert.deepEqual(idleAmong(roster, new Set()), []);
+});
+
+test("idleAmong treats a blocked session as working even when its status says idle", () => {
+  // isWorking's own comment: "blocked" counts as working on purpose, and
+  // state wins over status where both are present.
+  const roster = rosterOf(session({ sessionId: "a", state: "blocked", status: "idle" }));
+  assert.deepEqual(idleAmong(roster, new Set(["a"])), []);
+});
+
+test("idleAmong treats a finished session as idle even when its status says busy", () => {
+  const roster = rosterOf(session({ sessionId: "a", state: "done", status: "busy" }));
+  assert.deepEqual(idleAmong(roster, new Set(["a"])), roster);
+});
+
+test("idleAmong treats a missing or malformed id set as nothing queued", () => {
+  const roster = rosterOf(session({ sessionId: "a", state: "done", status: "idle" }));
+  assert.deepEqual(idleAmong(roster, undefined), []);
+  assert.deepEqual(idleAmong(roster, 42), []);
+});
+
+// ---------------------------------------------------------------------------
 // createRosterPoller
 // ---------------------------------------------------------------------------
 
@@ -597,6 +640,80 @@ test("a listener that throws does not stop the poller", async () => {
   await poller.read();
   assert.deepEqual(await poller.read(), []);
   poller.stop();
+});
+
+test("onRoster sees the baseline roster on the very first tick", async () => {
+  // onEvents does not fire on the baseline tick (diffRoster against a null
+  // previous is deliberately empty); onRoster has no such exception, because
+  // "what is currently true" is exactly as true on the first tick as any other.
+  const seen = [];
+  let eventsFired = false;
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session())),
+    onRoster: (roster) => seen.push(roster),
+    onEvents: () => {
+      eventsFired = true;
+    },
+  });
+  await poller.read();
+  poller.stop();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].length, 1);
+  assert.equal(eventsFired, false);
+});
+
+test("onRoster fires on every successful tick, not only the ones with events", async () => {
+  const seen = [];
+  const poller = createRosterPoller({
+    // The same session on every tick: diffRoster produces no events, but
+    // onRoster still has to fire, because a queue can gain an entry between
+    // ticks with the roster never moving at all.
+    list: scripted(rosterOf(session()), rosterOf(session()), rosterOf(session())),
+    maxAgeMs: 0,
+    onRoster: (roster) => seen.push(roster),
+  });
+  await poller.read();
+  await poller.read();
+  await poller.read();
+  poller.stop();
+  assert.equal(seen.length, 3);
+});
+
+test("onRoster does not fire on a failed listing", async () => {
+  const seen = [];
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session()), null),
+    maxAgeMs: 0,
+    onRoster: (roster) => seen.push(roster),
+  });
+  await poller.read();
+  await poller.read();
+  poller.stop();
+  assert.equal(seen.length, 1);
+});
+
+test("a throwing onRoster does not stop the poller", async () => {
+  // Mirrors "a listener that throws does not stop the poller" above: the
+  // queue and the reporting both hang off this timer. Also checks the error
+  // isolation the doc comment promises -- a bad onRoster must not cost the
+  // tick its onEvents call either.
+  const seenEvents = [];
+  const poller = createRosterPoller({
+    list: scripted(rosterOf(session({ state: "working" })), rosterOf(session({ state: "done" })), []),
+    maxAgeMs: 0,
+    onRoster: () => {
+      throw new Error("a bad listener");
+    },
+    onEvents: (events) => seenEvents.push(...events),
+  });
+  await poller.read();
+  await poller.read();
+  assert.deepEqual(await poller.read(), []);
+  poller.stop();
+  // Three ticks: the baseline (no event), working -> done (idle), done -> []
+  // (gone). Both post-baseline ticks fired onEvents despite onRoster
+  // throwing on every one of the three.
+  assert.deepEqual(seenEvents.map((e) => e.kind), ["idle", "gone"]);
 });
 
 test("a listing that rejects is a missed tick, not a dead poller", async () => {

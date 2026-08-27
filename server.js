@@ -14,13 +14,13 @@ import { recallableSessions } from "./lib/recall.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { createRosterPoller, isWorking, matchSessions, ownRunning, visibleSessions } from "./lib/agents.js";
+import { createRosterPoller, idleAmong, isWorking, matchSessions, ownRunning, visibleSessions } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { loadSessionKinds, buildName } from "./lib/sessions.js";
 import {
-  MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession,
+  MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession, createInFlight,
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
 import { describeFailure } from "./lib/outcome.js";
@@ -28,7 +28,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
-  queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord, getSessions,
+  queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
 } from "./lib/memory.js";
 
@@ -98,13 +98,18 @@ const rosterPoller = createRosterPoller({
     hideRoots: [BUILDS],
   }),
 
+  // Drained on every tick a session is seen idle, not only the tick it
+  // becomes idle, because a queue can gain an entry after that moment or
+  // exist from before the process restarted, and both must be delivered with
+  // no browser connected. This is the whole reason the poller runs whether or
+  // not one is.
+  onRoster: (roster) => {
+    for (const record of idleAmong(roster, queuedSessionIds(memoryStore))) deliverQueued(record);
+  },
+
   onEvents: (events, roster) => {
     for (const { kind, session } of events) {
       log(`session ${kind}: ${session.name ?? session.sessionId}`);
-      // The moment a session stops working is the moment anything queued for it
-      // can be delivered. This is the whole reason the poller runs whether or
-      // not a browser is connected.
-      if (kind === "idle") deliverQueued(session);
       // The report someone walked away for. Not awaited: a poller tick must
       // not be held open by a Slack round trip and a summary behind it.
       if (kind === "gone") {
@@ -129,26 +134,33 @@ const rosterPoller = createRosterPoller({
   },
 });
 
+// Guards deliverQueued against the race lib/spawn-session.js's createInFlight
+// documents: `onRoster` re-checks every tick, and a drain can take up to
+// TELL_TIMEOUT_MS, so a session must not be resumed twice at once.
+const delivering = createInFlight();
+
 // Hand a session everything that was said to it while it was busy, in the order
 // it was said. Nothing here speaks: by the time a session goes idle the person
 // who queued it may be gone, and Phase C is what will tell them. This is the
 // delivery, not the report.
 async function deliverQueued(record) {
-  const waiting = takeQueued(memoryStore, record.sessionId);
-  if (waiting.length === 0) return;
-  saveStore(memoryStore);
+  await delivering.run(record.sessionId, async () => {
+    const waiting = takeQueued(memoryStore, record.sessionId);
+    if (waiting.length === 0) return;
+    saveStore(memoryStore);
 
-  for (const text of waiting) {
-    const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
-    log(
-      result.ok
-        ? `delivered to ${record.name}: ${JSON.stringify(text)}`
-        : `delivery to ${record.name} failed: ${result.error}`,
-    );
-    // One failure ends the run rather than pressing on: the rest were said in
-    // an order that assumed this one landed.
-    if (!result.ok) break;
-  }
+    for (const text of waiting) {
+      const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
+      log(
+        result.ok
+          ? `delivered to ${record.name}: ${JSON.stringify(text)}`
+          : `delivery to ${record.name} failed: ${result.error}`,
+      );
+      // One failure ends the run rather than pressing on: the rest were said in
+      // an order that assumed this one landed.
+      if (!result.ok) break;
+    }
+  });
 }
 
 // One exit, reported once, whichever mechanism noticed it.

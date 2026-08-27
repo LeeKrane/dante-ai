@@ -11,6 +11,7 @@ import {
   newSessionId,
   MAX_REPLY_CHARS,
   buildTellArgs,
+  createInFlight,
   refuseStart,
   startSession,
   stopSession,
@@ -389,6 +390,39 @@ test("a session that never answers is abandoned rather than waited on forever", 
 test("a follow-up with nowhere to run is refused before anything spawns", async () => {
   assert.equal((await tellSession({ sessionId: ID, text: "x" })).ok, false);
   assert.equal((await tellSession({ sessionId: ID, cwd: workspace, text: "" })).ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// createInFlight
+// ---------------------------------------------------------------------------
+
+test("a second run for a key still in flight is skipped rather than started", async () => {
+  const guard = createInFlight();
+  let resolveFirst;
+  const gate = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  const first = guard.run("a", async () => {
+    await gate;
+  });
+  const second = await guard.run("a", async () => {});
+  assert.equal(second, false);
+
+  resolveFirst();
+  assert.equal(await first, true);
+
+  const third = await guard.run("a", async () => {});
+  assert.equal(third, true);
+});
+
+test("a run whose function throws still releases its key", async () => {
+  const guard = createInFlight();
+  await assert.rejects(
+    guard.run("a", async () => {
+      throw new Error("boom");
+    }),
+  );
+  assert.equal(await guard.run("a", async () => {}), true);
 });
 
 // ---------------------------------------------------------------------------

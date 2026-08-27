@@ -37,6 +37,7 @@ import {
   peekQueued,
   takeQueued,
   dropQueuesExcept,
+  queuedSessionIds,
   MAX_SESSIONS_REMEMBERED,
   rememberSession,
   getSessionRecord,
@@ -731,6 +732,22 @@ test("queues for sessions that ended are dropped rather than left for a reused i
 test("dropping queues on a store that never had any is harmless", () => {
   assert.equal(dropQueuesExcept(emptyStore(), []), 0);
   assert.equal(dropQueuesExcept({}, null), 0);
+});
+
+test("queuedSessionIds lists sessions with a live queued entry", () => {
+  const store = emptyStore();
+  queueForSession(store, SESSION_ID, "also run the tests", T);
+  assert.deepEqual(queuedSessionIds(store, T), new Set([SESSION_ID]));
+});
+
+test("queuedSessionIds excludes a session whose only entry has expired", () => {
+  const store = emptyStore();
+  queueForSession(store, SESSION_ID, "run the tests", T);
+  assert.deepEqual(queuedSessionIds(store, T + QUEUE_TTL_MS), new Set());
+});
+
+test("queuedSessionIds is empty for a store with no queues", () => {
+  assert.deepEqual(queuedSessionIds(emptyStore(), T), new Set());
 });
 
 test("a queue survives a save and a load", () => {
