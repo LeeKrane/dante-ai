@@ -128,11 +128,18 @@
      the way out sits under it rather than off the edge of the display. */
   @media (max-width: 520px) {
     #cancel { left: 50%; top: 100%; transform: translate(-50%, 0); margin: 10px 0 0; }
-    /* Mirrors #cancel's move under the button; shifted off its centreline so
-       the two don't land on top of each other on the rare occasion both are
-       visible (a build's own confirmation clip landing while the fader is
-       still open from the last one). */
-    #volume { right: auto; left: 50%; top: 100%; transform: translate(-135%, 0); margin: 10px 0 0; }
+    /* #cancel is absolutely positioned, so moving it under #talk reserves no
+       room in #controls' grid and the pill printed straight over #hint sitting
+       12px below. Reserving its height here — 10px of clearance plus the pill's
+       own 33px (9px of padding twice, a 13px line, two 1px borders) — pushes
+       the hint clear, and only while the button is actually on screen. Margin
+       rather than height, so #volume's top: 50% still lands on the mic. */
+    #talk:has(#cancel:not(.hidden)) { margin-bottom: 43px; }
+    /* #volume deliberately does not mirror #cancel's move. It is 28px wide and
+       still fits the gutter beside a centred #mic even at 320px, whereas
+       stacking it below put its body inside the centred Stop pill, and #vol-pop
+       opens upward — from under #talk the fader landed on top of the record
+       button itself. */
   }
   #mic {
     appearance: none; display: inline-flex; align-items: center; gap: 12px;
