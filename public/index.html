@@ -61,7 +61,7 @@
   /* These three are the only prose on the page: the assistant's reply, the
      build log, and the diagnostics panel. The I-beam cursor tells the
      pointer they're selectable before the drag even starts. */
-  #caption, #progress, #progress div, #dbg {
+  #caption, #progress, #progress div, #dbg, #sessions {
     -webkit-user-select: text;
     user-select: text;
     cursor: text;
@@ -82,21 +82,33 @@
   /* One long path must never widen the HUD and reflow the orb. */
   #progress div { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
   #progress div:last-child { color: var(--cyan); opacity: .95; }
-  /* What is running, beside the orb. Same monospace readout as #progress --
-     they are the same kind of thing: a machine's state, not prose. */
+  /* What is running: a panel in a corner, on a key -- same idea as #dbg,
+     mirrored to the other side. A person who opened it deliberately keeps it,
+     regardless of what else on the page is showing or hiding. */
   #sessions {
-    display: inline-block; margin: 12px auto 0; text-align: left;
-    max-width: min(52ch, 92vw);
+    position: fixed; top: 10px; right: 10px; z-index: 20;
+    max-width: min(60ch, 92vw); max-height: 62vh; overflow: auto;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: rgba(3,10,16,.72); backdrop-filter: blur(2px);
     font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
     letter-spacing: .04em; color: var(--muted);
+    pointer-events: auto;
   }
-  #sessions .sess { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  #sessions .sess { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 1.4ch; align-items: baseline; }
+  #sessions .name { overflow-wrap: anywhere; }          /* wraps, never truncates */
+  #sessions .cond, #sessions .when { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* The condition is the only part worth colour: working is alive, blocked is
      waiting on a person, and idle is neither. */
   #sessions .cond { opacity: .75; }
   #sessions .working .cond { color: var(--cyan); opacity: 1; }
   #sessions .blocked .cond { color: var(--amber); opacity: 1; }
   #sessions .when { opacity: .55; }
+  /* Shown in place of rows when the panel is open and nothing is running --
+     otherwise pressing `s` with an empty roster would look like it did nothing. */
+  #sessions .none { opacity: .55; }
+  @media (max-width: 520px) {
+    #sessions { left: 10px; right: 10px; max-width: none; }
+  }
 
   /* Shown only if the browser blocked the automatic tab for a finished build. */
   #artifact {
@@ -124,16 +136,6 @@
     transition: color .18s ease, border-color .18s ease, background .18s ease;
   }
   #cancel:hover { color: var(--ink); border-color: rgba(120,210,240,.5); background: rgba(255,255,255,.06); }
-  /* On a narrow screen there is no room to the right of the record button, so
-     the way out sits under it rather than off the edge of the display. */
-  @media (max-width: 520px) {
-    #cancel { left: 50%; top: 100%; transform: translate(-50%, 0); margin: 10px 0 0; }
-    /* Mirrors #cancel's move under the button; shifted off its centreline so
-       the two don't land on top of each other on the rare occasion both are
-       visible (a build's own confirmation clip landing while the fader is
-       still open from the last one). */
-    #volume { right: auto; left: 50%; top: 100%; transform: translate(-135%, 0); margin: 10px 0 0; }
-  }
   #mic {
     appearance: none; display: inline-flex; align-items: center; gap: 12px;
     padding: 15px 26px; border-radius: 999px;
@@ -148,6 +150,20 @@
     width: 9px; height: 9px; border-radius: 50%;
     background: var(--cyan); box-shadow: 0 0 12px var(--cyan);
     animation: pulse 2.4s ease-in-out infinite;
+  }
+  #mic .icon { display: none; width: 20px; height: 20px; }
+  /* On a phone "Hold to talk" plus Stop plus the volume button do not fit side
+     by side, and stacking Stop under the mic put it on the hint and put the
+     volume fader on the mic. The record button is what gives way: it collapses
+     to a round icon (icon plus padding is 50px), which leaves room for the 28px
+     volume button on one side and the Stop pill on the other even at 320px, so
+     both stay where a desktop user would look for them. The button keeps its
+     aria-label so its name does not collapse with the text. */
+  @media (max-width: 520px) {
+    #mic { padding: 15px; gap: 0; }
+    #mic .dot, #mic .label { display: none; }
+    #mic .icon { display: block; animation: pulse 2.4s ease-in-out infinite; }
+    #mic.pressed .icon { animation: none; transform: scale(1.15); }
   }
   #mic:hover { border-color: rgba(120,210,240,.7); }
   #mic.pressed {
@@ -225,10 +241,9 @@
     border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--ink);
   }
   @keyframes pulse { 0%,100% { opacity: .5; transform: scale(1); } 50% { opacity: 1; transform: scale(1.25); } }
-  @media (prefers-reduced-motion: reduce) { #mic .dot { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { #mic .dot, #mic .icon { animation: none; } }
   body.interface-hidden #status,
   body.interface-hidden #progress,
-  body.interface-hidden #sessions,
   body.interface-hidden #artifact,
   body.interface-hidden #build-hud,
   body.interface-hidden #controls { display: none; }
@@ -337,6 +352,7 @@
 </head>
 <body>
   <div id="dbg" class="hidden"></div>
+  <div id="sessions" class="hidden" aria-live="off"></div>
   <div id="build-hud" class="hidden" aria-hidden="true">
     <canvas id="bh-record"></canvas>
     <canvas id="bh-live"></canvas>
@@ -373,7 +389,6 @@
         <div id="status">idle</div>
         <div id="caption"></div>
         <div id="progress" class="hidden"></div>
-        <div id="sessions" class="hidden" aria-live="off"></div>
         <a id="artifact" class="hidden" target="_blank" rel="noopener">Open the finished page</a>
       </div>
     </div>
@@ -400,7 +415,15 @@
             </svg>
           </button>
         </div>
-        <button id="mic" type="button"><span class="dot"></span> Hold to talk</button>
+        <button id="mic" type="button" aria-label="Hold to talk">
+          <span class="dot"></span>
+          <span class="label">Hold to talk</span>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+            <path d="M5.5 11a6.5 6.5 0 0 0 13 0"></path>
+            <path d="M12 17.5V21"></path>
+          </svg>
+        </button>
         <button id="cancel" class="hidden" type="button" aria-label="Stop speaking">Stop</button>
       </div>
       <div id="hint">hold the button, or press &amp; hold <kbd>Space</kbd></div>

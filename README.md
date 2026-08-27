@@ -139,9 +139,13 @@ it sees the ones you started in a terminal too — and you can drive them:
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `jarvis-3-fix-failing-builder-test`.
   Five at a time, counted from the roster so terminal sessions count too.
-- *"Tell jarvis three to run the tests as well"* — resumes it and speaks the
-  answer back. If it's busy the message is **queued** and delivered the moment
-  it goes idle, because resuming a working session forks it rather than joining.
+- *"Tell jarvis three to run the tests as well"* — the message goes into that
+  session's own input queue, exactly where a line you typed into its terminal
+  would go, and it is picked up when the work in flight finishes.
+- *"Interrupt jarvis three and have it use the other branch"* — same channel,
+  but it cuts in front of the work in flight. The session drops what it was
+  doing, takes the new instruction, and carries on. It is **not** a stop: same
+  process, same transcript, same session id.
 - *"Stop jarvis three"* — SIGTERM, never SIGKILL, and confirmed gone before it
   says so.
 - *"Start a session in jarvis to fix the tests, then run the linter"* — records a
@@ -167,6 +171,14 @@ cached: delete a session and it stops being readable that instant, with nothing
 left behind to answer in its place. The one-line summary posted to Slack when a
 session ends is kept only in the short recap log — cleared the first time you
 ask what you missed — and reading a session never consults it.
+
+The difference between *tell* and *interrupt* is timing and nothing else, and
+when it isn't clear which you meant, it picks *tell*. Neither one forks the
+session or waits for it to go idle — both used to, and the machinery that did
+is still there as the fallback for a Claude Code that doesn't offer the
+channel. What Dante can promise either way is that the session **has** the
+message, never that it has acted on it: nothing acknowledges a delivered line,
+so "has it" is the strongest thing it will say.
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and sessions in it are then
@@ -327,6 +339,7 @@ Claude Code will still use a tool you leave off the list, which is why
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
+| **s** | sessions panel (what is running, where, for how long; off by default) |
 | **t** | the caption line |
 | **h** | the rest of the interface |
 
@@ -345,6 +358,7 @@ the screen. If part of the UI "disappeared," press the key again.
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
 | `lib/spawn-session.js` | starting, telling and stopping a real session. |
+| `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
 | `lib/action.js`, `outcome.js`, `progress.js`, `tts.js`, `config.js` | tags, success detection, readable progress, speech, config. |
@@ -370,6 +384,30 @@ workspace.
 vocabulary, and an unclear answer re-asks once and then decides nothing. No
 voice phrase anywhere can pass `--dangerously-skip-permissions` or
 `--permission-mode bypassPermissions`.
+
+**The interrupt channel is undocumented, and reads a credential.** Claude Code
+keeps a unix socket per live session — `messagingSocketPath` in
+`~/.claude/sessions/<pid>.json` — and authenticates writes to it with a token
+from the matching `<pid>.<hash>.key`. That is how one session messages another,
+and it is the only way to reach a session that is already running rather than
+around it. None of it is a published interface: it was established empirically
+against CLI 2.1.246 and a future version may change or withdraw it, which is
+why every failure falls back to the old resume-and-queue path rather than
+breaking the verb.
+
+Three things follow, and all three are in `lib/peer.js`. The socket path is
+**vetted, not trusted** — it is read out of a file this process does not own,
+and an unvetted path would point the write at any socket on the machine, so
+only the CLI's own naming shape (`cc-socks/<pid>.sock`) is accepted. The
+roster's pid and the state file's session id must **agree** before anything is
+written, because pids are recycled and the cost of being wrong is a stranger's
+session taking dictation. And the peer token is a **credential**: it takes the
+posture the Slack bot token takes — never logged, never across the WebSocket,
+never in an error string, and never in a prompt.
+
+Dante still writes nothing under `~/.claude/`. It reads two files there that
+describe sessions it can already see in the roster, and that roster is already
+narrowed to the repositories you named out loud.
 
 **A session transcript is untrusted input.** It holds whatever the session read
 off disk or off the web, which makes it the most attacker-reachable text here. It

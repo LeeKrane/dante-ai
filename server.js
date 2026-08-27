@@ -22,6 +22,7 @@ import { loadSessionKinds, buildName } from "./lib/sessions.js";
 import {
   MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession,
 } from "./lib/spawn-session.js";
+import { planDelivery, sendToSession } from "./lib/peer.js";
 import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
@@ -1087,12 +1088,16 @@ async function dispatchStop(send, session, preamble, roster) {
 
 // Pass something on to a session that is already running.
 //
-// The gate is the whole stage. Resuming a session that is CURRENTLY WORKING is
-// not a join: two processes on one session id is the race askResilient and
-// conv.settled exist to prevent inside Dante, and it is worse across
-// processes. So a busy session gets the message queued, and the roster poller
-// delivers it on the first tick that sees it idle.
-async function dispatchTell(send, session, preamble, roster) {
+// lib/peer.js's sendToSession is tried first: of the three ways this codebase
+// can reach another session, it is the only one that writes into the live
+// session itself rather than around it -- no forked transcript (tellSession),
+// no waiting for the session to go idle (queueForSession). "now"-priority
+// delivery is also the only way `interrupt` means anything: it is what lets a
+// steer land mid-turn instead of behind it. But the channel is undocumented
+// by the CLI and not every version offers it, so the older queue-and-resume
+// path stays underneath as the fallback for a session that has no peer
+// address to answer to.
+async function dispatchTell(send, session, preamble, roster, verb = "tell") {
   const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
   if (!record) return;
 
@@ -1104,6 +1109,47 @@ async function dispatchTell(send, session, preamble, roster) {
     return;
   }
 
+  const plan = planDelivery(verb, text);
+  // Text that is non-empty but cleans to nothing (control characters, stray
+  // whitespace) is the same problem the empty-text check above exists for, so
+  // it gets the same question rather than a second branch that says the same
+  // thing differently.
+  if (!plan) {
+    await say(send, joinSpoken(preamble, `What should I tell ${record.name}, sir?`));
+    return;
+  }
+
+  send({ type: "state", value: "thinking" });
+  const delivered = await sendToSession({
+    pid: record.pid,
+    sessionId: record.sessionId,
+    text: plan.content,
+    priority: plan.priority,
+  });
+  if (delivered.ok) {
+    log(`${verb === "interrupt" ? "interrupted" : "told"} ${record.name} over the peer channel`);
+    // "has it" is as far as this can honestly go: sendToSession resolving ok
+    // means the frame reached the session's socket, not that the model has
+    // read it, acted on it, or replied -- the CLI sends no acknowledgement for
+    // a user frame at all.
+    await say(
+      send,
+      joinSpoken(
+        preamble,
+        verb === "interrupt" ? `${record.name} is interrupted and has it, sir.` : `${record.name} has it, sir.`,
+      ),
+    );
+    return;
+  }
+  log(`peer send to ${record.name} failed: ${delivered.error}`);
+
+  // Fallback: no peer address for this session (older CLI, or the state file
+  // this reads did not exist). The gate below is the whole reason this path
+  // used to be the only one. Resuming a session that is CURRENTLY WORKING is
+  // not a join: two processes on one session id is the race askResilient and
+  // conv.settled exist to prevent inside Dante, and it is worse across
+  // processes. So a busy session gets the message queued, and the roster
+  // poller delivers it on the first tick that sees it idle.
   if (isWorking(record)) {
     const queued = queueForSession(memoryStore, record.sessionId, text);
     if (!queued) {
@@ -1118,7 +1164,8 @@ async function dispatchTell(send, session, preamble, roster) {
     return;
   }
 
-  send({ type: "state", value: "thinking" });
+  // No second "thinking" send here: the peer attempt above already sent one,
+  // and by this point in the fallback that state is still current.
   const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
   if (!result.ok) {
     log(`tell ${record.name} failed: ${result.error}`);
@@ -1235,8 +1282,8 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     await dispatchRecap(send, preamble);
     return;
   }
-  if (session.verb === "tell") {
-    await dispatchTell(send, session, preamble, roster);
+  if (session.verb === "tell" || session.verb === "interrupt") {
+    await dispatchTell(send, session, preamble, roster, session.verb);
     return;
   }
   if (session.verb === "stop") {
@@ -1250,7 +1297,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   if (session.verb !== "start") {
     // Saying so is better than silence: the tag was stripped, so otherwise
     // nothing would happen and nothing would explain why.
-    await say(send, joinSpoken(preamble, "I can start a session, talk to one, stop one, read one back, or catch you up, sir."));
+    await say(send, joinSpoken(preamble, "I can start a session, talk to one, interrupt one, stop one, read one back, or catch you up, sir."));
     return;
   }
 

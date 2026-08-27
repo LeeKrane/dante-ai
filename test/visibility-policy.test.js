@@ -7,6 +7,7 @@ test("maps visibility keys when push-to-talk is inactive", () => {
   assert.equal(getVisibilityToggle("T", false), "caption");
   assert.equal(getVisibilityToggle("h", false), "interface");
   assert.equal(getVisibilityToggle("d", false), "diagnostics");
+  assert.equal(getVisibilityToggle("s", false), "sessions");
   assert.equal(getVisibilityToggle("x", false), null);
 });
 
@@ -14,4 +15,5 @@ test("suppresses visibility toggles while push-to-talk is held", () => {
   assert.equal(getVisibilityToggle("t", true), null);
   assert.equal(getVisibilityToggle("h", true), null);
   assert.equal(getVisibilityToggle("d", true), null);
+  assert.equal(getVisibilityToggle("s", true), null);
 });

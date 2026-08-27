@@ -164,7 +164,7 @@ Numbering continues the existing plan doc. **Stages 21–28 are the committed fi
 | 37 | A persona that proposes rather than assumes | — | `lib/brain.js`, `test/brain.test.js`, `README.md` |
 | **E** | **Polish** | | |
 | 38 | Interjection policy | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
-| 39 | A sessions panel beside the orb | `public/roster-panel.js`, `test/roster-panel.test.js` | `public/app.js`, `public/index.html`, `server.js` |
+| 39 | A sessions panel, on a key | `public/roster-panel.js`, `test/roster-panel.test.js` | `public/app.js`, `public/index.html`, `server.js` |
 | 40 | Chaining, on completion | — | `lib/memory.js`, `server.js` |
 | 41 | "Catch me up" | — | `lib/notify.js`, `lib/memory.js`, `server.js` |
 | 42 | Read-only repo questions | `primitives/ask-repo.mjs` | — |
@@ -518,13 +518,14 @@ stale; it already went to Slack, which is the durable channel. Approval requests
 exception and jump the queue, because something is blocked on them. Pure client module, unit-tested
 like the others.
 
-**Stage 39 — a sessions panel beside the orb.** `public/build-hud.js` is a 1,000-line canvas spiral
+**Stage 39 — a sessions panel, on a key.** `public/build-hud.js` is a 1,000-line canvas spiral
 about one build in one directory; repointing it at several sessions at once, each mostly idle, each
 interesting for its name and how long it has been at it, was the wrong shape for it. What shipped
 instead is a separate `#sessions` list panel (`public/roster-panel.js`) — one row per visible
 session, its state, and its elapsed time ticking locally rather than over the wire, since an age
-changing every second is not worth a message. The HUD is left alone to do the thing it is good at;
-this is a second panel, not a repoint.
+changing every second is not worth a message. It lives as a corner overlay opened with `s`, the
+same idea as diagnostics on `d`, rather than a fixture beside the orb. The HUD is left alone to do
+the thing it is good at; this is a second panel, not a repoint.
 
 **Stage 40 — chaining, on completion.** One session may name a successor. The interview called this
 "conditional — chain on success, report on failure," and that turned out not to be implementable: a

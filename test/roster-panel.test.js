@@ -41,11 +41,12 @@ test("the newest sessions are the ones on screen", () => {
   assert.deepEqual(rowsFromRoster(roster, NOW).map((r) => r.id), ["new", "old"]);
 });
 
-test("more than a handful is a wall of text beside an orb", () => {
+test("more than a handful is a wall of text in the panel", () => {
   const roster = Array.from({ length: 20 }, (_, i) =>
     record({ sessionId: `s${i}`, startedAt: NOW - i * 1000 }));
   const rows = rowsFromRoster(roster, NOW);
   assert.equal(rows.length, MAX_ROWS);
+  assert.equal(MAX_ROWS, 8);
   // Cut after sorting, so what survives is the most recent rather than
   // whatever the CLI printed first.
   assert.equal(rows[0].id, "s0");
@@ -85,13 +86,11 @@ test("a session younger than a second says nothing rather than flickering", () =
   assert.equal(elapsedLabel(null), "");
 });
 
-test("the panel appears only when it has something to say", () => {
-  const rows = rowsFromRoster([record()], NOW);
-  assert.equal(panelIsVisible(rows, false), true);
-  assert.equal(panelIsVisible([], false), false);
-  assert.equal(panelIsVisible(null, false), false);
+test("the panel is shown when opened, whether or not anything is running", () => {
+  assert.equal(panelIsVisible(true), true);
+  assert.equal(panelIsVisible(false), false);
 });
 
-test("a list nobody can see is still read out, so hiding the interface hides it", () => {
-  assert.equal(panelIsVisible(rowsFromRoster([record()], NOW), true), false);
+test("the panel stays hidden until asked for, however busy the machine is", () => {
+  assert.equal(panelIsVisible(false), false);
 });
