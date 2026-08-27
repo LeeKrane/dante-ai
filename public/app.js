@@ -20,6 +20,8 @@ import {
   isMuted,
   nextMuteState,
   volumeButtonAction,
+  isPhoneLayout,
+  PHONE_MAX_WIDTH,
   MIN_VOLUME,
   MAX_VOLUME,
   DEFAULT_VOLUME,
@@ -281,8 +283,16 @@ function renderVolume() {
   const muted = isMuted(volume);
   volumeEl?.classList.toggle("muted", muted);
   if (volBtn) {
-    volBtn.setAttribute("aria-pressed", String(muted));
-    volBtn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+    // On a phone the button only reveals the slider -- it never mutes on its
+    // own -- so aria-pressed (a toggle-button state) would misdescribe it;
+    // "Volume" plus no pressed state matches what a tap there actually does.
+    if (phoneLayout()) {
+      volBtn.removeAttribute("aria-pressed");
+      volBtn.setAttribute("aria-label", "Volume");
+    } else {
+      volBtn.setAttribute("aria-pressed", String(muted));
+      volBtn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+    }
   }
 }
 
@@ -311,38 +321,68 @@ volRange?.addEventListener("input", () => setVolume(Number(volRange.value)));
 // than closing immediately, so a slightly wobbly mouse never slams the fader
 // shut under the cursor.
 let volCloseTimer = null;
+// Re-evaluated on every call rather than cached once, because a rotation or a
+// window resize can flip either media query without a page reload.
+const phoneLayout = () => isPhoneLayout({
+  hoverCapable: window.matchMedia?.("(hover: hover)").matches ?? true,
+  narrow: window.matchMedia?.(`(max-width: ${PHONE_MAX_WIDTH}px)`).matches ?? false,
+});
 function openVolume() {
   clearTimeout(volCloseTimer);
   volumeEl?.classList.add("open");
+  volBtn?.setAttribute("aria-expanded", "true");
 }
 function scheduleCloseVolume() {
   clearTimeout(volCloseTimer);
-  volCloseTimer = setTimeout(() => volumeEl?.classList.remove("open"), 250);
+  volCloseTimer = setTimeout(() => {
+    volumeEl?.classList.remove("open");
+    volBtn?.setAttribute("aria-expanded", "false");
+  }, 250);
 }
 function closeVolumeNow() {
   clearTimeout(volCloseTimer);
   volumeEl?.classList.remove("open");
+  volBtn?.setAttribute("aria-expanded", "false");
 }
 // mouseenter/mouseleave (unlike mouseover/mouseout) don't fire when the
 // pointer merely crosses from the button to the track or back — both live
 // inside #volume — so these only fire on the real boundary of the component.
-volumeEl?.addEventListener("mouseenter", openVolume);
-volumeEl?.addEventListener("mouseleave", scheduleCloseVolume);
+// On a phone (no hover, narrow) these are no-ops: touch browsers synthesise a
+// mouseenter just before click on a tap, which used to open the fader an
+// instant before the tap landed, so the click always read the fader as
+// already open and answered "mute" instead of toggling it.
+volumeEl?.addEventListener("mouseenter", () => { if (!phoneLayout()) openVolume(); });
+volumeEl?.addEventListener("mouseleave", () => { if (!phoneLayout()) scheduleCloseVolume(); });
 // focusin/focusout cover keyboard tabbing to the range input, and touch:
-// tapping the range thumb focuses it same as a click would.
-volumeEl?.addEventListener("focusin", openVolume);
+// tapping the range thumb focuses it same as a click would. Android also
+// focuses the button itself on tap, which is the same synthetic-event race
+// as mouseenter above, so that one case is ignored on a phone; the range
+// input still needs it, on every device, for keyboard tabbing.
+volumeEl?.addEventListener("focusin", (e) => {
+  if (phoneLayout() && e.target === volBtn) return;
+  openVolume();
+});
 volumeEl?.addEventListener("focusout", scheduleCloseVolume);
 // On a hover-capable device mouseenter has already opened the fader by the
 // time this click lands, so the click has nothing left to reveal and always
 // means mute -- see volume-policy.js for the decision itself. Without hover
-// the first tap has to open the fader outright, the way mouseenter would
-// have; a second tap, with the fader already open, reaches for mute too.
+// on a wide (tablet) layout the first tap has to open the fader outright, the
+// way mouseenter would have, and a second tap, with the fader already open,
+// reaches for mute too. On a phone the mouseenter/focusin race above never
+// opens the fader for us, so the tap itself has to toggle open/closed, and
+// mute is never reached here at all -- a phone mutes by sliding to 0.
 volBtn?.addEventListener("click", (e) => {
   e.stopPropagation();
   const hoverCapable = window.matchMedia?.("(hover: hover)").matches ?? true;
+  const narrow = window.matchMedia?.(`(max-width: ${PHONE_MAX_WIDTH}px)`).matches ?? false;
   const faderOpen = volumeEl?.classList.contains("open") ?? false;
-  if (volumeButtonAction({ hoverCapable, faderOpen }) === "open") {
+  const action = volumeButtonAction({ hoverCapable, narrow, faderOpen });
+  if (action === "open") {
     openVolume();
+    return;
+  }
+  if (action === "close") {
+    closeVolumeNow();
     return;
   }
   const next = nextMuteState(volume, premuteRestore);

@@ -6,10 +6,12 @@ import {
   formatVolumePercent,
   isMuted,
   nextMuteState,
+  isPhoneLayout,
   volumeButtonAction,
   MIN_VOLUME,
   MAX_VOLUME,
   DEFAULT_VOLUME,
+  PHONE_MAX_WIDTH,
 } from "../public/volume-policy.js";
 
 test("clampVolume leaves an in-range value untouched", () => {
@@ -95,15 +97,42 @@ test("nextMuteState treats a tampered or corrupt restore level as untrusted inpu
   assert.deepEqual(nextMuteState(MIN_VOLUME, 99), { volume: MAX_VOLUME, restore: MAX_VOLUME });
 });
 
-test("volumeButtonAction always mutes on a hover-capable device, whether or not the fader is already open", () => {
-  assert.equal(volumeButtonAction({ hoverCapable: true, faderOpen: false }), "mute");
-  assert.equal(volumeButtonAction({ hoverCapable: true, faderOpen: true }), "mute");
+test("PHONE_MAX_WIDTH is 520, matching the @media (max-width: 520px) breakpoint in index.html", () => {
+  // Named so that changing the breakpoint in index.html has to visit this
+  // test too, rather than the two numbers drifting apart silently.
+  assert.equal(PHONE_MAX_WIDTH, 520);
 });
 
-test("volumeButtonAction opens the fader on a device with no hover, when it isn't open yet", () => {
-  assert.equal(volumeButtonAction({ hoverCapable: false, faderOpen: false }), "open");
+test("isPhoneLayout is true only without hover and with a narrow viewport", () => {
+  assert.equal(isPhoneLayout({ hoverCapable: false, narrow: true }), true);
+  assert.equal(isPhoneLayout({ hoverCapable: true, narrow: true }), false);
+  assert.equal(isPhoneLayout({ hoverCapable: false, narrow: false }), false);
+  assert.equal(isPhoneLayout({ hoverCapable: true, narrow: false }), false);
 });
 
-test("volumeButtonAction mutes on a device with no hover, once the fader is already open", () => {
-  assert.equal(volumeButtonAction({ hoverCapable: false, faderOpen: true }), "mute");
+test("isPhoneLayout treats an undefined narrow as not a phone", () => {
+  assert.equal(isPhoneLayout({ hoverCapable: false, narrow: undefined }), false);
+});
+
+test("volumeButtonAction always mutes on a hover-capable device, whether or not the fader is already open, narrow or wide", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: true, narrow: true, faderOpen: false }), "mute");
+  assert.equal(volumeButtonAction({ hoverCapable: true, narrow: true, faderOpen: true }), "mute");
+  assert.equal(volumeButtonAction({ hoverCapable: true, narrow: false, faderOpen: false }), "mute");
+  assert.equal(volumeButtonAction({ hoverCapable: true, narrow: false, faderOpen: true }), "mute");
+});
+
+test("volumeButtonAction opens the fader on a wide no-hover device (tablet), when it isn't open yet", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: false, narrow: false, faderOpen: false }), "open");
+});
+
+test("volumeButtonAction mutes on a wide no-hover device (tablet), once the fader is already open", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: false, narrow: false, faderOpen: true }), "mute");
+});
+
+test("volumeButtonAction opens the fader on a phone when it is closed, and never mutes", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: false, narrow: true, faderOpen: false }), "open");
+});
+
+test("volumeButtonAction closes the fader on a phone when it is open, rather than muting", () => {
+  assert.equal(volumeButtonAction({ hoverCapable: false, narrow: true, faderOpen: true }), "close");
 });

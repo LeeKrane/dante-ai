@@ -65,6 +65,12 @@ export function formatVolumePercent(v) {
   return `${Math.round(percent)}%`;
 }
 
+// The touch-vs-mouse breakpoint for the volume button's tap behaviour, not a
+// general layout constant -- it exists only because it has to equal the
+// `@media (max-width: 520px)` breakpoint in public/index.html exactly. The
+// two numbers must move together; change one and the other goes stale.
+export const PHONE_MAX_WIDTH = 520;
+
 // isMuted(volume) -> whether that level reads as silent.
 //
 // There is no separate mute flag anywhere in this file or in app.js: the
@@ -99,15 +105,40 @@ export function nextMuteState(volume, restore) {
   return { volume: MIN_VOLUME, restore: level };
 }
 
-// volumeButtonAction({ hoverCapable, faderOpen }) -> "mute" | "open".
+// isPhoneLayout({ hoverCapable, narrow }) -> whether this is a phone, for the
+// purposes of the volume button's tap behaviour.
+//
+// hoverCapable and narrow both come from matchMedia queries in app.js
+// (`(hover: hover)` and `(max-width: ${PHONE_MAX_WIDTH}px)`); anything other
+// than a strict boolean true out of either counts as false here, the same
+// "untrusted until proven otherwise" stance the rest of this file takes with
+// localStorage and the DOM.
+export function isPhoneLayout({ hoverCapable, narrow }) {
+  return hoverCapable !== true && narrow === true;
+}
+
+// volumeButtonAction({ hoverCapable, narrow, faderOpen }) -> "mute" | "open" | "close".
 //
 // The one real decision in the click handler, which is why it lives here
 // instead of in app.js. On a hover-capable device mouseenter has already
 // opened the fader by the time a click lands, so the click has nothing left
 // to reveal and always means mute. Without hover there is no mouseenter to
 // do that job, so the first tap has to open the fader itself; only a second
-// tap, with the fader already open, reaches for mute.
-export function volumeButtonAction({ hoverCapable, faderOpen }) {
+// tap, with the fader already open, reaches for mute -- that is the
+// wide-no-hover (tablet) case below.
+//
+// Phones are carved out of that no-hover branch because touch browsers
+// synthesise their own mouseenter -- and on Android, focusin on the button
+// too -- ahead of click, so by the time a tap's click handler runs faderOpen
+// is already true and the no-hover branch above would read it as a second
+// tap and mute on the very first touch. There is no way to tell a real
+// second tap from that synthetic one after the fact, so a phone tap is never
+// allowed to mean mute at all: it only ever opens or closes the fader, and
+// app.js has to guard its own hover/focus listeners on a phone for the same
+// reason -- opening the fader from a synthetic mouseenter would make this
+// function immediately read the very next tap as a close.
+export function volumeButtonAction({ hoverCapable, narrow, faderOpen }) {
+  if (isPhoneLayout({ hoverCapable, narrow })) return faderOpen ? "close" : "open";
   if (hoverCapable) return "mute";
   return faderOpen ? "mute" : "open";
 }
