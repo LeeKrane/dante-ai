@@ -90,16 +90,22 @@ test("leaves an unclosed tag alone and reports no action", () => {
   assert.equal(action, null);
 });
 
-test("ignores tokens inside the tag that are not key=value pairs", () => {
+test("a bare word with no equals sign rides along as part of the unquoted value before it", () => {
+  // This used to be "orphan is dropped" under the old \S*-stops-at-the-first-
+  // space value. Now that an unquoted value runs to the next key=, there is no
+  // way to tell "orphan" apart from a session name's second word -
+  // "jarvis-10-add-persistent-whitelist-main" is exactly as bare as "orphan"
+  // is - so it is absorbed into primitive's value rather than vanishing.
   const bareWord = parseAction(
     "Fine. [ACTION:BUILD primitive=landing-page orphan subject=coffee]",
   );
   assert.deepEqual(bareWord.action, {
-    primitive: "landing-page",
+    primitive: "landing-page orphan",
     params: { subject: "coffee" },
   });
 
-  // A token with no key on the left of the equals sign is dropped too.
+  // A token with no key on the left of the equals sign is still dropped,
+  // because it never matches the key half of a pair in the first place.
   const noKey = parseAction("Fine. [ACTION:BUILD =stray primitive=landing-page]");
   assert.deepEqual(noKey.action, { primitive: "landing-page", params: {} });
 });
@@ -312,6 +318,37 @@ test("a then= key on a start names a successor task", () => {
     repo: "jarvis",
     task: "fix the tests",
     then: "run the linter",
+  });
+});
+
+test("an unquoted value runs to the next key, so a session name with spaces survives the tag", () => {
+  // The bug this fixes: describeRoster speaks a hand-started or worktree-nested
+  // session as "<repo>: <name>", the persona tells the model to copy that name
+  // "exactly as written" rather than quote it, and the old \S*-stops-at-the-
+  // first-space value cut it down to "repo-persistence:" - a name that matches
+  // nothing on the roster - and silently dropped the rest of the tag body.
+  const { session } = parseAction(
+    '[ACTION:SESSION verb=tell name=repo-persistence: jarvis-10-add-persistent-whitelist-main task="clarify it"]',
+  );
+  assert.deepEqual(session, {
+    verb: "tell",
+    name: "repo-persistence: jarvis-10-add-persistent-whitelist-main",
+    task: "clarify it",
+  });
+});
+
+test("an unquoted value that is last in the body runs to the end of the tag, not just the first word", () => {
+  const { session } = parseAction("[ACTION:SESSION verb=tell name=slack integration setup]");
+  assert.deepEqual(session, { verb: "tell", name: "slack integration setup" });
+});
+
+test("a quoted value containing a=b is still whole and does not start a new key", () => {
+  const { action } = parseAction(
+    'Sure. [ACTION:BUILD primitive=landing-page subject="ratio a=b looks off"]',
+  );
+  assert.deepEqual(action, {
+    primitive: "landing-page",
+    params: { subject: "ratio a=b looks off" },
   });
 });
 

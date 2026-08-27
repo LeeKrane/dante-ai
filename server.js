@@ -588,8 +588,19 @@ async function proposeSession(send, conv, session, roster) {
     // only to say "I cannot find jarvis-1 running" after the yes is worse than
     // saying so up front.
     const { record, refusal } = findTarget(roster, session.name ?? session.repo);
+    // Every hop the name takes, on one line: what the tag actually carried,
+    // what query that became, and what it resolved to or why it did not -- so
+    // a truncated or mismatched name shows up here rather than only as a
+    // refusal nobody can trace back to the tag that caused it. This is the
+    // only place a refusal at this point is logged -- folded in here rather
+    // than repeated below, which used to log the same refusal a second time
+    // with none of the name or repo it was refused for.
+    log(
+      `${verb} target: tag name=${JSON.stringify(session.name ?? null)} repo=${JSON.stringify(session.repo ?? null)} -> ${
+        record ? `resolved ${JSON.stringify(record.name)} (${record.sessionId})` : `refused: ${refusal}`
+      }`,
+    );
     if (refusal) {
-      log(`session refused before proposing: ${refusal}`);
       await say(send, refusal);
       return;
     }
@@ -1198,6 +1209,11 @@ async function dispatchStop(send, session, preamble, roster) {
 async function dispatchTell(send, session, preamble, roster, verb = "tell") {
   const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
   if (!record) return;
+
+  // The name resolved above is what this actually delivers to, not necessarily
+  // what the tag said -- so the trail from spoken name to live process is
+  // unbroken even when the two differ (a prefix match, a repo-qualified query).
+  log(`${verb} delivering to ${JSON.stringify(record.name)} (${record.sessionId}, pid ${record.pid ?? "none"})`);
 
   activity(send, verb === "interrupt" ? "interrupting" : "telling", { subject: record.name });
   // A finally rather than an activity(send, null) before each return: this
@@ -1947,6 +1963,10 @@ wss.on("connection", (ws) => {
       // sentences this reply addressed come off, so one said during synthesis is
       // still waiting afterwards.
       if (session) {
+        // The exact string the model produced, tag and all, before parseAction
+        // ever touches it -- so a truncated or mangled name= can be traced back
+        // to whether the model wrote it wrong or the parser cut it short.
+        log(`session tag raw=${JSON.stringify(spoken)}`);
         // The question IS the reply here: it is not confirmed and not
         // dispatched, because letting it reach dispatchSession would speak
         // dispatchSession's unknown-verb fallback ("I can start a session,
