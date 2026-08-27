@@ -626,13 +626,17 @@ function renderSessions() {
 // the one class of header that does anything: the main repository's own
 // header has nothing left to become, and "elsewhere" names no workspace to
 // set. Click and keyboard share the same target-finding and the same guard,
-// so a header that is not clickable is not press-able by Enter or Space either.
+// so a header that is not clickable is not press-able by Enter. Space is
+// deliberately not an activation key here because Space is push-to-talk (the
+// window-level handler fires on e.code === "Space" without a focus guard), so
+// a Tab-focused repo header would otherwise both reassign the main repository
+// and open the mic.
 sessionsEl?.addEventListener("click", (e) => {
   const header = e.target.closest(".repo:not(.main):not(.other)");
   if (header) sendSetMain(header.dataset.alias);
 });
 sessionsEl?.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" && e.key !== " ") return;
+  if (e.key !== "Enter") return;
   const header = e.target.closest(".repo:not(.main):not(.other)");
   if (!header) return;
   e.preventDefault();
