@@ -4,7 +4,7 @@ import { describeActivity } from "./activity-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
-import { panelIsVisible, rowsFromRoster } from "./roster-panel.js";
+import { groupsFromRoster, panelIsVisible, rowsFromRoster } from "./roster-panel.js";
 import {
   canStartListening,
   clearAnnouncements,
@@ -438,6 +438,10 @@ ws.onmessage = async (ev) => {
     roster = Array.isArray(msg.sessions) ? msg.sessions : [];
     watchSessions();
   }
+  else if (msg.type === "workspaces") {
+    workspaces = Array.isArray(msg.list) ? msg.list : [];
+    renderSessions();
+  }
   else if (msg.type === "ask") {
     // A build needs a detail Dante doesn't have yet; the question is spoken as
     // well, so the caption just mirrors it.
@@ -516,39 +520,128 @@ ws.onmessage = async (ev) => {
 // repositories that were named out loud before any of this is sent.
 const sessionsEl = document.getElementById("sessions");
 let roster = [];
+// The repositories a session can start in, main first -- see
+// lib/memory.js:workspacesForClient. Empty until the "workspaces" message
+// arrives, which is sent right after connect, next to the roster's own.
+let workspaces = [];
 let sessionsOpen = true;
+
+// textContent throughout: a session name is written by whoever started the
+// session, which is not always Dante, and a repository alias is a person's
+// own word for it.
+function sessionRowEl(row) {
+  const line = document.createElement("div");
+  line.className = `sess ${row.condition}`;
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
+  const cond = document.createElement("span");
+  cond.className = "cond";
+  cond.textContent = row.condition;
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = row.elapsed;
+  line.append(name, cond, when);
+  return line;
+}
+
+function noneRowEl() {
+  const none = document.createElement("div");
+  none.className = "none";
+  none.textContent = "nothing running";
+  return none;
+}
+
+// One row per repository. `.main` and `.other` (the "elsewhere" catch-all --
+// see groupsFromRoster's own comment on why `other` and not the alias string
+// is what marks it) both get a title but no click affordance: there is
+// nothing to set a real workspace's own header to, and "elsewhere" names no
+// workspace at all. Every other header carries the alias in a data attribute
+// for the one delegated listener below to read, rather than a listener of its
+// own -- the panel repaints on every roster tick, and a listener per header
+// would mean attaching and discarding one every second.
+function repoHeaderEl(group) {
+  const header = document.createElement("div");
+  header.className = group.main ? "repo main" : group.other ? "repo other" : "repo";
+  header.dataset.alias = group.alias;
+  const star = document.createElement("span");
+  star.className = "star";
+  star.textContent = group.main ? "★" : "";
+  const name = document.createElement("span");
+  name.className = "repo-name";
+  name.textContent = group.alias;
+  header.append(star, name);
+  if (group.main) {
+    header.title = "main repository";
+  } else if (!group.other) {
+    header.title = "set as main repository";
+    // Not a real <button>: a grid of session rows is not a form, and turning
+    // every header into one would nest interactive elements two deep for no
+    // reason. tabindex and role make it reachable and announced as one anyway.
+    header.tabIndex = 0;
+    header.setAttribute("role", "button");
+  }
+  return header;
+}
+
+function sendSetMain(alias) {
+  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "set_main", alias }));
+}
 
 function renderSessions() {
   if (!sessionsEl) return;
   sessionsEl.classList.toggle("hidden", !panelIsVisible(sessionsOpen));
-  const rows = rowsFromRoster(roster);
-  if (rows.length === 0) {
-    const none = document.createElement("div");
-    none.className = "none";
-    none.textContent = "nothing running";
-    sessionsEl.replaceChildren(none);
+
+  // Before the first "workspaces" message (or on a very old server), there is
+  // nothing to group by -- fall back to the flat list this panel always used
+  // to paint rather than show nothing at all.
+  if (workspaces.length === 0) {
+    const rows = rowsFromRoster(roster);
+    if (rows.length === 0) {
+      sessionsEl.replaceChildren(noneRowEl());
+      return;
+    }
+    // Rebuilt wholesale rather than diffed: eight rows of text is not a thing
+    // worth reconciling, and a stale row would describe a session that has ended.
+    sessionsEl.replaceChildren(...rows.map(sessionRowEl));
     return;
   }
-  // Rebuilt wholesale rather than diffed: eight rows of text is not a thing
-  // worth reconciling, and a stale row would describe a session that has ended.
-  sessionsEl.replaceChildren(...rows.map((row) => {
-    const line = document.createElement("div");
-    line.className = `sess ${row.condition}`;
-    // textContent throughout: a session name is written by whoever started the
-    // session, which is not always Dante.
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
-    const cond = document.createElement("span");
-    cond.className = "cond";
-    cond.textContent = row.condition;
-    const when = document.createElement("span");
-    when.className = "when";
-    when.textContent = row.elapsed;
-    line.append(name, cond, when);
-    return line;
-  }));
+
+  const groups = groupsFromRoster(workspaces, roster);
+  const nodes = [];
+  for (const group of groups) {
+    nodes.push(repoHeaderEl(group));
+    nodes.push(...group.sessions.map(sessionRowEl));
+  }
+  // A row of headings with nothing under any of them reads, at a glance, like
+  // the panel failed to load rather than like an idle machine -- the same
+  // explanation the flat list falls back to above still belongs here, just
+  // after the headings instead of in place of them.
+  if (groups.every((group) => group.sessions.length === 0)) nodes.push(noneRowEl());
+  sessionsEl.replaceChildren(...nodes);
 }
+
+// Delegated, because the panel is rebuilt wholesale on every render (every
+// roster tick while anything is running). `.repo:not(.main):not(.other)` is
+// the one class of header that does anything: the main repository's own
+// header has nothing left to become, and "elsewhere" names no workspace to
+// set. Click and keyboard share the same target-finding and the same guard,
+// so a header that is not clickable is not press-able by Enter. Space is
+// deliberately not an activation key here because Space is push-to-talk (the
+// window-level handler fires on e.code === "Space" without a focus guard), so
+// a Tab-focused repo header would otherwise both reassign the main repository
+// and open the mic.
+sessionsEl?.addEventListener("click", (e) => {
+  const header = e.target.closest(".repo:not(.main):not(.other)");
+  if (header) sendSetMain(header.dataset.alias);
+});
+sessionsEl?.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const header = e.target.closest(".repo:not(.main):not(.other)");
+  if (!header) return;
+  e.preventDefault();
+  sendSetMain(header.dataset.alias);
+});
 
 // One timer for the whole panel, and only while there is something in it: the
 // only thing that changes between roster messages is how long each has been
