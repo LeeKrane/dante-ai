@@ -36,7 +36,7 @@
   /* Sits above the build HUD overlay, so the orb canvas paints over the groove
      rather than under it. Everything in here is transparent where it has no
      content, so the HUD still shows through. */
-  #stage { position: relative; z-index: 1; height: 100%; display: grid; grid-template-rows: 1fr auto; }
+  #stage { position: relative; z-index: 1; height: 100%; display: grid; grid-template-rows: 1fr auto auto; }
   #main {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: clamp(14px, 3vh, 30px);
@@ -82,9 +82,9 @@
   /* One long path must never widen the HUD and reflow the orb. */
   #progress div { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
   #progress div:last-child { color: var(--cyan); opacity: .95; }
-  /* What is running: a panel in a corner, on a key -- same idea as #dbg,
-     mirrored to the other side. A person who opened it deliberately keeps it,
-     regardless of what else on the page is showing or hiding. */
+  /* What is running: a panel in a corner, up from load, closed with `s` --
+     same idea as #dbg, mirrored to the other side. Whoever has it open keeps
+     it, regardless of what else on the page is showing or hiding. */
   #sessions {
     position: fixed; top: 10px; right: 10px; z-index: 20;
     max-width: min(60ch, 92vw); max-height: 62vh; overflow: auto;
@@ -109,6 +109,12 @@
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
   }
+  /* Which panels are off, and the key that brings each back. Its own row
+     under the controls rather than a corner: nothing else is ever there, and
+     it is deliberately not in the interface-hidden list -- after `h` it is
+     the one thing left that says how to undo `h`. */
+  #keys { text-align: center; padding: 0 12px 10px; font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+  #keys kbd { font-size: 10px; padding: 1px 5px; }
 
   /* Shown only if the browser blocked the automatic tab for a finished build. */
   #artifact {
@@ -352,7 +358,7 @@
 </head>
 <body>
   <div id="dbg" class="hidden"></div>
-  <div id="sessions" class="hidden" aria-live="off"></div>
+  <div id="sessions" aria-live="off"></div>
   <div id="build-hud" class="hidden" aria-hidden="true">
     <canvas id="bh-record"></canvas>
     <canvas id="bh-live"></canvas>
@@ -428,6 +434,7 @@
       </div>
       <div id="hint">hold the button, or press &amp; hold <kbd>Space</kbd></div>
     </div>
+    <div id="keys" class="hidden" aria-live="off"></div>
   </div>
   <!-- The reply is played through a media element rather than a buffer source so
        it can start before it has finished arriving; MediaSource needs somewhere

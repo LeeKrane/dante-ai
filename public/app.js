@@ -1,5 +1,5 @@
 import { applyResults, interimOf, isFatalSpeechError, mergeTranscript } from "./stt-policy.js";
-import { getVisibilityToggle } from "./visibility-policy.js";
+import { getVisibilityToggle, hiddenPanelHints } from "./visibility-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
 import { normalizeProgress, progressRowText, pushProgressEntry } from "./progress-policy.js";
@@ -209,6 +209,7 @@ function toggleVisibility(target) {
     sessionsOpen = !sessionsOpen;
     renderSessions();
   }
+  renderKeys();
 }
 
 // ---- Audio (hoisted so the orb loop can read the live analyser) ----
@@ -454,7 +455,7 @@ ws.onmessage = async (ev) => {
 // ---- What is running ----
 //
 // The roster the server already keeps, painted into a panel of its own,
-// opened with `s` -- same idea as diagnostics on `d`, in the opposite corner.
+// closed with `s` -- same idea as diagnostics on `d`, in the opposite corner.
 // It arrives whenever it changes rather than on a timer, and the elapsed
 // times are ticked locally -- a session's age changes every second and none
 // of that is worth a message.
@@ -463,7 +464,7 @@ ws.onmessage = async (ev) => {
 // repositories that were named out loud before any of this is sent.
 const sessionsEl = document.getElementById("sessions");
 let roster = [];
-let sessionsOpen = false;
+let sessionsOpen = true;
 
 function renderSessions() {
   if (!sessionsEl) return;
@@ -510,6 +511,37 @@ function watchSessions() {
     sessionsTimer = null;
   }
 }
+
+// ---- What is off ----
+//
+// One line under the controls naming every panel that is currently hidden,
+// key first, so the four keys (`t`, `h`, `d`, `s`) never need remembering.
+// Empty and hidden once everything is on.
+const keysEl = document.getElementById("keys");
+
+function panelsVisible() {
+  return {
+    caption: !capEl.classList.contains("hidden"),
+    interface: !document.body.classList.contains("interface-hidden"),
+    diagnostics: Boolean(dbgEl) && !dbgEl.classList.contains("hidden"),
+    sessions: panelIsVisible(sessionsOpen),
+  };
+}
+
+function renderKeys() {
+  if (!keysEl) return;
+  const hints = hiddenPanelHints(panelsVisible());
+  keysEl.classList.toggle("hidden", hints.length === 0);
+  keysEl.replaceChildren(...hints.flatMap((hint, i) => {
+    const kbd = document.createElement("kbd");
+    kbd.textContent = hint.key;
+    const label = document.createTextNode(` ${hint.label}`);
+    return i === 0 ? [kbd, label] : [document.createTextNode(" · "), kbd, label];
+  }));
+}
+
+renderSessions();
+renderKeys();
 
 // ---- Announcements ----
 //

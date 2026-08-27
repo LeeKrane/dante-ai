@@ -339,12 +339,14 @@ Claude Code will still use a tool you leave off the list, which is why
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
-| **s** | sessions panel (what is running, where, for how long; off by default) |
+| **s** | sessions panel (what is running, where, for how long; on by default) |
 | **t** | the caption line |
 | **h** | the rest of the interface |
 
 Toggles are ignored while Space is held, so a stray key mid-sentence can't blank
-the screen. If part of the UI "disappeared," press the key again.
+the screen. If part of the UI "disappeared," press the key again. Whatever is
+off is listed under the controls, key first, so the keys need no remembering;
+the line goes away once everything is on.
 
 ## How it's put together
 

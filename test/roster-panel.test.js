@@ -91,6 +91,6 @@ test("the panel is shown when opened, whether or not anything is running", () =>
   assert.equal(panelIsVisible(false), false);
 });
 
-test("the panel stays hidden until asked for, however busy the machine is", () => {
+test("closing the panel hides it, however busy the machine is", () => {
   assert.equal(panelIsVisible(false), false);
 });

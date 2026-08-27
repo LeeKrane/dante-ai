@@ -523,7 +523,7 @@ about one build in one directory; repointing it at several sessions at once, eac
 interesting for its name and how long it has been at it, was the wrong shape for it. What shipped
 instead is a separate `#sessions` list panel (`public/roster-panel.js`) — one row per visible
 session, its state, and its elapsed time ticking locally rather than over the wire, since an age
-changing every second is not worth a message. It lives as a corner overlay opened with `s`, the
+changing every second is not worth a message. It lives as a corner overlay, up from load and closed with `s` -- the
 same idea as diagnostics on `d`, rather than a fixture beside the orb. The HUD is left alone to do
 the thing it is good at; this is a second panel, not a repoint.
 
