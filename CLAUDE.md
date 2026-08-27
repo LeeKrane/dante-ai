@@ -5,9 +5,6 @@ transcribes, a WebSocket carries the text to this Node server, `claude -p` answe
 Audio speaks the reply. Ask it to build something and a second `claude -p` runs with file tools
 on, in its own throwaway directory.
 
-**`lib/README.md` is the real README** — architecture, the security model, and the extension
-points. Read it before changing anything under `lib/`.
-
 ## House rules
 
 These are enforced by the existing code but written down nowhere else:
