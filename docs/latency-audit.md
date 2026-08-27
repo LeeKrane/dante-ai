@@ -52,6 +52,11 @@ handler in `server.js` awaits the listing unconditionally before calling the bra
 where the CLI is slow to enumerate sessions, this is the difference between a fast turn and a
 three-second one, on roughly 40% of turns.
 
+**Fixed.** `MAX_ROSTER_AGE_MS` is now `POLL_MS + LIST_TIMEOUT_MS` (8,000 ms), so a turn spawns
+that child only when the poller has stalled or never succeeded, not on an ordinary two-second
+window every cycle; the one call site that needs a guaranteed-fresh roster (the stop resolved on
+the way out of a proposal wait) now asks for one explicitly via `rosterPoller.read({ maxAgeMs: 0 })`.
+
 ## Four things already right — do not touch
 
 The audit found less low-hanging fruit than expected, because most of the obvious work is done.
@@ -89,7 +94,7 @@ numbers.
 
 | Change | Where | Est. gain | Risk |
 |---|---|---|---|
-| **Stop blocking a turn on a stale roster.** Either raise `MAX_ROSTER_AGE_MS` to ≥ `POLL_MS`, or make the read best-effort and take whatever is cached. A missing roster is already a supported state — `lib/turns.js` is tested on "a listing that failed is indistinguishable from never having asked." | `lib/agents.js` `MAX_ROSTER_AGE_MS`; `server.js` `await listing` | 0–3,000 ms on ~40% of turns | Low |
+| **Stop blocking a turn on a stale roster.** Either raise `MAX_ROSTER_AGE_MS` to ≥ `POLL_MS`, or make the read best-effort and take whatever is cached. A missing roster is already a supported state — `lib/turns.js` is tested on "a listing that failed is indistinguishable from never having asked." **Done:** `MAX_ROSTER_AGE_MS` is now `POLL_MS + LIST_TIMEOUT_MS` (8,000 ms); the stop path forces a fresh read via `rosterPoller.read({ maxAgeMs: 0 })`. | `lib/agents.js` `MAX_ROSTER_AGE_MS`; `server.js` `await listing` | 0–3,000 ms on ~40% of turns | Low |
 | **Confirm thinking is actually off for the brain child.** Haiku 4.5 emitted a `thinking` content block ahead of its text block when verified on this machine, which delays the first text token. `claude-settings.json` sets `alwaysThinkingEnabled: false` and is passed via `--settings`, so this may already be handled — read `usage` off a real turn before changing anything, then add `MAX_THINKING_TOKENS=0` to the spawn env only if it is not. | `lib/brain.js` `buildSessionArgs`; `claude-settings.json` | Unknown — verify first | Low |
 | **`latency: "low"` instead of `"balanced"`.** Fish documents three values — `normal` (best quality), `balanced` (reduced latency), `low` (lowest). The repo already moved `normal` → `balanced` and measured 2,213 ms → 350 ms on first byte. No figure is published for `low`; the existing `first=…ms` log line makes it a ten-minute A/B. | `lib/tts.js` `buildTtsRequest` | Unquantified | Quality |
 | **Set `chunk_length` to 100–120.** Documented by Fish as "text segment size for processing — smaller chunks start audio sooner." The default is 300 (API reference) or 200 (features page); the request currently sets neither. | `lib/tts.js` `buildTtsRequest` | Unquantified | Quality |

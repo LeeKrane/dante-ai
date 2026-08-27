@@ -6,7 +6,9 @@ import { join } from "node:path";
 
 import {
   LIST_TIMEOUT_MS,
+  MAX_ROSTER_AGE_MS,
   MAX_SPOKEN,
+  POLL_MS,
   createRosterPoller,
   describeRoster,
   isWorking,
@@ -533,6 +535,43 @@ test("a fresh enough roster is reused rather than re-read", async () => {
   await poller.read();
   poller.stop();
   assert.equal(list.calls.length, 1);
+});
+
+test("the staleness bound sits above the poll interval, so a healthy poller almost never triggers a spawn", () => {
+  assert.ok(MAX_ROSTER_AGE_MS > POLL_MS);
+});
+
+test("a roster just under the staleness bound is reused rather than re-read", async () => {
+  const list = scripted(rosterOf(session()));
+  let time = 0;
+  const poller = createRosterPoller({ list, now: () => time });
+  await poller.read();
+  time = MAX_ROSTER_AGE_MS - 1;
+  await poller.read();
+  poller.stop();
+  assert.equal(list.calls.length, 1);
+});
+
+test("a roster at the staleness bound is stale enough to re-list", async () => {
+  const list = scripted(rosterOf(session()));
+  let time = 0;
+  const poller = createRosterPoller({ list, now: () => time });
+  await poller.read();
+  time = MAX_ROSTER_AGE_MS;
+  await poller.read();
+  poller.stop();
+  assert.equal(list.calls.length, 2);
+});
+
+test("a read that asks for a fresh roster re-lists even when the cache is young", async () => {
+  const list = scripted(rosterOf(session()));
+  let time = 0;
+  const poller = createRosterPoller({ list, now: () => time });
+  await poller.read();
+  time = 1;
+  await poller.read({ maxAgeMs: 0 });
+  poller.stop();
+  assert.equal(list.calls.length, 2);
 });
 
 test("two reads at once share one listing rather than racing", async () => {

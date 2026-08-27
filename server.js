@@ -1765,7 +1765,7 @@ wss.on("connection", (ws) => {
           // Read again on the way in: the roster that produced the proposal is
           // however many seconds old the answer took to arrive, and a stop
           // resolves a name against a real process.
-          async () => dispatchSession(send, session, "", await rosterPoller.read()));
+          async () => dispatchSession(send, session, "", await rosterPoller.read({ maxAgeMs: 0 })));
         if (!held) await dispatchSession(send, session, reply, roster);
       } else if (action) {
         dropAnswered(conv.unanswered, answering);
