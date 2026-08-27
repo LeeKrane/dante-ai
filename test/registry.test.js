@@ -28,7 +28,7 @@ function validPrimitive(overrides = {}) {
 // directory while fn is still awaiting an import, which only looks fine when
 // the fixture has a single file and the loader wins the race.
 async function withTempPrimitives(files, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-primitives-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-primitives-"));
   try {
     for (const [name, source] of Object.entries(files)) {
       writeFileSync(join(dir, name), source);
@@ -72,6 +72,42 @@ test("landing-page renders a prompt and a spoken done line", async () => {
   assert.ok(prompt.includes(params.subject), "prompt should carry the answers through");
 
   const done = landing.doneLine(params);
+  assert.equal(typeof done, "string");
+  assert.ok(done.length > 0);
+});
+
+test("loads the real ask-repo primitive", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const askRepo = registry.get("ask-repo");
+
+  assert.ok(askRepo, "ask-repo should be registered");
+  assert.equal(askRepo.id, "ask-repo");
+  assert.equal(askRepo.outputContract, "index.html");
+  assert.ok(askRepo.timeoutMs > 0, "timeoutMs should be a positive duration");
+  // The read-only floor the roadmap promises: no Write, no Edit, nothing that
+  // reaches past the repository it is pointed at.
+  assert.deepEqual(askRepo.allowedTools, ["Read", "Grep", "Glob"]);
+  assert.deepEqual(
+    askRepo.questions.map((q) => q.key),
+    ["repo", "question"],
+  );
+});
+
+test("ask-repo renders a prompt that carries the repo and question through, and a spoken done line", async () => {
+  const registry = await loadRegistry(PRIMITIVES);
+  const askRepo = registry.get("ask-repo");
+  const params = { repo: "/home/jesse/dev/widgets", question: "how is auth checked?" };
+
+  const prompt = askRepo.systemPrompt(params);
+  assert.equal(typeof prompt, "string");
+  assert.ok(prompt.includes(params.repo), "prompt should name the repository");
+  assert.ok(prompt.includes(params.question), "prompt should carry the question through");
+  assert.ok(prompt.includes("index.html"), "prompt should name the output file");
+  // The whole point of the primitive: it must say, in its own instructions,
+  // that it is not to touch the repository it was asked about.
+  assert.match(prompt, /not write, edit or delete/);
+
+  const done = askRepo.doneLine(params);
   assert.equal(typeof done, "string");
   assert.ok(done.length > 0);
 });
@@ -262,7 +298,7 @@ test("accepts a plain directory path as well as a file URL", async () => {
 // PARENT directory, silently loading a same-named primitive from there --
 // including a different allowedTools grant. Loudest possible failure mode.
 test("a directory URL without a trailing slash still loads from that directory", async () => {
-  const root = mkdtempSync(join(tmpdir(), "jarvis-shadow-"));
+  const root = mkdtempSync(join(tmpdir(), "dante-shadow-"));
   try {
     const sub = join(root, "primitives");
     mkdirSync(sub);
@@ -329,7 +365,7 @@ test("rejects a directory argument that is empty or not a path", async () => {
 
 test("reports a missing primitives directory as such", async () => {
   await assert.rejects(
-    () => loadRegistry(join(tmpdir(), "jarvis-does-not-exist-a7f3")),
+    () => loadRegistry(join(tmpdir(), "dante-does-not-exist-a7f3")),
     /cannot read primitives directory/,
   );
 });

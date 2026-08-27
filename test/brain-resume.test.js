@@ -37,7 +37,7 @@ async function calls() {
 }
 
 before(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "jarvis-resume-"));
+  workspace = await mkdtemp(join(tmpdir(), "dante-resume-"));
   log = join(workspace, "calls.log");
 });
 

@@ -16,13 +16,13 @@ test("only this machine is loopback", () => {
   }
 });
 
-test("the three hook events jarvis reports become the two kinds it reports them as", () => {
+test("the three hook events Dante reports become the two kinds it reports them as", () => {
   assert.equal(parseHookEvent({ hook_event_name: "Stop", session_id: ID }).kind, "complete");
   assert.equal(parseHookEvent({ hook_event_name: "SessionEnd", session_id: ID }).kind, "complete");
   assert.equal(parseHookEvent({ hook_event_name: "Notification", session_id: ID }).kind, "needs-attention");
 });
 
-test("an event jarvis does not report is dropped rather than guessed at", () => {
+test("an event Dante does not report is dropped rather than guessed at", () => {
   // Any local process can post here. An unknown name is not an error to
   // complain about; a complaint is a channel too.
   assert.equal(parseHookEvent({ hook_event_name: "PreToolUse", session_id: ID }), null);

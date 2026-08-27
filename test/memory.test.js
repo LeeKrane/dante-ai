@@ -41,16 +41,29 @@ import {
   rememberSession,
   getSessionRecord,
   getSessions,
+  MAX_CHAIN_DEPTH,
+  CHAIN_TTL_MS,
+  MAX_CHAINS,
+  chainAfter,
+  takeChain,
+  dropChainsExcept,
+  CHAIN_GRACE_MS,
+  MAX_EVENTS,
+  MAX_EVENT_NAME_CHARS,
+  MAX_EVENT_DETAIL_CHARS,
+  recordEvent,
+  getEvents,
+  clearEvents,
 } from "../lib/memory.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
 // tested as plain data in/data out, the same way test/builder.test.js tests
 // denyRules/buildSettings. Every disk-touching test gets its own temp dir via
 // mkdtempSync and cleans up in a try/finally, so nothing here ever reads or
-// writes the real ~/.config/jarvis/memory.json.
+// writes the real ~/.config/dante/memory.json.
 
 function withTempDir(fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-memory-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-memory-"));
   try {
     return fn(dir);
   } finally {
@@ -373,7 +386,7 @@ test("applyMemoryTag saves the keys that fit and drops only the ones past the ca
 // symlink to /private/var.
 
 function fakeHome() {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "jarvis-home-")));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "dante-home-")));
   mkdirSync(join(home, "development", "jarvis"), { recursive: true });
   mkdirSync(join(home, "development", "KraneticFitness"), { recursive: true });
   return home;
@@ -740,7 +753,7 @@ test("a queue corrupted on disk reads as empty rather than throwing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sessions jarvis started
+// Sessions Dante started
 // ---------------------------------------------------------------------------
 
 test("a started session is remembered by what it was asked to do", () => {
@@ -790,4 +803,187 @@ test("a session with no id is not remembered", () => {
 test("a store written before sessions existed still reads", () => {
   assert.deepEqual(getSessions({ version: 1, projects: {} }), {});
   assert.equal(getSessionRecord({ sessions: "nonsense" }, SESSION_ID), null);
+});
+
+// ---------------------------------------------------------------------------
+// Chains: a successor task, named for when a session ends
+// ---------------------------------------------------------------------------
+
+test("a chained task waits for the session it follows and is taken once", () => {
+  const store = emptyStore();
+  const saved = chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis", depth: 0 }, T);
+  assert.deepEqual(saved, { task: "run the linter", alias: "jarvis", depth: 0, at: T });
+  assert.deepEqual(takeChain(store, SESSION_ID, T), { task: "run the linter", alias: "jarvis", depth: 0 });
+});
+
+test("taking a chain removes it, so a second take finds nothing", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  assert.ok(takeChain(store, SESSION_ID, T));
+  assert.equal(takeChain(store, SESSION_ID, T), null);
+});
+
+test("a chain older than CHAIN_TTL_MS is not handed back", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  assert.equal(takeChain(store, SESSION_ID, T + CHAIN_TTL_MS + 1), null);
+});
+
+test("a chain at the depth cap is refused rather than recorded", () => {
+  const store = emptyStore();
+  assert.equal(chainAfter(store, SESSION_ID, { task: "x", alias: "jarvis", depth: MAX_CHAIN_DEPTH }, T), null);
+  // One shy of the cap still succeeds, so the refusal is the cap itself and not
+  // an off-by-one.
+  const under = chainAfter(store, SESSION_ID, { task: "x", alias: "jarvis", depth: MAX_CHAIN_DEPTH - 1 }, T);
+  assert.ok(under);
+});
+
+test("the chain table is bounded the way remembered sessions are", () => {
+  const store = emptyStore();
+  for (let i = 0; i < MAX_CHAINS + 5; i += 1) {
+    chainAfter(store, `id-${i}`, { task: "run the linter", alias: "jarvis" }, T + i);
+  }
+  assert.equal(Object.keys(store.chains).length, MAX_CHAINS);
+  assert.equal(takeChain(store, "id-0", T + MAX_CHAINS + 5), null);
+  assert.ok(takeChain(store, `id-${MAX_CHAINS + 4}`, T + MAX_CHAINS + 5));
+});
+
+test("a hostile chain task is capped and stripped like a queued follow-up", () => {
+  const store = emptyStore();
+  const saved = chainAfter(store, SESSION_ID, { task: "x".repeat(MAX_QUEUED_CHARS * 3) + "", alias: "jarvis" }, T);
+  assert.equal(saved.task.length, MAX_QUEUED_CHARS);
+});
+
+test("chainAfter refuses a session id, task or alias that does not survive cleaning", () => {
+  const store = emptyStore();
+  assert.equal(chainAfter(store, SESSION_ID, { task: "", alias: "jarvis" }, T), null);
+  assert.equal(chainAfter(store, SESSION_ID, { task: "run it", alias: "" }, T), null);
+  assert.equal(chainAfter(store, "", { task: "run it", alias: "jarvis" }, T), null);
+});
+
+test("taking a chain that was never set finds nothing", () => {
+  assert.equal(takeChain(emptyStore(), SESSION_ID, T), null);
+  assert.equal(takeChain({ chains: "nonsense" }, SESSION_ID, T), null);
+});
+
+test("chains for sessions that ended are dropped rather than left for a reused id", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "for the live one", alias: "jarvis" }, T);
+  chainAfter(store, "dead-1", { task: "for the dead one", alias: "jarvis" }, T);
+  // Past the grace window: the sweep that matters here is the one that happens
+  // after a session has actually run and ended, not seconds after it spawned.
+  const later = T + CHAIN_GRACE_MS + 1;
+  assert.equal(dropChainsExcept(store, [SESSION_ID], later), 1);
+  assert.ok(takeChain(store, SESSION_ID, later));
+  assert.equal(takeChain(store, "dead-1", later), null);
+});
+
+test("a chain younger than the grace window survives a cleanup its session is too new for", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  // The roster has never seen SESSION_ID -- it was spawned seconds ago, and an
+  // unrelated session ending is what triggered this sweep.
+  assert.equal(dropChainsExcept(store, ["someone-else"], T + 5000), 0);
+  assert.ok(takeChain(store, SESSION_ID, T + 5000));
+});
+
+test("a chain older than the grace window is dropped once its session is gone", () => {
+  const store = emptyStore();
+  chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, T);
+  assert.equal(dropChainsExcept(store, ["someone-else"], T + CHAIN_GRACE_MS + 1), 1);
+  assert.equal(takeChain(store, SESSION_ID, T + CHAIN_GRACE_MS + 1), null);
+});
+
+test("dropping chains on a store that never had any is harmless", () => {
+  assert.equal(dropChainsExcept(emptyStore(), []), 0);
+  assert.equal(dropChainsExcept({}, null), 0);
+});
+
+test("a chain survives a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    chainAfter(store, SESSION_ID, { task: "run the linter", alias: "jarvis" }, Date.now());
+    assert.equal(saveStore(store, path), true);
+    assert.ok(takeChain(loadStore(path), SESSION_ID));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The event log
+// ---------------------------------------------------------------------------
+
+test("recordEvent stamps an entry with the kind, name, detail and time given", () => {
+  const store = emptyStore();
+  const recorded = recordEvent(store, { kind: "complete", name: "jarvis-1", detail: "fixed the tests" }, T);
+  assert.deepEqual(recorded, { kind: "complete", name: "jarvis-1", detail: "fixed the tests", at: T });
+  assert.deepEqual(getEvents(store), [recorded]);
+});
+
+test("recordEvent refuses a kind that is not one of lib/notify.js's KINDS", () => {
+  const store = emptyStore();
+  assert.equal(recordEvent(store, { kind: "exploded", name: "jarvis-1" }, T), null);
+  assert.equal(recordEvent(store, { kind: null, name: "jarvis-1" }, T), null);
+  assert.equal(recordEvent(store, {}, T), null);
+  assert.deepEqual(getEvents(store), []);
+});
+
+test("recordEvent caps the log at MAX_EVENTS, keeping the newest", () => {
+  const store = emptyStore();
+  for (let i = 0; i < MAX_EVENTS + 5; i++) {
+    recordEvent(store, { kind: "complete", name: `jarvis-${i}` }, T + i);
+  }
+  const events = getEvents(store);
+  assert.equal(events.length, MAX_EVENTS);
+  assert.equal(events[0].name, "jarvis-5");
+  assert.equal(events.at(-1).name, `jarvis-${MAX_EVENTS + 4}`);
+});
+
+test("recordEvent caps and flattens a name and a detail the same way every other untrusted string here is", () => {
+  const store = emptyStore();
+  const rlo = String.fromCharCode(0x202e);
+  const recorded = recordEvent(store, {
+    kind: "needs-attention",
+    name: `jarvis${rlo}-1`,
+    detail: "y".repeat(MAX_EVENT_DETAIL_CHARS * 3),
+  }, T);
+  assert.equal(recorded.name, "jarvis-1");
+  assert.equal(recorded.detail.length, MAX_EVENT_DETAIL_CHARS);
+  assert.equal(recorded.name.length <= MAX_EVENT_NAME_CHARS, true);
+});
+
+test("recordEvent creates the events array on a store that never had one", () => {
+  const store = {};
+  recordEvent(store, { kind: "started", name: "jarvis-1" }, T);
+  assert.equal(getEvents(store).length, 1);
+});
+
+test("getEvents treats a missing or malformed events field as empty", () => {
+  assert.deepEqual(getEvents(emptyStore()), []);
+  assert.deepEqual(getEvents({ events: "nonsense" }), []);
+  assert.deepEqual(getEvents(null), []);
+  assert.deepEqual(getEvents(undefined), []);
+});
+
+test("clearEvents empties the log a recap already spoke", () => {
+  const store = emptyStore();
+  recordEvent(store, { kind: "complete", name: "jarvis-1" }, T);
+  clearEvents(store);
+  assert.deepEqual(getEvents(store), []);
+});
+
+test("the event log survives a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    recordEvent(store, { kind: "complete", name: "jarvis-1", detail: "done" }, T);
+    assert.equal(saveStore(store, path), true);
+    assert.deepEqual(getEvents(loadStore(path)), [{ kind: "complete", name: "jarvis-1", detail: "done", at: T }]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

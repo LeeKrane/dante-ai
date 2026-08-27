@@ -29,7 +29,7 @@ function validKind(overrides = {}) {
 // module. `return await` is load-bearing: without it the finally block deletes
 // the directory while fn is still awaiting an import.
 async function withTempSessions(files, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-sessions-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-sessions-"));
   try {
     for (const [name, source] of Object.entries(files)) {
       writeFileSync(join(dir, name), source);
@@ -61,7 +61,7 @@ test("the template is an example rather than a live session kind", async () => {
 test("a session kind names no tools, because a session is not a build", () => {
   // The distinction the whole module rests on. A primitive's allowedTools is
   // its boundary; a session runs under the user's own permissions, and a
-  // jarvis-shaped restriction here would only make a voice-started session
+  // Dante-shaped restriction here would only make a voice-started session
   // weaker than one started in a terminal.
   const review = { id: "review", systemPrompt: () => "x", allowedTools: undefined };
   assert.equal(review.allowedTools, undefined);
@@ -174,7 +174,7 @@ test("a missing sessions directory is a working install, not an error", async ()
   // Unlike primitives/, free-form is the default path here: starting a session
   // with a task and no kind is the ordinary case, so a clone with no session
   // kinds at all still works.
-  const kinds = await loadSessionKinds(join(tmpdir(), "jarvis-no-such-sessions-dir"));
+  const kinds = await loadSessionKinds(join(tmpdir(), "dante-no-such-sessions-dir"));
   assert.equal(kinds.size, 0);
 });
 

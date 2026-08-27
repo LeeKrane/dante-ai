@@ -303,7 +303,30 @@ test("two session tags in one reply means the first one, not both", () => {
   assert.equal(session.task, "first");
 });
 
+test("a then= key on a start names a successor task", () => {
+  const { session } = parseAction(
+    '[ACTION:SESSION verb=start repo=jarvis task="fix the tests" then="run the linter"]',
+  );
+  assert.deepEqual(session, {
+    verb: "start",
+    repo: "jarvis",
+    task: "fix the tests",
+    then: "run the linter",
+  });
+});
+
 test("a session tag is stripped from the spoken text like every other tag", () => {
   const { reply } = parseAction("On it.\n[ACTION:SESSION verb=stop name=jarvis-1]");
   assert.equal(reply, "On it.");
+});
+
+test("a recap tag names no session and takes no other keys", () => {
+  const { reply, session, action } = parseAction("Let me check, sir. [ACTION:SESSION verb=recap]");
+  assert.equal(reply, "Let me check, sir.");
+  assert.deepEqual(session, { verb: "recap" });
+  assert.equal(action, null);
+});
+
+test("the recap verb parses like any other, whatever case it was written in", () => {
+  assert.deepEqual(parseAction("[action:session VERB=Recap]").session, { verb: "recap" });
 });

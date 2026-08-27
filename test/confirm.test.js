@@ -20,7 +20,30 @@ test("a session to start is described by where and what", () => {
   );
 });
 
-test("the workspace jarvis resolved beats the alias the model wrote", () => {
+test("a named successor is read back as part of the same sentence", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "start", repo: "jarvis", task: "fix the tests", then: "run the linter" },
+    }),
+    "Start a session in jarvis to fix the tests, then run the linter. Shall I, sir?",
+  );
+});
+
+test("a successor with nothing to follow is dropped rather than said with no clause to hang off", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", then: "run the linter" } }),
+    "Start a session in jarvis. Shall I, sir?",
+  );
+});
+
+test("a successor is only described for verb start, not tell or stop", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "tell", name: "jarvis-1", task: "run it", then: "run the linter" } }),
+    "Tell jarvis-1 to run it. Shall I, sir?",
+  );
+});
+
+test("the workspace Dante resolved beats the alias the model wrote", () => {
   // They can differ, and the resolved one is where the session actually runs.
   assert.match(
     describeIntent({
@@ -72,7 +95,7 @@ test("a build names what it is building and what it is about", () => {
   );
 });
 
-test("the primitive jarvis resolved beats the one the model named", () => {
+test("the primitive Dante resolved beats the one the model named", () => {
   assert.match(
     describeIntent({ action: { primitive: "landing", params: {} }, primitive: { id: "landing-page" } }),
     /^Build a landing page\./,
@@ -100,6 +123,13 @@ test("a read is deliberately not describable, so it is never held for a confirma
     describeIntent({ session: { verb: "read", name: "jarvis-1", question: "did the tests pass?" } }),
     null,
   );
+});
+
+test("a recap is never described, because it is never confirmed", () => {
+  // It changes no process, so server.js dispatches it straight off the parsed
+  // tag -- the same exemption [MEMORY:SET] gets, applied here rather than
+  // there because a session tag is what a recap arrives as.
+  assert.equal(describeIntent({ session: { verb: "recap" } }), null);
 });
 
 test("a start with no repository is still describable, because refusing is the dispatcher's job", () => {

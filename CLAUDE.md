@@ -1,12 +1,9 @@
-# jarvis-demo
+# dante-demo
 
 Voice front-end to headless Claude Code. Hold a key, speak, release: Chrome's Web Speech API
 transcribes, a WebSocket carries the text to this Node server, `claude -p` answers, and Fish
 Audio speaks the reply. Ask it to build something and a second `claude -p` runs with file tools
 on, in its own throwaway directory.
-
-**`lib/README.md` is the real README** — architecture, the security model, and the extension
-points. Read it before changing anything under `lib/`.
 
 ## House rules
 

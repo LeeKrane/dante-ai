@@ -11,7 +11,7 @@ test("parses reply + session id", () => {
   assert.equal(sessionId, "abc-123");
 });
 
-test("replaces the coding-agent prompt with the spoken Jarvis prompt", () => {
+test("replaces the coding-agent prompt with the spoken Dante prompt", () => {
   assert.equal(typeof brain.buildClaudeArgs, "function");
   const args = brain.buildClaudeArgs("Status report.", "session-1");
 
@@ -172,6 +172,13 @@ test("a read is taught as running straight away, unlike the three that are propo
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /A start, tell or stop tag is a PROPOSAL, not an act/);
   assert.match(persona, /verb=read is the exception/);
+});
+
+test("the sessions block teaches the recap verb for catching up on what was missed", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=recap\]/);
+  assert.match(persona, /what happened while he was away/);
+  assert.match(persona, /names no session and starts nothing/);
 });
 
 test("the persona says to ask rather than fill a gap in, on both tags", () => {

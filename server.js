@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
-import { formatEvent } from "./lib/notify.js";
+import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import { describeIntent, isAnswerable, readAnswer } from "./lib/confirm.js";
@@ -28,6 +28,7 @@ import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
   queueForSession, takeQueued, dropQueuesExcept, rememberSession, getSessionRecord, getSessions,
+  chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -83,8 +84,8 @@ const sessionKinds = await loadSessionKinds();
 // Started below, after the store is loaded, because the events name sessions
 // using the workspace aliases the store holds.
 const rosterPoller = createRosterPoller({
-  // Jarvis's business, and nothing else. `claude agents --json` lists every
-  // session on this machine, including other tools' internals and jarvis's own
+  // Dante's business, and nothing else. `claude agents --json` lists every
+  // session on this machine, including other tools' internals and Dante's own
   // children, and reading those out loud was the least of it -- being able to
   // stop one is a bug with a process on the end of it.
   //
@@ -106,17 +107,22 @@ const rosterPoller = createRosterPoller({
       // The report someone walked away for. Not awaited: a poller tick must
       // not be held open by a Slack round trip and a summary behind it.
       if (kind === "gone") {
-        reportComplete(session.sessionId, { cwd: session.cwd, name: session.name, startedAt: session.startedAt })
-          .catch((e) => log("report failed:", e.message || e));
+        reportComplete(session.sessionId, {
+          cwd: session.cwd, name: session.name, startedAt: session.startedAt, roster,
+        }).catch((e) => log("report failed:", e.message || e));
       }
     }
-    // A queue for a session that ended is a promise that can never be kept, and
-    // leaving it behind means a reused id would deliver it to a stranger.
+    // Whatever changed, the panel is now describing a machine that has moved on.
+    broadcastRoster(roster);
+    // A queue or a chain for a session that ended is a promise that can never
+    // be kept, and leaving either behind means a reused id would inherit a
+    // stranger's follow-up or successor.
     if (events.some((event) => event.kind === "gone")) {
-      const dropped = dropQueuesExcept(memoryStore, roster.map((record) => record.sessionId));
+      const live = roster.map((record) => record.sessionId);
+      const dropped = dropQueuesExcept(memoryStore, live) + dropChainsExcept(memoryStore, live);
       if (dropped > 0) {
         saveStore(memoryStore);
-        log(`dropped ${dropped} queue(s) for sessions that ended`);
+        log(`dropped ${dropped} queue/chain entr${dropped === 1 ? "y" : "ies"} for sessions that ended`);
       }
     }
   },
@@ -147,7 +153,7 @@ async function deliverQueued(record) {
 // One exit, reported once, whichever mechanism noticed it.
 //
 // Both do. The roster poller is the floor -- it works for sessions started
-// before jarvis existed and needs nothing installed -- and the Stop and
+// before Dante existed and needs nothing installed -- and the Stop and
 // SessionEnd hooks are the fast path, firing the moment it happens. They are
 // not alternatives, so the deduper is what keeps one exit from becoming two
 // lines in the thread.
@@ -163,7 +169,7 @@ async function postForSession(sessionId, line) {
   else await slack.postParent(line);
 }
 
-// Only sessions jarvis started are reported. The roster sees every terminal on
+// Only sessions Dante started are reported. The roster sees every terminal on
 // this machine, and posting to Slack every time somebody closes one would make
 // the channel worthless within a day.
 async function reportComplete(sessionId, context = {}) {
@@ -171,28 +177,122 @@ async function reportComplete(sessionId, context = {}) {
   if (!remembered) return;
   if (!reported.accept(`${sessionId}:complete`)) return;
 
+  // Taken here, synchronously and before anything below awaits: the roster
+  // poller calls dropChainsExcept for this same "gone" event right after
+  // invoking this function (without awaiting it), and a chain still sitting in
+  // the table when that runs would be deleted out from under the dispatch at
+  // the end of this function.
+  const chain = takeChain(memoryStore, sessionId);
+  if (chain) saveStore(memoryStore);
+
   const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
+  // Up to ~25 s of Haiku, and worth it: "done" without it is not news. Read
+  // once and used twice -- the posted line and the spoken one say the same
+  // thing about the same session, at different lengths.
+  const summary = await summarizeSession({
+    cwd: context.cwd || remembered.cwd,
+    sessionId,
+    task: remembered.task,
+  });
   const line = formatEvent({
     kind: "complete",
     name: remembered.name ?? context.name,
     durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
-    // Up to ~25 s of Haiku, and worth it: "done" without it is not news.
-    //
-    // Posted, and deliberately not kept. Storing it would make jarvis able to
-    // answer "what did that session do" out of its own pocket after the session
-    // itself was deleted, which is a copy of somebody's work living somewhere
-    // they did not put it. What a session produced is readable for exactly as
-    // long as the session is -- see the note above dispatchRead.
-    summary: await summarizeSession({
-      cwd: context.cwd || remembered.cwd,
-      sessionId,
-      task: remembered.task,
-    }),
+    summary,
     detail: remembered.stoppedAt ? "stopped from here" : "",
   });
 
+  // Recorded with the same words Slack gets -- whichever of summary or the
+  // "stopped from here" note formatEvent actually chose to say -- so a recap
+  // and the Slack thread can never disagree about what happened here.
+  recordEvent(memoryStore, {
+    kind: "complete",
+    name: remembered.name ?? context.name,
+    detail: summary || (remembered.stoppedAt ? "stopped from here" : ""),
+  });
+  saveStore(memoryStore);
+
   log(`session complete: ${line}`);
+  // Slack first, unconditionally. The spoken form is shorter and only reaches
+  // anyone if a page is open and the floor comes free before it goes stale.
   await postForSession(sessionId, line);
+  announce(formatSpoken({
+    kind: "complete",
+    name: remembered.name ?? context.name,
+    durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
+    summary,
+  }));
+
+  await dispatchChain(sessionId, remembered, chain, context.roster);
+}
+
+// A session named a successor and this one just ended -- start it now, if it
+// still should run at all.
+//
+// "On completion", deliberately, not "on success": a Claude Code session
+// exposes no pass/fail verdict for this to condition on (see the comment on
+// chainAfter in lib/memory.js). The one thing that does cancel a chain is
+// Dante having stopped this session itself -- ending something on purpose is
+// not the same as it finishing the work it was asked to do -- which is why
+// `remembered.stoppedAt` is checked here rather than folded into "did it
+// finish" upstream.
+async function dispatchChain(sessionId, remembered, chain, roster) {
+  if (!chain) return;
+  if (remembered.stoppedAt) {
+    log(`chain dropped: ${sessionId} was stopped from here`);
+    return;
+  }
+
+  // The workspace is looked up fresh rather than assumed still there -- the
+  // alias was real when the chain was recorded, but a person can remove a
+  // workspace in the meantime, and guessing at a repository to run in is
+  // exactly the mistake lib/confirm.js exists to prevent for a spoken start.
+  const workspace = getWorkspace(memoryStore, chain.alias);
+  if (!workspace) {
+    log(`chain dropped: workspace ${JSON.stringify(chain.alias)} is no longer known`);
+    await postForSession(
+      sessionId,
+      `I could not start the next session, sir -- I no longer know a workspace called ${chain.alias}.`,
+    );
+    return;
+  }
+
+  // Same ceiling, same counting as a spoken start: only sessions Dante itself
+  // started count against it, and a chained one is no exception.
+  const live = Array.isArray(roster) ? roster : [];
+  const own = ownRunning(live, getSessions(memoryStore));
+  const refusal = refuseStart(
+    { task: chain.task, repo: chain.alias },
+    {
+      workspace,
+      workspaces: workspacePaths(memoryStore),
+      running: own.running,
+      max: MAX_SESSIONS,
+      oldestIdle: own.oldestIdle ?? undefined,
+    },
+  );
+  if (refusal) {
+    log(`chain refused: ${refusal}`);
+    await postForSession(sessionId, `I could not start the next session, sir. ${refusal}`);
+    return;
+  }
+
+  const started = await beginSession({
+    workspace, task: chain.task, kind: null, taken: live, then: null, depth: chain.depth + 1,
+  });
+  if (!started.ok) {
+    // beginSession has already posted its own "failed" parent to Slack -- there
+    // is no thread yet to reply into, the same reason a failed spoken start
+    // gets one there and not a reply here.
+    log(`chained session start failed name=${started.name} ${started.error}`);
+    return;
+  }
+
+  log(`chain started: ${sessionId} -> ${started.name}`);
+  // beginSession already opened the session's own Slack thread with a
+  // "started" parent; this is the voice half of the same announcement, for
+  // whoever still has a page open.
+  announce(formatSpoken({ kind: "started", name: started.name }));
 }
 
 // A session that is blocked on a person. The one thing polling can never see,
@@ -203,15 +303,18 @@ async function reportAttention(event) {
   if (!reported.accept(`${event.sessionId}:needs-attention:${event.detail}`)) return;
 
   const line = formatEvent({ kind: "needs-attention", name: remembered.name, detail: event.detail });
+  recordEvent(memoryStore, { kind: "needs-attention", name: remembered.name, detail: event.detail });
+  saveStore(memoryStore);
   log(`session needs attention: ${line}`);
   await postForSession(event.sessionId, line);
+  announce(formatSpoken({ kind: "needs-attention", name: remembered.name, detail: event.detail }));
 }
 
-// The session ids of jarvis's own Claude processes: the warm brain, and
+// The session ids of Dante's own Claude processes: the warm brain, and
 // whatever a live tab is resumed against. Exact ids rather than names, because
 // "never offer to stop my own brain" has to be impossible, not unlikely.
 //
-// Builds are not here -- they carry no id jarvis assigned -- but they do run in
+// Builds are not here -- they carry no id Dante assigned -- but they do run in
 // BUILDS, which the filter excludes by path instead.
 function ownSessionIds() {
   const ids = new Set(sessions.values());
@@ -242,7 +345,7 @@ let pendingApproval = null;
 // want of a listener would silently break every session started while you are
 // away, which is precisely when you need them working.
 async function requestApproval(payload = {}) {
-  // Only sessions jarvis started. The hook is installed globally, so it fires
+  // Only sessions Dante started. The hook is installed globally, so it fires
   // for the terminal you are sitting at too -- and that terminal can ask you
   // itself, better, on the screen you are already looking at.
   const remembered = getSessionRecord(memoryStore, payload.session_id);
@@ -320,10 +423,115 @@ async function answerApproval(send, text) {
 }
 
 // ---------------------------------------------------------------------------
+// What is running, on screen
+// ---------------------------------------------------------------------------
+
+// The same roster the turn carries, sent to the page so the panel beside the
+// orb can paint it. Only what a row needs -- no pid, no path, no session id
+// beyond the one that keys the row -- because everything sent here is written
+// by whoever started the session and lands in a browser.
+//
+// Sent when it changes rather than on a timer: a session's age changes every
+// second and the page can count that itself.
+// More than this is a wall of text beside an orb, and the panel caps itself
+// again anyway. Cut here as well so the message stays small whatever a machine
+// running twenty sessions does.
+const MAX_ROSTER_ROWS = 8;
+
+function rosterForClient(roster, aliases) {
+  if (!Array.isArray(roster)) return [];
+  const byPath = Object.entries(aliases ?? {});
+  return roster.slice(0, MAX_ROSTER_ROWS).map((record) => ({
+    sessionId: record.sessionId,
+    name: record.name,
+    // The alias rather than the path: a repository is called "jarvis" out loud,
+    // and a page has no business being told where it lives on disk.
+    alias: byPath.find(([, path]) => record.cwd === path || record.cwd?.startsWith(`${path}/`))?.[0] ?? "",
+    state: record.state,
+    status: record.status,
+    startedAt: record.startedAt,
+  }));
+}
+
+function sendRoster(send, roster) {
+  send({ type: "roster", sessions: rosterForClient(roster, workspacePaths(memoryStore)) });
+}
+
+function broadcastRoster(roster) {
+  for (const ws of sessions.keys()) {
+    if (ws.readyState === 1) sendRoster((o) => ws.send(JSON.stringify(o)), roster);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Announcements
+// ---------------------------------------------------------------------------
+
+// Lines nobody asked for. Slack always gets them and is the durable channel;
+// speaking one is the convenience, and a convenience does not get to interrupt.
+//
+// The timing decision is the browser's, because the floor is a client fact --
+// only the page knows whether the mic is open or a clip is audible. So this
+// offers the announcement, the page says when, and the text stays here until
+// then rather than crossing the wire twice.
+const MAX_PENDING_ANNOUNCEMENTS = 10;
+const ANNOUNCEMENT_TTL_MS = 5 * 60 * 1000;
+let announceSeq = 0;
+const pendingAnnouncements = new Map();
+
+function announce(text) {
+  const line = typeof text === "string" ? text.trim() : "";
+  // No page open is not a failure. It already went to Slack, which is the whole
+  // reason Slack is unconditional.
+  if (!line || !voice) return false;
+
+  const now = Date.now();
+  for (const [id, held] of pendingAnnouncements) {
+    if (now - held.at >= ANNOUNCEMENT_TTL_MS) pendingAnnouncements.delete(id);
+  }
+  const id = `announce-${++announceSeq}`;
+  pendingAnnouncements.set(id, { text: line, at: now });
+  // Oldest out first, so a page that never asks for any of them cannot make
+  // this grow for the life of the process.
+  while (pendingAnnouncements.size > MAX_PENDING_ANNOUNCEMENTS) {
+    pendingAnnouncements.delete(pendingAnnouncements.keys().next().value);
+  }
+
+  voice({ type: "announce", id, text: line });
+  return true;
+}
+
+// The page has the floor free and is asking for one it was offered. Unknown or
+// expired ids are ignored in silence: the page is entitled to ask late, and a
+// dropped announcement is not worth a spoken apology.
+async function speakAnnouncement(send, id) {
+  const held = pendingAnnouncements.get(id);
+  if (!held) return;
+  pendingAnnouncements.delete(id);
+  if (Date.now() - held.at >= ANNOUNCEMENT_TTL_MS) return;
+  log(`announced: ${held.text}`);
+  await say(send, held.text);
+}
+
+// A recap ("what happened while I was out") just spoke every one of these out
+// loud in one paragraph, so leaving any of them queued means saying it again
+// the next time the floor is free -- worse than saying nothing. Both halves
+// are cleared: this server's own pending map, and every connected page's own
+// queue, which it holds client-side and does not otherwise hear about.
+function clearPendingAnnouncements() {
+  const cleared = pendingAnnouncements.size;
+  pendingAnnouncements.clear();
+  for (const ws of sessions.keys()) {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "clear_announcements" }));
+  }
+  return cleared;
+}
+
+// ---------------------------------------------------------------------------
 // Propose, then act
 // ---------------------------------------------------------------------------
 
-// Everything jarvis can do to a live process used to run the moment a model
+// Everything Dante can do to a live process used to run the moment a model
 // wrote a tag. It showed: a request to start a session once ended with a
 // different, working session stopped. So a tag becomes a proposal, and the next
 // thing said decides it.
@@ -553,13 +761,17 @@ const server = createServer(async (req, res) => {
     const body = await readJsonBody(req);
     // Answered before anything is done with it. A hook blocks the session that
     // spawned it, and a summary can take twenty-five seconds; making a session
-    // wait on jarvis reporting about it would be exactly backwards.
+    // wait on Dante reporting about it would be exactly backwards.
     sendJson(res, 200, { ok: true });
 
     const event = parseHookEvent(body);
     if (!event) return;
+    // No roster from a poller tick here -- this is the fast-path hook, firing
+    // straight off the CLI's own Stop/SessionEnd event. rosterPoller.current()
+    // is the best available answer to "what else is running" without paying
+    // for a fresh listing on a path that already raced to answer the hook.
     const work = event.kind === "complete"
-      ? reportComplete(event.sessionId, { cwd: event.cwd })
+      ? reportComplete(event.sessionId, { cwd: event.cwd, roster: rosterPoller.current() })
       : reportAttention(event);
     work.catch((e) => log("hook report failed:", e.message || e));
     return;
@@ -859,8 +1071,8 @@ async function dispatchStop(send, session, preamble, roster) {
   takeQueued(memoryStore, record.sessionId);
   // Noted so the report when it leaves the roster says it was stopped rather
   // than that it finished -- which are different things to read at midnight.
-  // Only for sessions jarvis started: writing a record here for a terminal
-  // somebody was sitting at would turn "jarvis stopped it" into a Slack post
+  // Only for sessions Dante started: writing a record here for a terminal
+  // somebody was sitting at would turn "Dante stopped it" into a Slack post
   // about a session Slack has never heard of.
   if (getSessionRecord(memoryStore, record.sessionId)) {
     rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
@@ -877,7 +1089,7 @@ async function dispatchStop(send, session, preamble, roster) {
 //
 // The gate is the whole stage. Resuming a session that is CURRENTLY WORKING is
 // not a join: two processes on one session id is the race askResilient and
-// conv.settled exist to prevent inside jarvis, and it is worse across
+// conv.settled exist to prevent inside Dante, and it is worse across
 // processes. So a busy session gets the message queued, and the roster poller
 // delivers it on the first tick that sees it idle.
 async function dispatchTell(send, session, preamble, roster) {
@@ -918,7 +1130,7 @@ async function dispatchTell(send, session, preamble, roster) {
 }
 
 // Every session that can be asked about right now: what jarvis remembers
-// starting, minus what has aged out, plus what is running, all inside the
+// starting, minus whatever has no transcript on disk, plus what is running, all inside the
 // repositories named out loud. Built here rather than cached because the two
 // inputs both move -- the roster every five seconds, the workspace list the
 // moment somebody names a repo mid-conversation.
@@ -938,8 +1150,10 @@ function recallable(roster) {
 //
 // It reads the session's own transcript, live or finished -- the same thing
 // anyone would see by opening that session in a terminal and scrolling back.
-// Nothing about a finished session is kept anywhere else, so a deleted session
-// is simply not readable: there is no cached answer standing in for it.
+// That transcript is the only source. The one-line summary reportComplete
+// produces goes to Slack and into the recap log (recordEvent, a short list that
+// a recap reads once and clears), and this never consults it: a deleted session
+// is simply not readable, with no cached answer standing in for it.
 async function dispatchRead(send, session, preamble, roster) {
   const candidates = recallable(roster);
   // Deliberately not resolveSession: that one resolves against the live roster,
@@ -990,6 +1204,23 @@ async function dispatchRead(send, session, preamble, roster) {
   ));
 }
 
+// "What happened while I was out." Reads the event log back as one spoken
+// paragraph and clears it -- and clears the announcement queue too, because
+// whatever was waiting there for a free floor is exactly what the recap just
+// said. It changes no process, which is why the caller (below) never routes
+// it through propose(): there is nothing here for a "yes" to authorize.
+async function dispatchRecap(send, preamble = "") {
+  const events = getEvents(memoryStore);
+  const recap = formatRecap(events);
+  log(`recap: ${events.length} event(s)`);
+  await say(send, joinSpoken(preamble, recap));
+
+  clearEvents(memoryStore);
+  saveStore(memoryStore);
+  const cleared = clearPendingAnnouncements();
+  if (cleared > 0) log(`recap cleared ${cleared} pending announcement(s)`);
+}
+
 // Start a real Claude Code session in one of the workspaces, and say one
 // sentence about it. Everything that decides anything lives in lib/ -- which
 // repository (getWorkspace), whether to at all (refuseStart), what to call it
@@ -1000,6 +1231,10 @@ async function dispatchRead(send, session, preamble, roster) {
 // starting one by voice: the confirmation is immediate, and the roster is what
 // reports what happened afterwards.
 async function dispatchSession(send, session, preamble = "", roster = null) {
+  if (session.verb === "recap") {
+    await dispatchRecap(send, preamble);
+    return;
+  }
   if (session.verb === "tell") {
     await dispatchTell(send, session, preamble, roster);
     return;
@@ -1015,18 +1250,18 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   if (session.verb !== "start") {
     // Saying so is better than silence: the tag was stripped, so otherwise
     // nothing would happen and nothing would explain why.
-    await say(send, joinSpoken(preamble, "I can start a session, talk to one, stop one, or read one back, sir."));
+    await say(send, joinSpoken(preamble, "I can start a session, talk to one, stop one, read one back, or catch you up, sir."));
     return;
   }
 
   const workspace = getWorkspace(memoryStore, session.repo);
   const live = Array.isArray(roster) ? roster : [];
-  // Only the sessions jarvis itself started. Counting every background session
+  // Only the sessions Dante itself started. Counting every background session
   // on the machine was a real bug: a Claude Code background job is
-  // indistinguishable from one of jarvis's, so a machine in ordinary use sat at
-  // four of five before jarvis had done anything, every start was refused, and
+  // indistinguishable from one of Dante's, so a machine in ordinary use sat at
+  // four of five before Dante had done anything, every start was refused, and
   // the refusal named somebody else's session as the thing to stop. What the
-  // ceiling bounds is unattended sessions jarvis is responsible for.
+  // ceiling bounds is unattended sessions Dante is responsible for.
   const own = ownRunning(live, getSessions(memoryStore));
   const refusal = refuseStart(session, {
     workspace,
@@ -1035,7 +1270,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     max: MAX_SESSIONS,
     // The oldest idle one is the obvious thing to stop, and naming it is what
     // makes a refusal actionable rather than a dead end -- now that it can only
-    // ever be a session jarvis started.
+    // ever be a session Dante started.
     oldestIdle: own.oldestIdle ?? undefined,
   });
   if (refusal) {
@@ -1044,7 +1279,31 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     return;
   }
 
-  const kind = sessionKinds.get(session.kind) ?? null;
+  const started = await beginSession({ workspace, task: session.task, kind: session.kind, taken: live, then: session.then });
+
+  if (!started.ok) {
+    log(`session start failed name=${started.name} ${started.error}`);
+    send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
+    await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
+    return;
+  }
+
+  send({ type: "debug", stage: "session", msg: `started ${started.name}` });
+  // The preamble is the model's own confirmation, which is usually the whole
+  // sentence. The name is added because it is how every later command refers to
+  // this session, and hearing it once is what makes "stop jarvis three" possible.
+  await say(send, joinSpoken(preamble, `Running as ${started.name}.`));
+}
+
+// Everything about starting a session that has nothing to do with a browser:
+// naming it, spawning it, remembering it, opening its Slack thread.
+//
+// Split out because a chained session is started by a poller tick with no
+// socket in sight, and it must be started exactly the way a spoken one is --
+// same numbering, same naming, same thread. A second implementation would drift
+// on the first change to either.
+async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0 }) {
+  const kind = sessionKinds.get(kindId) ?? null;
   // Reserved before the spawn, not after: two requests in flight must not be
   // handed the same number, and a number burned by a failed start is cheaper
   // than two sessions called jarvis-3.
@@ -1052,8 +1311,8 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   saveStore(memoryStore);
 
   const name = buildName(
-    { alias: workspace.alias, number, task: session.task, hint: kind?.nameHint?.({ task: session.task }) },
-    live.map((r) => r.name),
+    { alias: workspace.alias, number, task, hint: kind?.nameHint?.({ task }) },
+    (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
   const sessionId = newSessionId();
 
@@ -1061,46 +1320,45 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     name,
     sessionId,
     cwd: workspace.path,
-    task: session.task,
-    systemPrompt: kind?.systemPrompt?.({ task: session.task, alias: workspace.alias }),
+    task,
+    systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
     effort: kind?.effort,
   });
 
   if (!started.ok) {
-    log(`session start failed name=${name} ${started.error}`);
-    send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
+    recordEvent(memoryStore, { kind: "failed", name, detail: started.error });
+    saveStore(memoryStore);
     // Its own parent message, not a reply: there is no thread, because there
     // was never a session to start one.
     slack.postParent(formatEvent({ kind: "failed", name, detail: started.error }));
-    await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
-    return;
+    return { ok: false, name, error: started.error };
   }
 
   // Its own bucket, not the artifacts list: artifacts answer "what did we build
   // lately", and ten sessions would push every build out of that answer.
   rememberSession(memoryStore, sessionId, {
-    name, alias: workspace.alias, cwd: workspace.path, task: session.task, kind: session.kind ?? null,
+    name, alias: workspace.alias, cwd: workspace.path, task, kind: kindId ?? null,
   });
+  // What to do once it finishes, if anything was asked for. Recorded now rather
+  // than looked up later: by the time it ends, the turn that asked is long over.
+  if (then) chainAfter(memoryStore, sessionId, { task: then, alias: workspace.alias, depth });
+  recordEvent(memoryStore, { kind: "started", name, detail: task });
   saveStore(memoryStore);
-  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}`);
-  send({ type: "debug", stage: "session", msg: `started ${name}` });
+  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
 
   // Not awaited. A Slack round trip is up to five seconds and the confirmation
-  // below is the answer to something someone just said out loud; making them
-  // wait on a notification would be exactly backwards. The thread id lands in
-  // memory whenever it arrives, and every later event for this session looks
-  // it up there.
-  slack.postParent(formatEvent({ kind: "started", name, task: session.task })).then((ts) => {
+  // is the answer to something someone just said out loud; making them wait on
+  // a notification would be exactly backwards. The thread id lands in memory
+  // whenever it arrives, and every later event for this session looks it up
+  // there.
+  slack.postParent(formatEvent({ kind: "started", name, task })).then((ts) => {
     if (!ts) return;
     rememberSession(memoryStore, sessionId, { slackTs: ts });
     saveStore(memoryStore);
   });
 
-  // The preamble is the model's own confirmation, which is usually the whole
-  // sentence. The name is added because it is how every later command refers to
-  // this session, and hearing it once is what makes "stop jarvis three" possible.
-  await say(send, joinSpoken(preamble, `Running as ${name}.`));
+  return { ok: true, name, sessionId };
 }
 
 async function dispatchAction(send, conv, action, preamble = "") {
@@ -1234,7 +1492,7 @@ async function build(send, primitive, params, preamble = "") {
 // End-of-session summary
 // ---------------------------------------------------------------------------
 
-// Its own bookkeeping voice, deliberately not the JARVIS persona: the spoken
+// Its own bookkeeping voice, deliberately not the DANTE persona: the spoken
 // rules -- forty words, no lists, address Jesse as sir -- would shape a note
 // nobody is ever going to hear into something shorter and vaguer than the next
 // session needs.
@@ -1348,8 +1606,18 @@ wss.on("connection", (ws) => {
   voice = send;
 
   log("client connected");
+  // The first poller tick is a baseline and fires no events, so a page opened
+  // after it would sit empty until something changed.
+  sendRoster(send, rosterPoller.current());
   ws.on("message", async (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
+    // The page reporting that the floor is free and it will take one of the
+    // announcements it was offered. Handled before the "say" guard because it
+    // carries no text at all.
+    if (msg.type === "announce_ready") {
+      if (typeof msg.id === "string") await speakAnnouncement(send, msg.id);
+      return;
+    }
     if (msg.type !== "say" || !msg.text?.trim()) return;
     log("say:", JSON.stringify(msg.text));
     send({ type: "debug", stage: "stt", msg: `heard "${msg.text}"` });
@@ -1580,7 +1848,7 @@ server.on("error", (err) => {
 server.listen(PORT, "0.0.0.0", () => {
   const ids = [...registry.keys()];
   const kinds = [...sessionKinds.keys()];
-  console.log(`Jarvis on http://0.0.0.0:${PORT}`);
+  console.log(`Dante on http://0.0.0.0:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
   console.log(`slack: ${slack.enabled ? `on (${slackCfg.channel})` : "off"}`);

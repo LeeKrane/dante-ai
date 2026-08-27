@@ -1,4 +1,4 @@
-# jarvis-demo
+# dante-demo
 
 Talk to Claude Code out loud. Hold a key, speak, release — your words go to Claude
 Code running headless on your machine, and the reply comes back in a cloned voice
@@ -55,7 +55,7 @@ API*. `SUPABASE_URL` and `SUPABASE_ANON_KEY` in the environment work too, and wi
 over the file.
 
 ```bash
-mkdir -p ~/.config/jarvis && cat > ~/.config/jarvis/supabase.json <<'EOF'
+mkdir -p ~/.config/dante && cat > ~/.config/dante/supabase.json <<'EOF'
 {
   "url": "https://YOUR-PROJECT.supabase.co",
   "anonKey": "YOUR-ANON-KEY-HERE"
@@ -105,7 +105,7 @@ screen changing what it promises. Separate from the `volume` set in
 everyone; this one is local, and it is the only way to go louder than the clip
 Fish actually sent.
 
-**Memory** — `~/.config/jarvis/memory.json`, keyed by the directory the server was
+**Memory** — `~/.config/dante/memory.json`, keyed by the directory the server was
 started in. It keeps the resumable session id, a rolling summary written when you
 close the page, the last ten artifacts, and standing preferences: say *"I always
 want dark palettes"* and the model appends a `[MEMORY:SET palette=dark]` tag that
@@ -117,6 +117,10 @@ question or two, then spawns a second Claude Code session with file tools on in 
 fresh `builds/<timestamp>/`, streams the work into the HUD around the orb, and
 opens the page when it's done. One build at a time; a primitive can declare
 `steps: [...]` to run plan → build → verify as a chain in one directory.
+
+Not every primitive produces a page. *"What does this repo do?"* runs
+`ask-repo` — `Read`, `Grep` and `Glob` only, no `Write` or `Edit` on its list —
+and answers the question in prose instead of building anything.
 
 **Sessions.** The point of the thing. Every turn carries a line describing the
 Claude Code sessions running on this machine — from `claude agents --json`, so
@@ -131,6 +135,12 @@ it sees the ones you started in a terminal too — and you can drive them:
   it goes idle, because resuming a working session forks it rather than joining.
 - *"Stop jarvis three"* — SIGTERM, never SIGKILL, and confirmed gone before it
   says so.
+- *"Start a session in jarvis to fix the tests, then run the linter"* — records a
+  successor and starts it the moment the first session **finishes**, not when it
+  succeeds: a Claude Code session exposes no pass/fail verdict, so there is
+  nothing to condition on. A session you stop by voice drops its chain rather
+  than starting it. A chained session counts against the five-session cap like
+  any other.
 - *"What did jarvis three come up with?"* — reads that session's transcript and
   speaks the answer. Works on a session still working (*"it's still working,
   sir. So far…"*) and on one that has finished, and takes a real question:
@@ -145,14 +155,15 @@ question about your own work would be a spoken round trip for nothing.
 Code itself keeps — the same thing you would see by opening that session in a
 terminal and scrolling back. Nothing is summarized ahead of time and nothing is
 cached: delete a session and it stops being readable that instant, with nothing
-left behind to answer in its place. The one-line summary that goes to Slack when
-a session ends is posted and forgotten, deliberately, for the same reason.
+left behind to answer in its place. The one-line summary posted to Slack when a
+session ends is kept only in the short recap log — cleared the first time you
+ask what you missed — and reading a session never consults it.
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and sessions in it are then
-`fitness-1`, `fitness-2`. That list is also the **whitelist**: jarvis only sees
+`fitness-1`, `fitness-2`. That list is also the **whitelist**: Dante only sees
 sessions running inside a repository you named out loud, so another tool's
-background sessions — and jarvis's own brain and builders — never appear, and
+background sessions — and Dante's own brain and builders — never appear, and
 cannot be named, told anything, or stopped.
 
 **It proposes; you decide.** Nothing above runs on the model's say-so. Every
@@ -166,11 +177,11 @@ is what will run:
 > re-proposes the corrected version.
 
 A proposal expires after two minutes and is then not answerable at all. The
-five-session ceiling counts only sessions jarvis itself started — your terminals
+five-session ceiling counts only sessions Dante itself started — your terminals
 and other tools' background jobs are not its business.
 
 These sessions run under **your** settings, permissions, hooks and MCP servers —
-the same session you'd have started by typing `claude` there. Jarvis imposes no
+the same session you'd have started by typing `claude` there. Dante imposes no
 deny list, because you asked for an orchestrator and not a sandbox. What it will
 never do is pass `--dangerously-skip-permissions` or `--permission-mode
 bypassPermissions`, on any path: voice is a lossy channel, and a misheard
@@ -185,12 +196,19 @@ prompt and model only, no tool scope. Ships `review` and `tests`; copy
 Start something, walk away, read what came of it on your phone. Slack is the
 durable channel; voice only works when the page is open.
 
+*"Catch me up"* is the voice half of walking away. It comes back as one spoken
+paragraph rather than a list — anything still needing you leads, and is never
+crowded out. It's built from an event log that survives a server restart, so
+it can still tell you what happened even if you closed the lid in between.
+Speaking it clears the log and any queued announcements, so nothing gets said
+twice.
+
 One thread per session: a parent when it starts, replies for everything after.
 Each report carries a one-sentence summary generated from the session's own
 transcript, because "done" on its own is not news.
 
 ```bash
-mkdir -p ~/.config/jarvis && cat > ~/.config/jarvis/slack.json <<'EOF'
+mkdir -p ~/.config/dante && cat > ~/.config/dante/slack.json <<'EOF'
 {
   "botToken": "xoxb-YOUR-BOT-TOKEN",
   "channel": "C0123456789"
@@ -199,7 +217,7 @@ EOF
 ```
 
 A Slack app with the `chat:write` scope, invited to that channel.
-`JARVIS_SLACK_TOKEN` and `JARVIS_SLACK_CHANNEL` work too and win over the file.
+`DANTE_SLACK_TOKEN` and `DANTE_SLACK_CHANNEL` work too and win over the file.
 Skip this entirely and everything else still works — Slack is an enhancement,
 not a dependency, and an outage costs a notification rather than a turn. It is
 **outbound only**: no Socket Mode, no Events API, nothing anyone types in Slack
@@ -207,30 +225,30 @@ reaches this machine.
 
 The roster poller notices a session ending within five seconds on its own. For
 the fast path — and for a session *blocked on you*, which polling can never see
-— install the hook. **Jarvis never writes `~/.claude/` itself**; its own build
+— install the hook. **Dante never writes `~/.claude/` itself**; its own build
 deny list forbids exactly that, and a hook is code that runs on your next
 session, so paste it yourself:
 
 ```json
 {
   "hooks": {
-    "Stop": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }],
-    "Notification": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-notify.mjs" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-notify.mjs" }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-notify.mjs" }] }]
   }
 }
 ```
 
-It posts to `127.0.0.1:3210/hook` (`JARVIS_PORT` to change it), always exits 0,
-prints nothing and gives up after a second — a jarvis that is down must cost a
-session nothing. Both mechanisms report the same exit; jarvis dedupes so the
+It posts to `127.0.0.1:3210/hook` (`DANTE_PORT` to change it), always exits 0,
+prints nothing and gives up after a second — a Dante that is down must cost a
+session nothing. Both mechanisms report the same exit; Dante dedupes so the
 thread gets one line, not three.
 
 ### It asks before the two things worth asking about
 
 Sessions run under your permissions, so one that hits a permission prompt with
 nobody at the terminal just stops. A `PreToolUse` hook can block and return a
-decision, so jarvis asks you out loud instead and you answer from across the
+decision, so Dante asks you out loud instead and you answer from across the
 room.
 
 > *"jarvis-1-builder-test-fix wants to push to the remote, sir. Allow?"*
@@ -247,7 +265,7 @@ trade for a channel that interrupts you.
   "hooks": {
     "PreToolUse": [{
       "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-      "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-approve.mjs", "timeout": 120 }]
+      "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-approve.mjs", "timeout": 120 }]
     }]
   }
 }
@@ -265,7 +283,7 @@ prompt-injected tool description argue for its own approval.
 ## Make it yours
 
 - **`lib/brain.js` → the `VOICE` constant** — who it is and how it talks. It ships
-  as a "JARVIS" character and calls you *sir*. It is the only half of the system
+  as a "DANTE" character and calls you *sir*. It is the only half of the system
   prompt written by hand; what it can build is generated from `primitives/`
   underneath, so rewriting the voice never breaks the builds.
 - **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed, and
@@ -385,6 +403,14 @@ This is permission scoping, not a sandbox, and a deny list names what is known t
 be dangerous rather than allowing only what is known to be safe. A build is real
 code execution on your machine, under your Claude login. Read a primitive before
 you install it. If you want a hard boundary, run the whole thing in a VM.
+
+**`ask-repo`'s read-only claim is carried by the prompt, not by either deny
+layer.** `allowedTools` naming only `Read`, `Grep` and `Glob` is a request, not
+a restriction — `Write` and `Edit` are not on the `--disallowedTools` floor for
+any primitive, and `denyRules()` names credentials, shell startup files and
+this app's own source, never the repository a build was pointed at. So "does
+not write to the repo it reads" is enforced by the system prompt alone, which
+is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
 
 ## When something breaks
 

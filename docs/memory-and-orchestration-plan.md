@@ -1,8 +1,8 @@
-# Jarvis: Memory Layer + Multi-Step Orchestration
+# Dante: Memory Layer + Multi-Step Orchestration
 
 ## Context
 
-`jarvis-demo` is a voice front-end to headless Claude Code. Today it has two holes the
+`dante-demo` is a voice front-end to headless Claude Code. Today it has two holes the
 repo's own README names as its intended growth paths:
 
 1. **No memory.** `ask(text, sessionId)` in `lib/brain.js` threads a Claude Code session id,
@@ -11,7 +11,7 @@ repo's own README names as its intended growth paths:
 2. **No orchestration.** One `[ACTION:BUILD]` tag spawns exactly one `claude -p` in one fresh
    directory. There is no plan → build → verify decomposition.
 
-`jarvis-memory-and-orchestration-guide.md` (in the repo root) specifies both. This plan
+`dante-memory-and-orchestration-guide.md` (in the repo root) specifies both. This plan
 implements guide sections 1, 2.1–2.4, and deliberately **skips 2.5** (builds spawning their
 own sub-builds) — that widens the sandbox, and the repo's whole posture is least privilege.
 
@@ -103,7 +103,7 @@ Three non-obvious orderings:
 
 ## Stage 1 — `lib/memory.js`
 
-Store: `~/.config/jarvis/memory.json`, keyed by `process.cwd()` at boot. Outside the repo, and
+Store: `~/.config/dante/memory.json`, keyed by `process.cwd()` at boot. Outside the repo, and
 inside a directory `deniedDirs()` (`lib/builder.js:99`) already blocks builds from writing.
 
 **Mutate, don't copy-on-write.** The guide's sketch is inconsistent (claims purity, mutates).
@@ -229,7 +229,7 @@ right: a conversation that heals itself.
   fire-and-forget `summarizeOnClose(sessionId, conv.turns)`.
 
 **End-of-session summary.** Threshold `turns >= 3` (successful brain calls only). Its own
-bookkeeping persona, not the JARVIS voice — the forty-word spoken-reply rule would shape the
+bookkeeping persona, not the DANTE voice — the forty-word spoken-reply rule would shape the
 summary for a listener. Not awaited, no `send`, no `conv` access, errors fully swallowed and
 logged at info level. One module-scope `summarizing` flag so a refresh storm produces at most
 one extra process. **Do not store the session id returned by the summary call** — that would put
@@ -405,7 +405,7 @@ a gutter — there is no scrolling list to collapse. The tree shape lives in `#p
 
 ## Stage 12 — interrupting playback
 
-JARVIS cannot currently be interrupted. `playAudio()` (`app.js:348`) keeps no handle on the
+DANTE cannot currently be interrupted. `playAudio()` (`app.js:348`) keeps no handle on the
 `AudioBufferSourceNode` it creates, so a clip can only be waited out or reloaded away, and
 `startListening()` (`app.js:308`) says so outright by returning early on `state === "speaking"`.
 This stage is barge-in: pressing the record button cancels whatever is speaking and starts
@@ -438,7 +438,7 @@ the button went down while its audio was in flight.
 
 ## Stage 13 — superseding a turn that is still thinking
 
-Stage 12 made Jarvis interruptible while *speaking* and left him deaf while *thinking*:
+Stage 12 made Dante interruptible while *speaking* and left him deaf while *thinking*:
 `canStartListening` refused that state, so a press during the gap between releasing the button and
 hearing an answer did nothing, and the old answer arrived over the top of whatever was said next.
 A bug, not a missing feature.
@@ -471,7 +471,7 @@ unresumable id with one cold retry.
 
 ## Stage 14 — the cancel button
 
-Stopping JARVIS without also starting a new turn. `#controls` is a centred grid (`index.html:71`)
+Stopping DANTE without also starting a new turn. `#controls` is a centred grid (`index.html:71`)
 with `#mic` alone on its row, so a plain flex sibling would shove the record button off centre
 every time it appeared. Instead `#mic` gets a `position: relative` inline-flex wrapper and
 `#cancel` is absolutely positioned against it (`left: 100%`), which leaves the record button in
@@ -788,7 +788,7 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
   button shows only while a clip plays and never while the chrome is hidden.
 
 **Manual smoke** (stages 5, 10, 11, 15 — no DOM harness in this repo, by design):
-1. `node server.js`, open Chrome, say a standing preference → `~/.config/jarvis/memory.json`
+1. `node server.js`, open Chrome, say a standing preference → `~/.config/dante/memory.json`
    gains it, the debug line confirms it.
 2. Refresh the tab → the log shows a seeded session id.
 3. Corrupt `memory.json` by hand → the server still boots.
@@ -829,7 +829,7 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
     separate replies, both spoken, no merge framing in either prompt.
 19. Hold a normal conversation and listen to the voice itself. `balanced` mode changes how Fish
     synthesizes, not merely when it sends, and the only test for whether it still sounds like
-    Jarvis is a person hearing it. Prosody, pace and the ends of sentences are what to listen for.
+    Dante is a person hearing it. Prosody, pace and the ends of sentences are what to listen for.
 20. Everything on this list again, because progressive playback replaces the path all of it ran
     through. Specifically: a normal reply starts speaking about a second and a half sooner than it
     used to; a reply cut off by the record button stops dead and does not resume; a reply cut off

@@ -1,4 +1,4 @@
-// When Jarvis may be interrupted, and where the orb lands when he is.
+// When Dante may be interrupted, and where the orb lands when he is.
 //
 // The fourth of the pure client modules (stt-policy.js, visibility-policy.js,
 // progress-policy.js). app.js touches the DOM on its first line and can never be
@@ -12,7 +12,7 @@ export const ORB_STATES = new Set(["idle", "listening", "thinking", "working", "
 // canStartListening(state, holding, hasRecognizer)
 //
 // No state refuses the button any more, which is the whole point: whatever
-// Jarvis is doing, the person gets to talk. A clip being spoken is cancelled by
+// Dante is doing, the person gets to talk. A clip being spoken is cancelled by
 // the press; a turn still being thought about is superseded by the server, which
 // abandons it and folds what was said into the call that replaces it
 // (lib/turns.js). Both are the same promise — whoever spoke last has the floor.
@@ -74,4 +74,83 @@ export function handoffAfterPreempt(cut, incoming) {
 // still press.
 export function shouldShowCancel(playing, chromeHidden) {
   return Boolean(playing) && !chromeHidden;
+}
+
+// ---------------------------------------------------------------------------
+// Announcements
+// ---------------------------------------------------------------------------
+//
+// A session finishing while nobody asked anything is the first thing Dante has
+// to say that nobody is waiting for. Slack always gets it, durably; speaking it
+// is the convenience, and a convenience does not get to interrupt.
+//
+// So an announcement never barges in. It waits for the floor to be genuinely
+// free and is dropped rather than spoken stale -- two minutes later "jarvis-1
+// has finished" is not news, and it is already in Slack for whenever anyone
+// looks. Approval requests are the exception and do not come through here at
+// all: something is blocked on those, so they are spoken the moment they arrive.
+
+// How long an announcement is worth saying. Long enough to survive one reply
+// and a follow-up question, short enough that nothing is ever announced about a
+// session the person has stopped thinking about.
+export const ANNOUNCEMENT_TTL_MS = 120_000;
+
+// A backlog this deep means a long walk away, and the tail of it is history
+// rather than news. Slack has all of it in order.
+export const MAX_QUEUED_ANNOUNCEMENTS = 5;
+
+// The three states that mean someone is mid-exchange. "working" is deliberately
+// absent: a build running in the background is not a conversation, and holding
+// an announcement until it lands would be holding it for minutes.
+const BUSY_STATES = new Set(["listening", "thinking", "speaking"]);
+
+// floorIsFree(floor) -> whether an unprompted line may be spoken right now.
+//
+// Not during a reply, not while the mic is open, not while a question is
+// waiting on an answer. Each of those is someone else's turn.
+export function floorIsFree(floor = {}) {
+  if (floor.holding || floor.listening || floor.playing || floor.awaitingAnswer) return false;
+  return !BUSY_STATES.has(floor.state);
+}
+
+// queueAnnouncement(queue, item) -> the queue with it on the end, capped.
+//
+// Oldest out first: with a backlog, the recent endings are the ones worth
+// hearing and the old ones are already in Slack.
+export function queueAnnouncement(queue, item, max = MAX_QUEUED_ANNOUNCEMENTS) {
+  const list = Array.isArray(queue) ? queue.slice() : [];
+  if (!item || typeof item.id !== "string" || !item.id) return list;
+  list.push(item);
+  return list.length > max ? list.slice(list.length - max) : list;
+}
+
+// takeAnnouncement(queue, floor, now) -> { speak, queue, dropped }
+//
+// `speak` is the one to say now, or null. `queue` is what is left, always --
+// callers assign it back unconditionally, because stale entries are swept here
+// whether or not anything is spoken. `dropped` is how many went stale, so the
+// diagnostics panel can say so rather than leaving a silence unexplained.
+export function takeAnnouncement(queue, floor = {}, now = Date.now(), ttlMs = ANNOUNCEMENT_TTL_MS) {
+  const list = Array.isArray(queue) ? queue : [];
+  const live = list.filter((item) => item && Number.isFinite(item.at) && now - item.at < ttlMs);
+  const dropped = list.length - live.length;
+
+  if (!floorIsFree(floor)) return { speak: null, queue: live, dropped };
+  const [next, ...rest] = live;
+  return next ? { speak: next, queue: rest, dropped } : { speak: null, queue: live, dropped };
+}
+
+// clearAnnouncements(queue) -> { queue: [], dropped }
+//
+// A recap ("what happened while I was out") just said everything sitting in
+// this queue, out loud, in one paragraph -- so leaving it queued would repeat
+// it the moment the floor next comes free. The server clears its own pending
+// map at the same time (see server.js's clear_announcements message); this is
+// the client's half, kept pure and testable the same way every other
+// announcement decision here is. `dropped` mirrors takeAnnouncement's shape so
+// the diagnostics panel can say what happened rather than leaving a silence
+// unexplained.
+export function clearAnnouncements(queue) {
+  const list = Array.isArray(queue) ? queue : [];
+  return { queue: [], dropped: list.length };
 }

@@ -24,16 +24,16 @@ test("stops listening when Chrome reports a microphone permission error", () => 
 test("a phrase Chrome on Android re-delivers at a growing length is not repeated", () => {
   // Exactly what a phone sends: resultIndex pinned at 0, one final result whose
   // transcript grows with every event. Appending each of these produced
-  // "How How are How are you How are you Jarvis".
+  // "How How are How are you How are you Dante".
   const events = [
     [result("How", true)],
     [result("How are", true)],
     [result("How are you", true)],
-    [result("How are you Jarvis", true)],
+    [result("How are you Dante", true)],
   ];
   let finals = [];
   for (const results of events) finals = applyResults(finals, 0, results);
-  assert.equal(mergeTranscript("", finals), "How are you Jarvis");
+  assert.equal(mergeTranscript("", finals), "How are you Dante");
 });
 
 test("a phrase Chrome on Android re-delivers at a growing index is not repeated either", () => {
@@ -68,35 +68,35 @@ test("a revised prefix collapses even when the engine repunctuates it", () => {
 test("a phrase that extends one an earlier session already committed is not repeated", () => {
   // The restart case and the prefix case at once: the new session opens by
   // re-reporting the tail of what the last one heard.
-  assert.equal(mergeTranscript("how are you", ["you Jarvis"]), "how are you Jarvis");
+  assert.equal(mergeTranscript("how are you", ["you Dante"]), "how are you Dante");
 });
 
 test("genuinely new speech is still appended rather than swallowed", () => {
-  assert.equal(mergeTranscript("", ["How are you", "Jarvis"]), "How are you Jarvis");
+  assert.equal(mergeTranscript("", ["How are you", "Dante"]), "How are you Dante");
   assert.equal(mergeTranscript("open the pod bay", ["doors please"]), "open the pod bay doors please");
 });
 
 test("desktop Chrome's one-final-per-index stream still accumulates every phrase", () => {
   let finals = [];
   finals = applyResults(finals, 0, [result("How are you", true)]);
-  finals = applyResults(finals, 1, [result("How are you", true), result("Jarvis", true)]);
-  assert.deepEqual(finals, ["How are you", "Jarvis"]);
-  assert.equal(mergeTranscript("", finals), "How are you Jarvis");
+  finals = applyResults(finals, 1, [result("How are you", true), result("Dante", true)]);
+  assert.deepEqual(finals, ["How are you", "Dante"]);
+  assert.equal(mergeTranscript("", finals), "How are you Dante");
 });
 
 test("an interim transcript is shown after the finals but never committed", () => {
-  const results = [result("How are you", true), result("Jarv", false)];
+  const results = [result("How are you", true), result("Dant", false)];
   const finals = applyResults([], 0, results);
   assert.deepEqual(finals, ["How are you"]);
-  assert.equal(interimOf(0, results), "Jarv");
-  assert.equal(mergeTranscript("", finals, interimOf(0, results)), "How are you Jarv");
+  assert.equal(interimOf(0, results), "Dant");
+  assert.equal(mergeTranscript("", finals, interimOf(0, results)), "How are you Dant");
 });
 
 test("an interim transcript that is later finalised replaces it rather than joining it", () => {
-  let finals = applyResults([], 0, [result("Jarv", false)]);
+  let finals = applyResults([], 0, [result("Dant", false)]);
   assert.deepEqual(finals, []);
-  finals = applyResults(finals, 0, [result("Jarvis", true)]);
-  assert.equal(mergeTranscript("", finals), "Jarvis");
+  finals = applyResults(finals, 0, [result("Dante", true)]);
+  assert.equal(mergeTranscript("", finals), "Dante");
 });
 
 test("restarting the recogniser mid-hold keeps the phrases the earlier session heard", () => {
@@ -104,8 +104,8 @@ test("restarting the recogniser mid-hold keeps the phrases the earlier session h
   // its results from 0 again, so the earlier phrase has to be committed first.
   let finals = applyResults([], 0, [result("How are you", true)]);
   const committed = mergeTranscript("", finals);
-  finals = applyResults([], 0, [result("Jarvis", true)]);
-  assert.equal(mergeTranscript(committed, finals), "How are you Jarvis");
+  finals = applyResults([], 0, [result("Dante", true)]);
+  assert.equal(mergeTranscript(committed, finals), "How are you Dante");
 });
 
 test("applyResults leaves the array it was given untouched", () => {

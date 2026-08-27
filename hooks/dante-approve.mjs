@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Claude Code PreToolUse hook -> jarvis. Asks you out loud before the two
+// Claude Code PreToolUse hook -> Dante. Asks you out loud before the two
 // things worth being interrupted for, and waits for the answer.
 //
-// Unlike hooks/jarvis-notify.mjs this one BLOCKS -- that is the entire point,
+// Unlike hooks/dante-notify.mjs this one BLOCKS -- that is the entire point,
 // because a decision that arrives after the tool ran is not a decision. It
 // still cannot damage the session it is asking about:
 //
 //   - It always exits 0. A non-zero exit is a signal to Claude Code, and
-//     "jarvis is not running" must not become one.
+//     "Dante is not running" must not become one.
 //   - Silence means no decision. Printing nothing lets the session do exactly
 //     what it would have done without this hook installed -- ask you in the
 //     terminal. It never denies for want of a listener.
@@ -16,9 +16,9 @@
 
 import { request } from "node:http";
 
-const PORT = Number(process.env.JARVIS_PORT) || 3210;
+const PORT = Number(process.env.DANTE_PORT) || 3210;
 // Longer than the server's own approval window on purpose, so a timeout here
-// means jarvis is gone rather than that nobody answered.
+// means Dante is gone rather than that nobody answered.
 const TIMEOUT_MS = 90_000;
 const MAX_BODY = 4096;
 
@@ -89,7 +89,7 @@ process.stdin.on("end", () => {
     },
   );
   req.on("timeout", () => { req.destroy(); done(null); });
-  req.on("error", () => done(null)); // jarvis not running is the ordinary case
+  req.on("error", () => done(null)); // Dante not running is the ordinary case
   req.end(body);
 });
 

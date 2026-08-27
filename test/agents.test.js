@@ -314,7 +314,7 @@ async function writeFake(name, body) {
 }
 
 before(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "jarvis-agents-"));
+  workspace = await mkdtemp(join(tmpdir(), "dante-agents-"));
 
   fake.listing = await writeFake("claude-listing.cjs", `console.log(${JSON.stringify(LIVE_LISTING)});`);
 
@@ -674,7 +674,7 @@ const FITNESS = "/home/krane/development/KraneticFitness";
 
 test("a session in a repository you never named does not exist", () => {
   // The one that started this: a claude-mem skill keeps a session running in
-  // its own directory, and jarvis was reading it out loud.
+  // its own directory, and Dante was reading it out loud.
   const roster = rosterOf(
     session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: JARVIS }),
     session({ sessionId: "b-0000000-0000-0000-0000-000000000000", cwd: "/home/krane/.claude-mem/observer-sessions" }),
@@ -719,7 +719,7 @@ test("with nothing named, nothing is visible", () => {
   assert.deepEqual(visibleSessions(roster, { roots: [null, 42, ""] }), []);
 });
 
-test("jarvis's own brain is hidden by id, not by name", () => {
+test("Dante's own brain is hidden by id, not by name", () => {
   // Exact, because "never offer to stop my own brain" must be impossible
   // rather than unlikely -- and the brain runs in the jarvis repo, which is a
   // named workspace, so the whitelist alone would show it.
@@ -737,7 +737,7 @@ test("jarvis's own brain is hidden by id, not by name", () => {
   );
 });
 
-test("a build is hidden by where it runs, because it has no id jarvis knows", () => {
+test("a build is hidden by where it runs, because it has no id Dante knows", () => {
   const builds = `${JARVIS}/builds`;
   const roster = rosterOf(
     session({ sessionId: "a-0000000-0000-0000-0000-000000000000", cwd: `${builds}/2026-08-26T10-00-00`, name: "landing-page" }),
@@ -747,7 +747,7 @@ test("a build is hidden by where it runs, because it has no id jarvis knows", ()
   assert.deepEqual(visible.map((r) => r.name), ["jarvis-1-fix"]);
 });
 
-test("a roster jarvis could not read is not an empty one", () => {
+test("a roster Dante could not read is not an empty one", () => {
   assert.deepEqual(visibleSessions(null, { roots: [JARVIS] }), []);
   assert.deepEqual(visibleSessions(undefined, { roots: [JARVIS] }), []);
   assert.deepEqual(visibleSessions("not a roster", { roots: [JARVIS] }), []);
@@ -806,9 +806,9 @@ test("a filter that throws reads as a failed listing, never as an empty machine"
 const MINE = "1111aaaa-0000-0000-0000-000000000000";
 const YOURS = "2222bbbb-0000-0000-0000-000000000000";
 
-test("a background job jarvis did not start does not fill the ceiling", () => {
+test("a background job Dante did not start does not fill the ceiling", () => {
   // The bug this function exists for. Four background sessions were live, none
-  // of them jarvis's, and every start was refused at four of five.
+  // of them Dante's, and every start was refused at four of five.
   const roster = rosterOf(
     session({ sessionId: YOURS, kind: "background", name: "roadmap-expansion" }),
     session({ sessionId: "3333cccc-0000-0000-0000-000000000000", kind: "background", name: "Empty Environment" }),
@@ -824,7 +824,7 @@ test("only the sessions the store recorded starting are counted", () => {
   assert.equal(ownRunning(roster, { [MINE]: { name: "jarvis-1-fix" } }).running, 1);
 });
 
-test("a session jarvis started that has since died does not count either", () => {
+test("a session Dante started that has since died does not count either", () => {
   // The store keeps the last twenty, live or not; the roster is what says which
   // of them still exist.
   const roster = rosterOf(session({ sessionId: MINE, name: "jarvis-1-fix" }));
@@ -832,7 +832,7 @@ test("a session jarvis started that has since died does not count either", () =>
   assert.equal(ownRunning(roster, remembered).running, 1);
 });
 
-test("the oldest idle one of jarvis's own is the one worth naming", () => {
+test("the oldest idle one of Dante's own is the one worth naming", () => {
   const roster = rosterOf(
     session({ sessionId: MINE, name: "jarvis-1-old", startedAt: 1000, state: "done", status: "idle" }),
     session({ sessionId: YOURS, name: "jarvis-2-newer", startedAt: 9000, state: "done", status: "idle" }),
@@ -861,7 +861,7 @@ test("a session with no start time sorts last rather than first", () => {
 });
 
 test("a store key that is not a session id cannot inflate the count", () => {
-  // The store is JSON off disk. `in` would report every session as jarvis's own
+  // The store is JSON off disk. `in` would report every session as Dante's own
   // for a store carrying a key called "constructor".
   const roster = rosterOf(session({ sessionId: MINE, name: "jarvis-1-fix" }));
   assert.equal(ownRunning(roster, { constructor: {}, __proto__: {} }).running, 0);
