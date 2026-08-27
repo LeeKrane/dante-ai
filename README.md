@@ -118,6 +118,10 @@ fresh `builds/<timestamp>/`, streams the work into the HUD around the orb, and
 opens the page when it's done. One build at a time; a primitive can declare
 `steps: [...]` to run plan → build → verify as a chain in one directory.
 
+Not every primitive produces a page. *"What does this repo do?"* runs
+`ask-repo` — `Read`, `Grep` and `Glob` only, no `Write` or `Edit` on its list —
+and answers the question in prose instead of building anything.
+
 **Sessions.** The point of the thing. Every turn carries a line describing the
 Claude Code sessions running on this machine — from `claude agents --json`, so
 it sees the ones you started in a terminal too — and you can drive them:
@@ -131,6 +135,12 @@ it sees the ones you started in a terminal too — and you can drive them:
   it goes idle, because resuming a working session forks it rather than joining.
 - *"Stop jarvis three"* — SIGTERM, never SIGKILL, and confirmed gone before it
   says so.
+- *"Start a session in jarvis to fix the tests, then run the linter"* — records a
+  successor and starts it the moment the first session **finishes**, not when it
+  succeeds: a Claude Code session exposes no pass/fail verdict, so there is
+  nothing to condition on. A session you stop by voice drops its chain rather
+  than starting it. A chained session counts against the five-session cap like
+  any other.
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and sessions in it are then
@@ -168,6 +178,13 @@ prompt and model only, no tool scope. Ships `review` and `tests`; copy
 
 Start something, walk away, read what came of it on your phone. Slack is the
 durable channel; voice only works when the page is open.
+
+*"Catch me up"* is the voice half of walking away. It comes back as one spoken
+paragraph rather than a list — anything still needing you leads, and is never
+crowded out. It's built from an event log that survives a server restart, so
+it can still tell you what happened even if you closed the lid in between.
+Speaking it clears the log and any queued announcements, so nothing gets said
+twice.
 
 One thread per session: a parent when it starts, replies for everything after.
 Each report carries a one-sentence summary generated from the session's own
@@ -356,6 +373,14 @@ This is permission scoping, not a sandbox, and a deny list names what is known t
 be dangerous rather than allowing only what is known to be safe. A build is real
 code execution on your machine, under your Claude login. Read a primitive before
 you install it. If you want a hard boundary, run the whole thing in a VM.
+
+**`ask-repo`'s read-only claim is carried by the prompt, not by either deny
+layer.** `allowedTools` naming only `Read`, `Grep` and `Glob` is a request, not
+a restriction — `Write` and `Edit` are not on the `--disallowedTools` floor for
+any primitive, and `denyRules()` names credentials, shell startup files and
+this app's own source, never the repository a build was pointed at. So "does
+not write to the repo it reads" is enforced by the system prompt alone, which
+is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
 
 ## When something breaks
 

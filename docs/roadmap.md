@@ -164,8 +164,8 @@ Numbering continues the existing plan doc. **Stages 21–28 are the committed fi
 | 37 | A persona that proposes rather than assumes | — | `lib/brain.js`, `test/brain.test.js`, `README.md` |
 | **E** | **Polish** | | |
 | 38 | Interjection policy | — | `public/playback-policy.js`, `test/playback-policy.test.js`, `public/app.js` |
-| 39 | Sessions in the tree HUD | — | `public/build-hud.js`, `public/app.js`, `public/progress-policy.js` |
-| 40 | Conditional chaining | — | `lib/sessions.js`, `test/sessions.test.js`, `server.js` |
+| 39 | A sessions panel beside the orb | `public/roster-panel.js`, `test/roster-panel.test.js` | `public/app.js`, `public/index.html`, `server.js` |
+| 40 | Chaining, on completion | — | `lib/memory.js`, `server.js` |
 | 41 | "Catch me up" | — | `lib/notify.js`, `lib/memory.js`, `server.js` |
 | 42 | Read-only repo questions | `primitives/ask-repo.mjs` | — |
 
@@ -518,15 +518,23 @@ stale; it already went to Slack, which is the durable channel. Approval requests
 exception and jump the queue, because something is blocked on them. Pure client module, unit-tested
 like the others.
 
-**Stage 39 — sessions in the tree HUD.** `public/build-hud.js` is the most developed UI in the repo
-and it now describes the less important thing. Repoint it: one node per running session, its state
-and elapsed time, its last progress line. Builds keep their existing rendering — this is a second
-tree in the same component, not a replacement.
+**Stage 39 — a sessions panel beside the orb.** `public/build-hud.js` is a 1,000-line canvas spiral
+about one build in one directory; repointing it at several sessions at once, each mostly idle, each
+interesting for its name and how long it has been at it, was the wrong shape for it. What shipped
+instead is a separate `#sessions` list panel (`public/roster-panel.js`) — one row per visible
+session, its state, and its elapsed time ticking locally rather than over the wire, since an age
+changing every second is not worth a message. The HUD is left alone to do the thing it is good at;
+this is a second panel, not a repoint.
 
-**Stage 40 — conditional chaining.** One session may name a successor, started **only on success**;
-a failure reports instead of chaining. The Stage 26 poller already detects both, so this is a small
-table in memory plus a dispatch. Chains are capped in depth and expire, and a chained session
-counts against the five-session cap like any other.
+**Stage 40 — chaining, on completion.** One session may name a successor. The interview called this
+"conditional — chain on success, report on failure," and that turned out not to be implementable: a
+Claude Code session exposes no pass/fail verdict, only `idle` or `gone` from the Stage 26 poller, and
+`reportComplete` has a transcript summary to read rather than a result to check. So a chain fires on
+**completion**, with one carve-out — a session stopped from jarvis itself has its chain dropped,
+because ending something on purpose is not the same as it finishing what it was asked to do. The
+table lives in `lib/memory.js` beside the follow-up queue, bounded the same three ways: depth, age
+and total size. Chains are capped in depth and expire, and a chained session counts against the
+five-session cap like any other.
 
 **Stage 41 — "catch me up."** An event log in the memory store, capped like `artifacts`. "What
 happened while I was out" replays it as one spoken paragraph and clears the announcement queue.
@@ -537,6 +545,10 @@ most code questions is "ask the session already in that repo." But `primitives/a
 `allowedTools: ["Read", "Grep", "Glob"]`, the existing deny floor forbidding everything else,
 answering in prose — covers the case where nothing is running. One file, no wiring, exactly as the
 registry promises.
+
+Phases D and E shipped too, and are in daily use like A–C before them: the visibility and
+confirmation guardrails, and Phase E's announcements, sessions panel, chaining, recap and read-only
+primitive, are all running today.
 
 ---
 
@@ -567,7 +579,9 @@ claude agents --json | head -20                # the record shape above still ho
 claude --help | grep -E -- '--bg|--session-id|-n,|--append-system-prompt|--effort'
 ```
 
-**Per phase, once implemented:**
+**Per phase, once implemented — and none of this has actually been walked through by a person yet.**
+`npm test` passing is automated and green; every checklist below is a person standing in the room
+doing the thing, and for every phase, A through E, that check is still owed.
 
 - **A** — start a session by hand in another repo; ask jarvis "what's running?". It names the repo
   and its state without being told anything. Kill the CLI mid-listing and confirm the turn still
