@@ -20,7 +20,7 @@ test("a session to start is described by where and what", () => {
   );
 });
 
-test("the workspace jarvis resolved beats the alias the model wrote", () => {
+test("the workspace Dante resolved beats the alias the model wrote", () => {
   // They can differ, and the resolved one is where the session actually runs.
   assert.match(
     describeIntent({
@@ -72,7 +72,7 @@ test("a build names what it is building and what it is about", () => {
   );
 });
 
-test("the primitive jarvis resolved beats the one the model named", () => {
+test("the primitive Dante resolved beats the one the model named", () => {
   assert.match(
     describeIntent({ action: { primitive: "landing", params: {} }, primitive: { id: "landing-page" } }),
     /^Build a landing page\./,

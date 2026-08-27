@@ -28,7 +28,7 @@ function validPrimitive(overrides = {}) {
 // directory while fn is still awaiting an import, which only looks fine when
 // the fixture has a single file and the loader wins the race.
 async function withTempPrimitives(files, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-primitives-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-primitives-"));
   try {
     for (const [name, source] of Object.entries(files)) {
       writeFileSync(join(dir, name), source);
@@ -262,7 +262,7 @@ test("accepts a plain directory path as well as a file URL", async () => {
 // PARENT directory, silently loading a same-named primitive from there --
 // including a different allowedTools grant. Loudest possible failure mode.
 test("a directory URL without a trailing slash still loads from that directory", async () => {
-  const root = mkdtempSync(join(tmpdir(), "jarvis-shadow-"));
+  const root = mkdtempSync(join(tmpdir(), "dante-shadow-"));
   try {
     const sub = join(root, "primitives");
     mkdirSync(sub);
@@ -329,7 +329,7 @@ test("rejects a directory argument that is empty or not a path", async () => {
 
 test("reports a missing primitives directory as such", async () => {
   await assert.rejects(
-    () => loadRegistry(join(tmpdir(), "jarvis-does-not-exist-a7f3")),
+    () => loadRegistry(join(tmpdir(), "dante-does-not-exist-a7f3")),
     /cannot read primitives directory/,
   );
 });

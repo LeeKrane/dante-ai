@@ -64,7 +64,7 @@ test("a session with no name is still a session that is running", () => {
   assert.deepEqual(rows.map((r) => r.name), ["unnamed", "unnamed"]);
 });
 
-test("a roster jarvis could not read paints nothing", () => {
+test("a roster Dante could not read paints nothing", () => {
   assert.deepEqual(rowsFromRoster(null, NOW), []);
   assert.deepEqual(rowsFromRoster([], NOW), []);
   assert.deepEqual(rowsFromRoster([null, {}, { sessionId: "" }], NOW), []);

@@ -47,10 +47,10 @@ import {
 // tested as plain data in/data out, the same way test/builder.test.js tests
 // denyRules/buildSettings. Every disk-touching test gets its own temp dir via
 // mkdtempSync and cleans up in a try/finally, so nothing here ever reads or
-// writes the real ~/.config/jarvis/memory.json.
+// writes the real ~/.config/dante/memory.json.
 
 function withTempDir(fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-memory-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-memory-"));
   try {
     return fn(dir);
   } finally {
@@ -373,7 +373,7 @@ test("applyMemoryTag saves the keys that fit and drops only the ones past the ca
 // symlink to /private/var.
 
 function fakeHome() {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "jarvis-home-")));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "dante-home-")));
   mkdirSync(join(home, "development", "jarvis"), { recursive: true });
   mkdirSync(join(home, "development", "KraneticFitness"), { recursive: true });
   return home;
@@ -740,7 +740,7 @@ test("a queue corrupted on disk reads as empty rather than throwing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sessions jarvis started
+// Sessions Dante started
 // ---------------------------------------------------------------------------
 
 test("a started session is remembered by what it was asked to do", () => {

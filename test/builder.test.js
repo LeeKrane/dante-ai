@@ -173,7 +173,7 @@ async function writeFake(name, body) {
 }
 
 before(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "jarvis-builder-"));
+  workspace = await mkdtemp(join(tmpdir(), "dante-builder-"));
 
   fake.success = await writeFake(
     "claude-success.cjs",

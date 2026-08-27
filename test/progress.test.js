@@ -15,7 +15,7 @@ const WRITE = JSON.stringify({
         type: "tool_use",
         name: "Write",
         input: {
-          file_path: "/private/var/folders/xy/T/jarvis-build-1234/index.html",
+          file_path: "/private/var/folders/xy/T/dante-build-1234/index.html",
           content: "<!DOCTYPE html>...",
         },
       },

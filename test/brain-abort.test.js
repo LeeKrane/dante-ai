@@ -34,7 +34,7 @@ const callCount = async () =>
     : 0;
 
 before(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "jarvis-abort-"));
+  workspace = await mkdtemp(join(tmpdir(), "dante-abort-"));
 
   // Answers, but not for a second — long enough to be interrupted.
   fake.slow = await writeFake(

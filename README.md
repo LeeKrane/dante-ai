@@ -1,4 +1,4 @@
-# jarvis-demo
+# dante-demo
 
 Talk to Claude Code out loud. Hold a key, speak, release — your words go to Claude
 Code running headless on your machine, and the reply comes back in a cloned voice
@@ -55,7 +55,7 @@ API*. `SUPABASE_URL` and `SUPABASE_ANON_KEY` in the environment work too, and wi
 over the file.
 
 ```bash
-mkdir -p ~/.config/jarvis && cat > ~/.config/jarvis/supabase.json <<'EOF'
+mkdir -p ~/.config/dante && cat > ~/.config/dante/supabase.json <<'EOF'
 {
   "url": "https://YOUR-PROJECT.supabase.co",
   "anonKey": "YOUR-ANON-KEY-HERE"
@@ -105,7 +105,7 @@ screen changing what it promises. Separate from the `volume` set in
 everyone; this one is local, and it is the only way to go louder than the clip
 Fish actually sent.
 
-**Memory** — `~/.config/jarvis/memory.json`, keyed by the directory the server was
+**Memory** — `~/.config/dante/memory.json`, keyed by the directory the server was
 started in. It keeps the resumable session id, a rolling summary written when you
 close the page, the last ten artifacts, and standing preferences: say *"I always
 want dark palettes"* and the model appends a `[MEMORY:SET palette=dark]` tag that
@@ -134,9 +134,9 @@ it sees the ones you started in a terminal too — and you can drive them:
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and sessions in it are then
-`fitness-1`, `fitness-2`. That list is also the **whitelist**: jarvis only sees
+`fitness-1`, `fitness-2`. That list is also the **whitelist**: Dante only sees
 sessions running inside a repository you named out loud, so another tool's
-background sessions — and jarvis's own brain and builders — never appear, and
+background sessions — and Dante's own brain and builders — never appear, and
 cannot be named, told anything, or stopped.
 
 **It proposes; you decide.** Nothing above runs on the model's say-so. Every
@@ -150,11 +150,11 @@ is what will run:
 > re-proposes the corrected version.
 
 A proposal expires after two minutes and is then not answerable at all. The
-five-session ceiling counts only sessions jarvis itself started — your terminals
+five-session ceiling counts only sessions Dante itself started — your terminals
 and other tools' background jobs are not its business.
 
 These sessions run under **your** settings, permissions, hooks and MCP servers —
-the same session you'd have started by typing `claude` there. Jarvis imposes no
+the same session you'd have started by typing `claude` there. Dante imposes no
 deny list, because you asked for an orchestrator and not a sandbox. What it will
 never do is pass `--dangerously-skip-permissions` or `--permission-mode
 bypassPermissions`, on any path: voice is a lossy channel, and a misheard
@@ -174,7 +174,7 @@ Each report carries a one-sentence summary generated from the session's own
 transcript, because "done" on its own is not news.
 
 ```bash
-mkdir -p ~/.config/jarvis && cat > ~/.config/jarvis/slack.json <<'EOF'
+mkdir -p ~/.config/dante && cat > ~/.config/dante/slack.json <<'EOF'
 {
   "botToken": "xoxb-YOUR-BOT-TOKEN",
   "channel": "C0123456789"
@@ -183,7 +183,7 @@ EOF
 ```
 
 A Slack app with the `chat:write` scope, invited to that channel.
-`JARVIS_SLACK_TOKEN` and `JARVIS_SLACK_CHANNEL` work too and win over the file.
+`DANTE_SLACK_TOKEN` and `DANTE_SLACK_CHANNEL` work too and win over the file.
 Skip this entirely and everything else still works — Slack is an enhancement,
 not a dependency, and an outage costs a notification rather than a turn. It is
 **outbound only**: no Socket Mode, no Events API, nothing anyone types in Slack
@@ -191,30 +191,30 @@ reaches this machine.
 
 The roster poller notices a session ending within five seconds on its own. For
 the fast path — and for a session *blocked on you*, which polling can never see
-— install the hook. **Jarvis never writes `~/.claude/` itself**; its own build
+— install the hook. **Dante never writes `~/.claude/` itself**; its own build
 deny list forbids exactly that, and a hook is code that runs on your next
 session, so paste it yourself:
 
 ```json
 {
   "hooks": {
-    "Stop": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }],
-    "Notification": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-notify.mjs" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-notify.mjs" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-notify.mjs" }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-notify.mjs" }] }]
   }
 }
 ```
 
-It posts to `127.0.0.1:3210/hook` (`JARVIS_PORT` to change it), always exits 0,
-prints nothing and gives up after a second — a jarvis that is down must cost a
-session nothing. Both mechanisms report the same exit; jarvis dedupes so the
+It posts to `127.0.0.1:3210/hook` (`DANTE_PORT` to change it), always exits 0,
+prints nothing and gives up after a second — a Dante that is down must cost a
+session nothing. Both mechanisms report the same exit; Dante dedupes so the
 thread gets one line, not three.
 
 ### It asks before the two things worth asking about
 
 Sessions run under your permissions, so one that hits a permission prompt with
 nobody at the terminal just stops. A `PreToolUse` hook can block and return a
-decision, so jarvis asks you out loud instead and you answer from across the
+decision, so Dante asks you out loud instead and you answer from across the
 room.
 
 > *"jarvis-1-builder-test-fix wants to push to the remote, sir. Allow?"*
@@ -231,7 +231,7 @@ trade for a channel that interrupts you.
   "hooks": {
     "PreToolUse": [{
       "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-      "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/jarvis-approve.mjs", "timeout": 120 }]
+      "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/jarvis/hooks/dante-approve.mjs", "timeout": 120 }]
     }]
   }
 }
@@ -249,7 +249,7 @@ prompt-injected tool description argue for its own approval.
 ## Make it yours
 
 - **`lib/brain.js` → the `VOICE` constant** — who it is and how it talks. It ships
-  as a "JARVIS" character and calls you *sir*. It is the only half of the system
+  as a "DANTE" character and calls you *sir*. It is the only half of the system
   prompt written by hand; what it can build is generated from `primitives/`
   underneath, so rewriting the voice never breaks the builds.
 - **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed, and
