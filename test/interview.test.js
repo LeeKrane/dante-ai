@@ -92,10 +92,15 @@ test("only the last few notes are kept, because a brief has to stay short", () =
 // isLive / matches
 // ---------------------------------------------------------------------------
 
-test("a tag for the same verb matches an interview, a different verb does not, and the repo is not compared", () => {
+test("a tag for the same verb matches an interview, and the repo must match when both are known", () => {
   const state = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis" }, 1000);
-  assert.equal(matches(state, { verb: "start", repo: "fitness" }), true);
-  assert.equal(matches(state, { verb: "START" }), true);
+  assert.equal(matches(state, { verb: "start", repo: "jarvis" }), true);
+  assert.equal(matches(state, { verb: "START", repo: "jarvis" }), true);
+  // An interview about one repo does not match a start in another.
+  assert.equal(matches(state, { verb: "start", repo: "fitness" }), false);
+  // A tag that names no repo still matches.
+  assert.equal(matches(state, { verb: "start" }), true);
+  // A different verb never matches.
   assert.equal(matches(state, { verb: "tell", repo: "jarvis" }), false);
   assert.equal(matches(null, { verb: "start" }), false);
 });
@@ -141,6 +146,12 @@ test("a long sentence that mentions go ahead is not an escape", () => {
 
 test("an ordinary answer to a question is not an escape", () => {
   for (const text of ["fix the failing tests", "in the fitness repo", "yes", "no", ""]) {
+    assert.equal(wantsToProceed(text), false, text);
+  }
+});
+
+test("a refusal that contains an escape phrase is not an escape", () => {
+  for (const text of ["no, do not proceed", "don't just go", "wait, not yet, don't start it"]) {
     assert.equal(wantsToProceed(text), false, text);
   }
 });
@@ -237,4 +248,13 @@ test("a brief is capped and stripped because a model wrote it", () => {
   assert.equal(brief.includes(rlo), false);
   assert.equal(brief.length, MAX_BRIEF_CHARS);
   assert.equal(brief, "x".repeat(MAX_BRIEF_CHARS));
+});
+
+test("a note handed straight to composeBrief is cleaned like everything else", () => {
+  const rlo = String.fromCharCode(0x202e);
+  const result = composeBrief({ task: "build something", notes: [`line 1\nline 2${rlo}`] });
+  // The newline is collapsed to a space, and the override character is stripped.
+  assert.ok(result.includes("line 1 line 2"), `result: ${result}`);
+  assert.equal(result.includes("\n"), false);
+  assert.equal(result.includes(rlo), false);
 });

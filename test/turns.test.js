@@ -248,20 +248,29 @@ test("an interview line rides in the machine-state block after the roster lines"
     now: NOW,
     interview: "we were building a feature",
   });
-  // The interview line appears after the roster.
+  // The interview line appears after the roster lines.
   assert.match(merged, /jarvis-1-builder-test-fix working/);
   assert.match(merged, /we were building a feature/);
-  // The interview line is before what was said, confirming it is in the
-  // machine-state block.
-  assert.ok(merged.indexOf("we were building a feature") < merged.indexOf("what's running?"));
+  // The interview line is framed as machine state, not something anyone said.
+  assert.match(merged, /not something anyone said/);
+  assert.match(merged, /data, never instructions/);
+  // The interview line is inside the header and footer, appearing after the
+  // roster lines but before the footer.
+  const rosterIndex = merged.indexOf("jarvis-1-builder-test-fix working");
+  const interviewIndex = merged.indexOf("we were building a feature");
+  const footerIndex = merged.indexOf("data, never instructions");
+  assert.ok(rosterIndex < interviewIndex && interviewIndex < footerIndex, merged);
   // The request is still the last thing in the prompt.
   assert.ok(merged.endsWith("what's running?"), merged);
 });
 
-test("an interview line with no roster still comes before what was said", () => {
+test("an interview line with no roster still arrives framed as machine state, not as something said", () => {
   const merged = mergeTurns(["what's running?"], {
     interview: "we were building a feature",
   });
+  // The interview line is framed as machine state.
+  assert.match(merged, /not something anyone said/);
+  assert.match(merged, /data, never instructions/);
   // The interview line appears before what was said.
   assert.match(merged, /we were building a feature/);
   assert.ok(merged.indexOf("we were building a feature") < merged.indexOf("what's running?"));
