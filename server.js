@@ -9,6 +9,12 @@ import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import { clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer } from "./lib/confirm.js";
+// `matches` is imported under a longer name because dispatchRead already has a
+// local `matches` (a list of roster records), and a shadowed import is a bug
+// waiting for the first person to use the wrong one.
+import {
+  composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, wantsToProceed,
+} from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
@@ -606,6 +612,7 @@ async function proposeSession(send, conv, session, roster) {
     spoken,
     at: Date.now(),
   };
+  activity(send, "proposing", { subject: target?.name ?? session.name ?? session.repo, brief: session.brief || undefined });
   log(`proposed: ${spoken}`);
   await say(send, spoken);
 }
@@ -621,6 +628,7 @@ async function answerProposal(send, conv, text) {
   // about, and there is a real process on the end of it.
   if (!isAnswerable(proposal.at)) {
     conv.proposal = null;
+    activity(send, null);
     log("proposal expired");
     return false;
   }
@@ -631,12 +639,18 @@ async function answerProposal(send, conv, text) {
   // in context, so "no, the whole repo" re-proposes correctly by itself.
   if (answer === "amend") {
     conv.proposal = null;
+    activity(send, null);
     log(`proposal amended: ${JSON.stringify(text)}`);
     return false;
   }
 
   conv.proposal = null;
   if (answer === "no") {
+    // A declined proposal ends the interview that produced it: the picture it
+    // was drawn from was just rejected, and resuming that interview later
+    // would fold a fresh conversation's answers into a plan already declined.
+    conv.interview = null;
+    activity(send, null);
     log("proposal declined");
     await say(send, "Very good, sir. Leaving it.");
     return true;
@@ -1037,6 +1051,17 @@ async function say(send, text, nextState, stillCurrent) {
   return true;
 }
 
+// What the page shows under the state label: a short gerund naming what Dante
+// is doing right now, plus whatever names the thing it is doing it to. `value`
+// is one of interviewing | proposing | starting | telling | interrupting |
+// stopping | reading | building | null (null clears the label). `subject`
+// names the session, repo, or primitive involved. `brief` rides only alongside
+// "proposing", because the spoken sentence only summarises the brief and the
+// person is being asked to approve the full text, which the page can then show.
+function activity(send, value, extra = {}) {
+  send({ type: "activity", value, ...extra });
+}
+
 // Two things the assistant has to say in one breath sound like conversation;
 // two separate clips with a synthesis gap between them sound like a machine
 // reading a list. Used to fuse an acknowledgement onto the question that
@@ -1116,30 +1141,35 @@ async function dispatchStop(send, session, preamble, roster) {
   const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
   if (!record) return;
 
-  send({ type: "state", value: "thinking" });
-  const result = await stopSession(record);
-  if (!result.ok) {
-    log(`stop ${record.name} failed: ${result.error}`);
-    await say(send, joinSpoken(preamble, `I could not stop ${record.name}, sir. ${result.error}.`));
-    return;
-  }
+  activity(send, "stopping", { subject: record.name });
+  try {
+    send({ type: "state", value: "thinking" });
+    const result = await stopSession(record);
+    if (!result.ok) {
+      log(`stop ${record.name} failed: ${result.error}`);
+      await say(send, joinSpoken(preamble, `I could not stop ${record.name}, sir. ${result.error}.`));
+      return;
+    }
 
-  // Anything still waiting for it can never be delivered now.
-  takeQueued(memoryStore, record.sessionId);
-  // Noted so the report when it leaves the roster says it was stopped rather
-  // than that it finished -- which are different things to read at midnight.
-  // Only for sessions Dante started: writing a record here for a terminal
-  // somebody was sitting at would turn "Dante stopped it" into a Slack post
-  // about a session Slack has never heard of.
-  if (getSessionRecord(memoryStore, record.sessionId)) {
-    rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
+    // Anything still waiting for it can never be delivered now.
+    takeQueued(memoryStore, record.sessionId);
+    // Noted so the report when it leaves the roster says it was stopped rather
+    // than that it finished -- which are different things to read at midnight.
+    // Only for sessions Dante started: writing a record here for a terminal
+    // somebody was sitting at would turn "Dante stopped it" into a Slack post
+    // about a session Slack has never heard of.
+    if (getSessionRecord(memoryStore, record.sessionId)) {
+      rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
+    }
+    saveStore(memoryStore);
+    log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
+    await say(
+      send,
+      joinSpoken(preamble, result.alreadyGone ? `${record.name} had already finished, sir.` : `${record.name} is stopped, sir.`),
+    );
+  } finally {
+    activity(send, null);
   }
-  saveStore(memoryStore);
-  log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
-  await say(
-    send,
-    joinSpoken(preamble, result.alreadyGone ? `${record.name} had already finished, sir.` : `${record.name} is stopped, sir.`),
-  );
 }
 
 // Pass something on to a session that is already running.
@@ -1157,79 +1187,92 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
   const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
   if (!record) return;
 
-  const text = session.task ?? session.text ?? session.message;
-  // Checked before the busy branch: without this, a tag with no message at all
-  // reports a full queue, which is a different problem with a different fix.
-  if (typeof text !== "string" || text.trim() === "") {
-    await say(send, joinSpoken(preamble, `What should I tell ${record.name}, sir?`));
-    return;
-  }
-
-  const plan = planDelivery(verb, text);
-  // Text that is non-empty but cleans to nothing (control characters, stray
-  // whitespace) is the same problem the empty-text check above exists for, so
-  // it gets the same question rather than a second branch that says the same
-  // thing differently.
-  if (!plan) {
-    await say(send, joinSpoken(preamble, `What should I tell ${record.name}, sir?`));
-    return;
-  }
-
-  send({ type: "state", value: "thinking" });
-  const delivered = await sendToSession({
-    pid: record.pid,
-    sessionId: record.sessionId,
-    text: plan.content,
-    priority: plan.priority,
-  });
-  if (delivered.ok) {
-    log(`${verb === "interrupt" ? "interrupted" : "told"} ${record.name} over the peer channel`);
-    // "has it" is as far as this can honestly go: sendToSession resolving ok
-    // means the frame reached the session's socket, not that the model has
-    // read it, acted on it, or replied -- the CLI sends no acknowledgement for
-    // a user frame at all.
-    await say(
-      send,
-      joinSpoken(
-        preamble,
-        verb === "interrupt" ? `${record.name} is interrupted and has it, sir.` : `${record.name} has it, sir.`,
-      ),
-    );
-    return;
-  }
-  log(`peer send to ${record.name} failed: ${delivered.error}`);
-
-  // Fallback: no peer address for this session (older CLI, or the state file
-  // this reads did not exist). The gate below is the whole reason this path
-  // used to be the only one. Resuming a session that is CURRENTLY WORKING is
-  // not a join: two processes on one session id is the race askResilient and
-  // conv.settled exist to prevent inside Dante, and it is worse across
-  // processes. So a busy session gets the message queued, and the roster
-  // poller delivers it on the first tick that sees it idle.
-  if (isWorking(record)) {
-    const queued = queueForSession(memoryStore, record.sessionId, text);
-    if (!queued) {
-      await say(send, joinSpoken(preamble, `${record.name} already has as much waiting as I will hold, sir.`));
+  activity(send, verb === "interrupt" ? "interrupting" : "telling", { subject: record.name });
+  // A finally rather than an activity(send, null) before each return: this
+  // function alone has eight early returns below, and a single missed one
+  // would leave "telling jarvis-1" on screen for a session that was never
+  // actually told.
+  try {
+    // A brief composed from an interview is what the session should hear --
+    // the task is only its label. Written as `||` over `(task ?? text ??
+    // message)` rather than a chain of `??`, so an empty-string brief (never
+    // written) does not win over a real task the way `??` alone would let it.
+    const text = session.brief || (session.task ?? session.text ?? session.message);
+    // Checked before the busy branch: without this, a tag with no message at all
+    // reports a full queue, which is a different problem with a different fix.
+    if (typeof text !== "string" || text.trim() === "") {
+      await say(send, joinSpoken(preamble, `What should I tell ${record.name}, sir?`));
       return;
     }
-    saveStore(memoryStore);
-    log(`queued for ${record.name}: ${JSON.stringify(queued)}`);
-    // Said plainly, because "queued" and "told" are different promises and the
-    // difference is minutes.
-    await say(send, joinSpoken(preamble, `${record.name} is busy, sir. I will pass it on when it stops.`));
-    return;
-  }
 
-  // No second "thinking" send here: the peer attempt above already sent one,
-  // and by this point in the fallback that state is still current.
-  const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
-  if (!result.ok) {
-    log(`tell ${record.name} failed: ${result.error}`);
-    await say(send, joinSpoken(preamble, `${record.name} would not take that, sir. ${result.error}.`));
-    return;
+    const plan = planDelivery(verb, text);
+    // Text that is non-empty but cleans to nothing (control characters, stray
+    // whitespace) is the same problem the empty-text check above exists for, so
+    // it gets the same question rather than a second branch that says the same
+    // thing differently.
+    if (!plan) {
+      await say(send, joinSpoken(preamble, `What should I tell ${record.name}, sir?`));
+      return;
+    }
+
+    send({ type: "state", value: "thinking" });
+    const delivered = await sendToSession({
+      pid: record.pid,
+      sessionId: record.sessionId,
+      text: plan.content,
+      priority: plan.priority,
+    });
+    if (delivered.ok) {
+      log(`${verb === "interrupt" ? "interrupted" : "told"} ${record.name} over the peer channel`);
+      // "has it" is as far as this can honestly go: sendToSession resolving ok
+      // means the frame reached the session's socket, not that the model has
+      // read it, acted on it, or replied -- the CLI sends no acknowledgement for
+      // a user frame at all.
+      await say(
+        send,
+        joinSpoken(
+          preamble,
+          verb === "interrupt" ? `${record.name} is interrupted and has it, sir.` : `${record.name} has it, sir.`,
+        ),
+      );
+      return;
+    }
+    log(`peer send to ${record.name} failed: ${delivered.error}`);
+
+    // Fallback: no peer address for this session (older CLI, or the state file
+    // this reads did not exist). The gate below is the whole reason this path
+    // used to be the only one. Resuming a session that is CURRENTLY WORKING is
+    // not a join: two processes on one session id is the race askResilient and
+    // conv.settled exist to prevent inside Dante, and it is worse across
+    // processes. So a busy session gets the message queued, and the roster
+    // poller delivers it on the first tick that sees it idle.
+    if (isWorking(record)) {
+      const queued = queueForSession(memoryStore, record.sessionId, text);
+      if (!queued) {
+        await say(send, joinSpoken(preamble, `${record.name} already has as much waiting as I will hold, sir.`));
+        return;
+      }
+      saveStore(memoryStore);
+      log(`queued for ${record.name}: ${JSON.stringify(queued)}`);
+      // Said plainly, because "queued" and "told" are different promises and the
+      // difference is minutes.
+      await say(send, joinSpoken(preamble, `${record.name} is busy, sir. I will pass it on when it stops.`));
+      return;
+    }
+
+    // No second "thinking" send here: the peer attempt above already sent one,
+    // and by this point in the fallback that state is still current.
+    const result = await tellSession({ sessionId: record.sessionId, cwd: record.cwd, text });
+    if (!result.ok) {
+      log(`tell ${record.name} failed: ${result.error}`);
+      await say(send, joinSpoken(preamble, `${record.name} would not take that, sir. ${result.error}.`));
+      return;
+    }
+    log(`told ${record.name}`);
+    await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
+  } finally {
+    activity(send, null);
   }
-  log(`told ${record.name}`);
-  await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
 }
 
 // Every session that can be asked about right now: what Dante remembers
@@ -1280,31 +1323,36 @@ async function dispatchRead(send, session, preamble, roster) {
   const record = matches[0];
   const question = session.question ?? session.task ?? session.text ?? session.message;
 
-  send({ type: "state", value: "thinking" });
-  const { text, reason } = await readSession({
-    cwd: record.cwd, sessionId: record.sessionId, task: record.task, question,
-  });
+  activity(send, "reading", { subject: record.name });
+  try {
+    send({ type: "state", value: "thinking" });
+    const { text, reason } = await readSession({
+      cwd: record.cwd, sessionId: record.sessionId, task: record.task, question,
+    });
 
-  if (!text) {
-    log(`read ${record.name} failed: ${reason}`);
+    if (!text) {
+      log(`read ${record.name} failed: ${reason}`);
+      await say(send, joinSpoken(
+        preamble,
+        reason === "no-transcript"
+          ? `${record.name} left nothing I can read, sir.`
+          : `I could not read ${record.name} back, sir.`,
+      ));
+      return;
+    }
+
+    log(`read ${record.name} (${text.length} chars)`);
+    // Said plainly when the session is still going, because "it decided X" and
+    // "it has decided X so far" are different facts and the difference is whether
+    // to act on it. `running` is null when the listing failed, and then nothing is
+    // claimed either way rather than something being guessed.
     await say(send, joinSpoken(
       preamble,
-      reason === "no-transcript"
-        ? `${record.name} left nothing I can read, sir.`
-        : `I could not read ${record.name} back, sir.`,
+      record.running === true ? `${record.name} is still working, sir. So far: ${text}` : text,
     ));
-    return;
+  } finally {
+    activity(send, null);
   }
-
-  log(`read ${record.name} (${text.length} chars)`);
-  // Said plainly when the session is still going, because "it decided X" and
-  // "it has decided X so far" are different facts and the difference is whether
-  // to act on it. `running` is null when the listing failed, and then nothing is
-  // claimed either way rather than something being guessed.
-  await say(send, joinSpoken(
-    preamble,
-    record.running === true ? `${record.name} is still working, sir. So far: ${text}` : text,
-  ));
 }
 
 // "What happened while I was out." Reads the event log back as one spoken
@@ -1382,20 +1430,27 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     return;
   }
 
-  const started = await beginSession({ workspace, task: session.task, kind: session.kind, taken: live, then: session.then });
+  activity(send, "starting", { subject: workspace?.alias });
+  try {
+    const started = await beginSession({
+      workspace, task: session.task, kind: session.kind, taken: live, then: session.then, brief: session.brief,
+    });
 
-  if (!started.ok) {
-    log(`session start failed name=${started.name} ${started.error}`);
-    send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
-    await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
-    return;
+    if (!started.ok) {
+      log(`session start failed name=${started.name} ${started.error}`);
+      send({ type: "debug", stage: "session", msg: `start failed: ${started.error}` });
+      await say(send, joinSpoken(preamble, `That session would not start, sir. ${started.error}.`));
+      return;
+    }
+
+    send({ type: "debug", stage: "session", msg: `started ${started.name}` });
+    // The preamble is the model's own confirmation, which is usually the whole
+    // sentence. The name is added because it is how every later command refers to
+    // this session, and hearing it once is what makes "stop jarvis three" possible.
+    await say(send, joinSpoken(preamble, `Running as ${started.name}.`));
+  } finally {
+    activity(send, null);
   }
-
-  send({ type: "debug", stage: "session", msg: `started ${started.name}` });
-  // The preamble is the model's own confirmation, which is usually the whole
-  // sentence. The name is added because it is how every later command refers to
-  // this session, and hearing it once is what makes "stop jarvis three" possible.
-  await say(send, joinSpoken(preamble, `Running as ${started.name}.`));
 }
 
 // Everything about starting a session that has nothing to do with a browser:
@@ -1405,7 +1460,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 // socket in sight, and it must be started exactly the way a spoken one is --
 // same numbering, same naming, same thread. A second implementation would drift
 // on the first change to either.
-async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0 }) {
+async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined }) {
   const kind = sessionKinds.get(kindId) ?? null;
   // Reserved before the spawn, not after: two requests in flight must not be
   // handed the same number, and a number burned by a failed start is cheaper
@@ -1424,6 +1479,7 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     sessionId,
     cwd: workspace.path,
     task,
+    brief,
     systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
     effort: kind?.effort,
@@ -1517,78 +1573,83 @@ async function build(send, primitive, params, preamble = "") {
     return;
   }
 
-  let started = Date.now();
-  let outcome;
+  activity(send, "building", { subject: primitive.id });
   try {
-    // Confirm out loud BEFORE the HUD takes over. Someone who just answered a
-    // question needs to hear that the answer landed; a silent jump to the build
-    // readout reads as the assistant ignoring them. `nextState` hands the orb to
-    // the HUD when this line finishes rather than racing it.
-    const kickoff = typeof primitive.startLine === "function"
-      ? primitive.startLine(params)
-      : "Starting now, sir.";
-    await say(send, joinSpoken(preamble, kickoff), "working");
+    let started = Date.now();
+    let outcome;
+    try {
+      // Confirm out loud BEFORE the HUD takes over. Someone who just answered a
+      // question needs to hear that the answer landed; a silent jump to the build
+      // readout reads as the assistant ignoring them. `nextState` hands the orb to
+      // the HUD when this line finishes rather than racing it.
+      const kickoff = typeof primitive.startLine === "function"
+        ? primitive.startLine(params)
+        : "Starting now, sir.";
+      await say(send, joinSpoken(preamble, kickoff), "working");
 
-    started = Date.now();
-    log(`build start primitive=${primitive.id} params=${JSON.stringify(params)}`);
-    outcome = await runBuild(primitive, params, (line) => send({ type: "progress", line }));
-  } finally {
-    // Released the moment the CLI is done and before a word is spoken about it,
-    // so a Fish outage — while announcing the start or while reporting the
-    // result — cannot leave the slot claimed and lock the machine out of ever
-    // building again.
-    releaseSlot();
-  }
+      started = Date.now();
+      log(`build start primitive=${primitive.id} params=${JSON.stringify(params)}`);
+      outcome = await runBuild(primitive, params, (line) => send({ type: "progress", line }));
+    } finally {
+      // Released the moment the CLI is done and before a word is spoken about it,
+      // so a Fish outage — while announcing the start or while reporting the
+      // result — cannot leave the slot claimed and lock the machine out of ever
+      // building again.
+      releaseSlot();
+    }
 
-  const ms = Date.now() - started;
-  const dir = basename(outcome.dir);
-  log(`build finish primitive=${primitive.id} ok=${outcome.ok} ${ms}ms dir=${dir}`);
+    const ms = Date.now() - started;
+    const dir = basename(outcome.dir);
+    log(`build finish primitive=${primitive.id} ok=${outcome.ok} ${ms}ms dir=${dir}`);
 
-  if (outcome.ok) {
-    // The basename, never the absolute path: it is the same token the /builds/
-    // route uses, and it keeps a home directory out of a file whose contents are
-    // read back into a system prompt on every future turn.
-    recordArtifact(memoryStore, PROJECT_KEY, {
-      primitive: primitive.id,
-      dir,
+    if (outcome.ok) {
+      // The basename, never the absolute path: it is the same token the /builds/
+      // route uses, and it keeps a home directory out of a file whose contents are
+      // read back into a system prompt on every future turn.
+      recordArtifact(memoryStore, PROJECT_KEY, {
+        primitive: primitive.id,
+        dir,
+        outputContract: primitive.outputContract,
+      });
+      saveStore(memoryStore);
+      refreshPersona();
+
+      await say(send, primitive.doneLine(params));
+      // Served by the /builds/ route above. Encoded because a primitive's output
+      // contract is a filename, and filenames are allowed to contain spaces.
+      send({ type: "open", url: encodeURI(`${BUILDS_URL}${dir}/${primitive.outputContract}`) });
+      // No "idle" here. say() returns once the audio has been SENT, not once it has
+      // been heard, and the browser handles each message as it arrives — so an idle
+      // sent now lands while the done-line is still playing and drops the orb dead
+      // mid-sentence. Playback ending is what returns it to idle.
+      return;
+    }
+
+    // builder.run() reports an outcome rather than an exit code. A terminal result
+    // event that is not an error means the CLI finished its turn cleanly, which is
+    // what an exit code of 0 tells describeFailure — and it is the difference
+    // between "the build stopped" and the far more useful "the build finished but
+    // never wrote index.html".
+    const code = outcome.result && outcome.result.is_error !== true ? 0 : undefined;
+    const trouble = describeFailure({
+      code,
+      dir: outcome.dir,
       outputContract: primitive.outputContract,
-    });
-    saveStore(memoryStore);
-    refreshPersona();
+      result: outcome.result,
+      timedOut: outcome.timedOut,
+      // Only a chain sets this; a single-shot outcome has no such key, and
+      // describeFailure leaves the sentence alone when it is absent.
+      failedStep: outcome.failedStep,
+    }) || "The build did not finish.";
 
-    await say(send, primitive.doneLine(params));
-    // Served by the /builds/ route above. Encoded because a primitive's output
-    // contract is a filename, and filenames are allowed to contain spaces.
-    send({ type: "open", url: encodeURI(`${BUILDS_URL}${dir}/${primitive.outputContract}`) });
-    // No "idle" here. say() returns once the audio has been SENT, not once it has
-    // been heard, and the browser handles each message as it arrives — so an idle
-    // sent now lands while the done-line is still playing and drops the orb dead
-    // mid-sentence. Playback ending is what returns it to idle.
-    return;
+    await say(send, `${trouble} Nothing is broken, sir. Say the word and I'll try again.`);
+    // The log path is the one thing worth reading afterwards, so it goes on screen
+    // rather than into the spoken line.
+    send({ type: "error", message: outcome.log ? `${trouble} Full log: ${outcome.log}` : trouble });
+    send({ type: "state", value: "idle" });
+  } finally {
+    activity(send, null);
   }
-
-  // builder.run() reports an outcome rather than an exit code. A terminal result
-  // event that is not an error means the CLI finished its turn cleanly, which is
-  // what an exit code of 0 tells describeFailure — and it is the difference
-  // between "the build stopped" and the far more useful "the build finished but
-  // never wrote index.html".
-  const code = outcome.result && outcome.result.is_error !== true ? 0 : undefined;
-  const trouble = describeFailure({
-    code,
-    dir: outcome.dir,
-    outputContract: primitive.outputContract,
-    result: outcome.result,
-    timedOut: outcome.timedOut,
-    // Only a chain sets this; a single-shot outcome has no such key, and
-    // describeFailure leaves the sentence alone when it is absent.
-    failedStep: outcome.failedStep,
-  }) || "The build did not finish.";
-
-  await say(send, `${trouble} Nothing is broken, sir. Say the word and I'll try again.`);
-  // The log path is the one thing worth reading afterwards, so it goes on screen
-  // rather than into the spoken line.
-  send({ type: "error", message: outcome.log ? `${trouble} Full log: ${outcome.log}` : trouble });
-  send({ type: "state", value: "idle" });
 }
 
 // ---------------------------------------------------------------------------
@@ -1695,7 +1756,7 @@ wss.on("connection", (ws) => {
   // the call in flight, and `settled` is how the next one waits for the abandoned
   // child to finish dying -- two of them resuming one session id at the same
   // time is the race this whole arrangement exists to avoid.
-  const conv = { pending: null, proposal: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
+  const conv = { pending: null, proposal: null, interview: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
   const gate = createTurnGate();
 
   // Read fresh from the store rather than from a boot-time snapshot: a second
@@ -1775,6 +1836,21 @@ wss.on("connection", (ws) => {
       // it would have been. The roster is a nicety; answering is not.
       const roster = await listing;
 
+      // An interview nobody has touched for ten minutes is over, and the label
+      // saying one is on must not outlive it: interviewBlock would already say
+      // nothing about it, so this only makes the page agree with the model.
+      if (conv.interview && !isLive(conv.interview)) {
+        conv.interview = null;
+        activity(send, null);
+        log("interview expired");
+      }
+
+      // The escape phrase is read here, once, so the machine-state line built
+      // below carries the decision even if the model asks another question
+      // anyway -- interviewBlock's tail then tells it to stop regardless of
+      // what it was about to do.
+      if (isLive(conv.interview) && wantsToProceed(msg.text)) conv.interview = markProceed(conv.interview);
+
       // Read in the same tick as the list itself, so it counts exactly the
       // sentences this call was asked about and nothing that arrives behind it.
       // The recallable list rides along for the same reason the roster does: a
@@ -1782,6 +1858,7 @@ wss.on("connection", (ws) => {
       // never heard the name it is being asked about.
       const asked = mergeTurns(conv.unanswered, {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
+        interview: interviewBlock(conv.interview),
       });
       const answering = conv.unanswered.length;
 
@@ -1858,6 +1935,40 @@ wss.on("connection", (ws) => {
       // sentences this reply addressed come off, so one said during synthesis is
       // still waiting afterwards.
       if (session) {
+        // The question IS the reply here: it is not confirmed and not
+        // dispatched, because letting it reach dispatchSession would speak
+        // dispatchSession's unknown-verb fallback ("I can start a session,
+        // talk to one...") instead of the question just asked. needsConfirmation
+        // is false for "interview", so without this branch it would fall
+        // through to dispatchSession below -- that is the bug this branch
+        // exists to prevent.
+        if (session.verb === "interview") {
+          conv.interview = noteInterview(conv.interview, session);
+          activity(send, "interviewing", { subject: conv.interview.repo || undefined });
+          log(`interview asked ${conv.interview.asked} (repo=${conv.interview.repo || "none"}, notes=${conv.interview.notes.length})`);
+          // A tag with no question in front of it is a model that forgot the
+          // question. It still counts -- the tally is what stops an interview
+          // going on forever -- but there is nothing to speak.
+          if (!reply) {
+            dropAnswered(conv.unanswered, answering);
+            log("interview tag carried no question");
+            return;
+          }
+          if (await say(send, reply, undefined, () => gate.isCurrent(token))) {
+            dropAnswered(conv.unanswered, answering);
+          }
+          return;
+        }
+
+        // The interview is spent the moment its command is proposed: its
+        // notes become the brief when the model did not write one itself, and
+        // the state is cleared here so a later, unrelated session tag never
+        // folds stale notes into a brief that has nothing to do with them.
+        if (isLive(conv.interview) && matchesInterview(conv.interview, session)) {
+          session.brief = composeBrief({ task: session.task, brief: session.brief, notes: conv.interview.notes });
+          conv.interview = null;
+        }
+
         // The request is settled either way: it is now a proposal waiting on a
         // yes, or it was refused or asked about before ever becoming one.
         dropAnswered(conv.unanswered, answering);
@@ -1910,6 +2021,7 @@ wss.on("connection", (ws) => {
     sessions.delete(ws);
     conv.pending = null;
     conv.proposal = null;
+    conv.interview = null;
     // A question already asked is left to time out rather than answered by a
     // closing tab. Nothing is decided by a page going away.
     if (voice === send) voice = null;
