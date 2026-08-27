@@ -9,7 +9,8 @@ import { formatEvent } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import { describeIntent, isAnswerable, readAnswer } from "./lib/confirm.js";
-import { summarizeSession } from "./lib/transcript.js";
+import { readSession, summarizeSession } from "./lib/transcript.js";
+import { recallableSessions } from "./lib/recall.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
@@ -176,6 +177,12 @@ async function reportComplete(sessionId, context = {}) {
     name: remembered.name ?? context.name,
     durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
     // Up to ~25 s of Haiku, and worth it: "done" without it is not news.
+    //
+    // Posted, and deliberately not kept. Storing it would make jarvis able to
+    // answer "what did that session do" out of its own pocket after the session
+    // itself was deleted, which is a copy of somebody's work living somewhere
+    // they did not put it. What a session produced is readable for exactly as
+    // long as the session is -- see the note above dispatchRead.
     summary: await summarizeSession({
       cwd: context.cwd || remembered.cwd,
       sessionId,
@@ -910,6 +917,79 @@ async function dispatchTell(send, session, preamble, roster) {
   await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
 }
 
+// Every session that can be asked about right now: what jarvis remembers
+// starting, minus what has aged out, plus what is running, all inside the
+// repositories named out loud. Built here rather than cached because the two
+// inputs both move -- the roster every five seconds, the workspace list the
+// moment somebody names a repo mid-conversation.
+function recallable(roster) {
+  return recallableSessions(getSessions(memoryStore), roster, {
+    roots: Object.values(workspacePaths(memoryStore)),
+  });
+}
+
+// What a session did, read back out loud.
+//
+// The only verb here that answers rather than acts, and the only one that is not
+// proposed first (see the note in lib/confirm.js). It resolves a name against
+// sessions that have FINISHED as well as ones still running, which is the whole
+// point: the moment a session ends it falls off the roster, and that is exactly
+// when someone wants to know what came of it.
+//
+// It reads the session's own transcript, live or finished -- the same thing
+// anyone would see by opening that session in a terminal and scrolling back.
+// Nothing about a finished session is kept anywhere else, so a deleted session
+// is simply not readable: there is no cached answer standing in for it.
+async function dispatchRead(send, session, preamble, roster) {
+  const candidates = recallable(roster);
+  // Deliberately not resolveSession: that one resolves against the live roster,
+  // and every session this is for has left it. The matcher is the same
+  // (matchSessions works on anything carrying a name), so "jarvis three" finds
+  // jarvis-3-fix-failing-builder-test here exactly as it does for a stop.
+  const matches = matchSessions(candidates, session.name ?? session.repo);
+  if (matches.length === 0) {
+    await say(send, joinSpoken(preamble, "I have nothing readable by that name, sir."));
+    return;
+  }
+  if (matches.length > 1) {
+    // Never the first of several. Reading the wrong session's work back is a
+    // quieter mistake than stopping the wrong process, but it is still an answer
+    // about work that was never done.
+    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
+    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
+    return;
+  }
+
+  const record = matches[0];
+  const question = session.question ?? session.task ?? session.text ?? session.message;
+
+  send({ type: "state", value: "thinking" });
+  const { text, reason } = await readSession({
+    cwd: record.cwd, sessionId: record.sessionId, task: record.task, question,
+  });
+
+  if (!text) {
+    log(`read ${record.name} failed: ${reason}`);
+    await say(send, joinSpoken(
+      preamble,
+      reason === "no-transcript"
+        ? `${record.name} left nothing I can read, sir.`
+        : `I could not read ${record.name} back, sir.`,
+    ));
+    return;
+  }
+
+  log(`read ${record.name} (${text.length} chars)`);
+  // Said plainly when the session is still going, because "it decided X" and
+  // "it has decided X so far" are different facts and the difference is whether
+  // to act on it. `running` is null when the listing failed, and then nothing is
+  // claimed either way rather than something being guessed.
+  await say(send, joinSpoken(
+    preamble,
+    record.running === true ? `${record.name} is still working, sir. So far: ${text}` : text,
+  ));
+}
+
 // Start a real Claude Code session in one of the workspaces, and say one
 // sentence about it. Everything that decides anything lives in lib/ -- which
 // repository (getWorkspace), whether to at all (refuseStart), what to call it
@@ -928,10 +1008,14 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     await dispatchStop(send, session, preamble, roster);
     return;
   }
+  if (session.verb === "read") {
+    await dispatchRead(send, session, preamble, roster);
+    return;
+  }
   if (session.verb !== "start") {
     // Saying so is better than silence: the tag was stripped, so otherwise
     // nothing would happen and nothing would explain why.
-    await say(send, joinSpoken(preamble, "I can start a session, talk to one, or stop one, sir."));
+    await say(send, joinSpoken(preamble, "I can start a session, talk to one, stop one, or read one back, sir."));
     return;
   }
 
@@ -1322,7 +1406,12 @@ wss.on("connection", (ws) => {
 
       // Read in the same tick as the list itself, so it counts exactly the
       // sentences this call was asked about and nothing that arrives behind it.
-      const asked = mergeTurns(conv.unanswered, { roster, aliases: workspacePaths(memoryStore) });
+      // The recallable list rides along for the same reason the roster does: a
+      // finished session appears in no listing, so without it the model has
+      // never heard the name it is being asked about.
+      const asked = mergeTurns(conv.unanswered, {
+        roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
+      });
       const answering = conv.unanswered.length;
 
       let spoken, sessionId, recovered;

@@ -148,7 +148,30 @@ test("the persona forbids stopping or telling a session nobody asked about", () 
   // different, working session STOPPED.
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /NEVER emit verb=tell or verb=stop unless Jesse asked you, in this turn/);
-  assert.match(persona, /running-sessions line is something\s+you were told about/);
+  assert.match(persona, /machine-state lines is something\s+you were told about/);
+});
+
+test("the persona teaches reading a finished session back, or the verb is unreachable", () => {
+  // The turn names finished sessions, and the dispatcher can read one, but
+  // neither happens unless the model has been told the verb exists.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=read name=<session name> question=/);
+  assert.match(persona, /FINISHED as well as one still running/);
+});
+
+test("reading is taught as the only way to know what a session did", () => {
+  // A model that answers "what did jarvis three find?" from its own knowledge is
+  // inventing an answer about work it has never seen, and it will sound certain.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /never answer such a question from your own knowledge/);
+});
+
+test("a read is taught as running straight away, unlike the three that are proposed", () => {
+  // It is the one verb lib/confirm.js deliberately cannot describe, so the
+  // persona must not promise a confirmation nobody is going to be asked for.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /A start, tell or stop tag is a PROPOSAL, not an act/);
+  assert.match(persona, /verb=read is the exception/);
 });
 
 test("the persona says to ask rather than fill a gap in, on both tags", () => {

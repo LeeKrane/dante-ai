@@ -131,6 +131,22 @@ it sees the ones you started in a terminal too — and you can drive them:
   it goes idle, because resuming a working session forks it rather than joining.
 - *"Stop jarvis three"* — SIGTERM, never SIGKILL, and confirmed gone before it
   says so.
+- *"What did jarvis three come up with?"* — reads that session's transcript and
+  speaks the answer. Works on a session still working (*"it's still working,
+  sir. So far…"*) and on one that has finished, and takes a real question:
+  *"did its tests pass?"*, *"which files did it touch?"*
+
+Reading is the one command that is **not** proposed first. The other three
+reach a live process, so a misheard sentence must not be able to move one;
+reading touches nothing, and putting a *"Shall I, sir?"* in front of every
+question about your own work would be a spoken round trip for nothing.
+
+**It reads the session, not a copy of it.** The source is the transcript Claude
+Code itself keeps — the same thing you would see by opening that session in a
+terminal and scrolling back. Nothing is summarized ahead of time and nothing is
+cached: delete a session and it stops being readable that instant, with nothing
+left behind to answer in its place. The one-line summary that goes to Slack when
+a session ends is posted and forgotten, deliberately, for the same reason.
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and sessions in it are then
@@ -326,6 +342,19 @@ voice phrase anywhere can pass `--dangerously-skip-permissions` or
 off disk or off the web, which makes it the most attacker-reachable text here. It
 is framed to the summarizer as data rather than instructions, and the result is
 capped and stripped either way — framing is a mitigation, never the boundary.
+Reading one back out loud is the same text through the same framing, with the
+question repeated *after* the transcript as well as before it, so the last thing
+in the prompt is your request rather than four thousand characters of somebody
+else's session. The reader is also told it may come up empty: a model asked
+something its source cannot answer will answer anyway unless told not to, and a
+confident wrong account of what a session did is worse than *"it does not say"*
+precisely because you have not read it yourself.
+
+**What can be read is bounded by the whitelist and by disk.** A transcript is
+reachable only for a session inside a repository you named out loud, and only
+while the file is there. The session id is checked against a strict alphabet
+before it names a file, because it arrives from a roster listing and from
+model-authored tags and neither is trusted to be a uuid.
 
 **The gate.** The check that matters is at the WebSocket upgrade, not on the login
 page: a UI-only gate is skipped by opening the socket directly. `builds/` is gated

@@ -172,6 +172,41 @@ test("nothing said means nothing to ask, however much is running", () => {
   assert.equal(mergeTurns(["  "], { roster: ROSTER, now: NOW }), "");
 });
 
+// ---------------------------------------------------------------------------
+// The sessions that have finished, riding along with them
+// ---------------------------------------------------------------------------
+
+const RECALLED = [
+  { sessionId: "aaaa-1", name: "jarvis-1-builder-test-fix", cwd: "/home/krane/development/jarvis", running: true, at: NOW - 4 * 60_000 },
+  { sessionId: "aaaa-2", name: "jarvis-2-review", cwd: "/home/krane/development/jarvis", running: false, at: NOW - 20 * 60_000 },
+];
+
+test("a session that has finished is named too, because it is on no roster", () => {
+  // Without this line the model has never heard of it, and "what did jarvis two
+  // produce" is a question about a name it cannot see.
+  const merged = mergeTurns(["what did jarvis two produce?"], { roster: ROSTER, recalled: RECALLED, now: NOW });
+  assert.match(merged, /Finished, still readable: jarvis-2-review \(20 minutes ago\)/);
+  assert.ok(merged.endsWith("what did jarvis two produce?"), merged);
+});
+
+test("a running session is not named twice in one turn", () => {
+  // Naming it on both lines is how a model ends up believing there are two of it.
+  const merged = mergeTurns(["what's running?"], { roster: ROSTER, recalled: RECALLED, now: NOW });
+  assert.equal(merged.match(/jarvis-1-builder-test-fix/g).length, 1);
+});
+
+test("nothing finished costs the turn nothing", () => {
+  const with_ = mergeTurns(["what's running?"], { roster: ROSTER, recalled: [], now: NOW });
+  assert.equal(with_, mergeTurns(["what's running?"], { roster: ROSTER, now: NOW }));
+  assert.doesNotMatch(with_, /Finished/);
+});
+
+test("a finished session is never named when the listing itself failed", () => {
+  // Half a picture is worse than none: it would read as "these are finished and
+  // nothing else ran", of a machine that might be running five things.
+  assert.equal(mergeTurns(["what's running?"], { roster: null, recalled: RECALLED, now: NOW }), "what's running?");
+});
+
 test("an alias from the memory store names the repo the session lives in", () => {
   const roster = parseRoster(
     JSON.stringify([

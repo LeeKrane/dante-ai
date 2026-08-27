@@ -90,6 +90,18 @@ test("a tag nothing can be said about is not held back", () => {
   assert.equal(describeIntent(), null);
 });
 
+test("a read is deliberately not describable, so it is never held for a confirmation", () => {
+  // This module exists because start, tell and stop reach a real process. A read
+  // touches nothing, and holding "what did jarvis three do?" for a "Shall I,
+  // sir?" would put a spoken round trip in front of every question someone asks
+  // about their own work. null here is the mechanism that lets it run.
+  assert.equal(describeIntent({ session: { verb: "read", name: "jarvis-1" } }), null);
+  assert.equal(
+    describeIntent({ session: { verb: "read", name: "jarvis-1", question: "did the tests pass?" } }),
+    null,
+  );
+});
+
 test("a start with no repository is still describable, because refusing is the dispatcher's job", () => {
   assert.equal(
     describeIntent({ session: { verb: "start", task: "read the README" } }),
