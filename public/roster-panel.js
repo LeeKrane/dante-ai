@@ -42,11 +42,25 @@ function condition(record) {
   return record.status === "busy" ? "working" : "idle";
 }
 
-// rowsFromRoster(roster, now) -> what to paint, newest first.
-//
-// Newest first because a session started thirty seconds ago is the one being
-// thought about, and the one running since this morning is furniture.
-export function rowsFromRoster(roster, now = Date.now()) {
+// The one row shape both rowsFromRoster and groupsFromRoster paint. Split out
+// so a repository's rows and a flat list of them are built the same way and
+// can never quietly drift apart.
+function rowFromRecord(record, now) {
+  return {
+    id: record.sessionId,
+    // A session with no name is still worth a row: something is running, and
+    // saying so with a blank name beats leaving a gap in the count.
+    name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : "unnamed",
+    where: typeof record.alias === "string" ? record.alias : "",
+    condition: condition(record),
+    elapsed: elapsedLabel(now - record.startedAt),
+  };
+}
+
+// The roster, filtered to real sessions and sorted newest first -- the shared
+// first half of both rowsFromRoster and groupsFromRoster, so the one cap
+// (MAX_ROWS) and the one sort order are enforced in exactly one place.
+function liveSorted(roster) {
   const list = Array.isArray(roster) ? roster : [];
   return list
     .filter((record) => record && typeof record.sessionId === "string" && record.sessionId)
@@ -54,17 +68,54 @@ export function rowsFromRoster(roster, now = Date.now()) {
     // rather than the first six the CLI happened to print. A session with no
     // start time sorts last: an unknown age is not evidence of being new.
     .slice()
-    .sort((a, b) => (b.startedAt ?? -Infinity) - (a.startedAt ?? -Infinity))
+    .sort((a, b) => (b.startedAt ?? -Infinity) - (a.startedAt ?? -Infinity));
+}
+
+// rowsFromRoster(roster, now) -> what to paint, newest first.
+//
+// Newest first because a session started thirty seconds ago is the one being
+// thought about, and the one running since this morning is furniture.
+export function rowsFromRoster(roster, now = Date.now()) {
+  return liveSorted(roster)
     .slice(0, MAX_ROWS)
-    .map((record) => ({
-      id: record.sessionId,
-      // A session with no name is still worth a row: something is running, and
-      // saying so with a blank name beats leaving a gap in the count.
-      name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : "unnamed",
-      where: typeof record.alias === "string" ? record.alias : "",
-      condition: condition(record),
-      elapsed: elapsedLabel(now - record.startedAt),
-    }));
+    .map((record) => rowFromRecord(record, now));
+}
+
+// groupsFromRoster(workspaces, roster, now) -> one group per repository, in
+// the order the server sent `workspaces` in (main first, see
+// lib/memory.js:workspacesForClient), each carrying its sessions as rows in
+// the exact shape rowsFromRoster produces.
+//
+// The MAX_ROWS cap is applied once, globally, before any grouping happens --
+// the same newest-first cut rowsFromRoster makes -- so a machine running more
+// than a panel's worth of sessions loses the oldest ones everywhere, not just
+// within whichever repository happens to be drawn first.
+//
+// A session whose alias matches no known workspace (a stale alias, one from
+// before a repository was ever named) is not dropped: it goes into a trailing
+// group, and only when there is something to put there -- an empty group
+// nobody can start a session in would just be noise. It is labelled "elsewhere"
+// for a person to read, but that label is not what tells it apart from a real
+// workspace someone happened to name "elsewhere" -- `other: true` is, and it is
+// the only field app.js is allowed to branch on for "is this the catch-all."
+export function groupsFromRoster(workspaces, roster, now = Date.now()) {
+  const spaces = Array.isArray(workspaces) ? workspaces : [];
+  const rows = liveSorted(roster)
+    .slice(0, MAX_ROWS)
+    .map((record) => rowFromRecord(record, now));
+
+  const groups = spaces.map((w) => ({ alias: w.alias, main: Boolean(w.main), other: false, sessions: [] }));
+  const byAlias = new Map(groups.map((g) => [g.alias, g]));
+
+  const elsewhere = [];
+  for (const row of rows) {
+    const group = byAlias.get(row.where);
+    if (group) group.sessions.push(row);
+    else elsewhere.push(row);
+  }
+
+  if (elsewhere.length > 0) groups.push({ alias: "elsewhere", main: false, other: true, sessions: elsewhere });
+  return groups;
 }
 
 // Same reasoning as #dbg: a panel someone deliberately opened is not "the

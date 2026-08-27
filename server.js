@@ -34,6 +34,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
+  setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
 } from "./lib/memory.js";
@@ -482,6 +483,21 @@ function broadcastRoster(roster) {
   }
 }
 
+// The repositories a session can be started in, and which one is the default.
+// Its own message rather than folded into "roster": the roster changes on
+// every poll tick, this changes only when someone names a repository or picks
+// a new main, and the panel groups by this list even when it has zero
+// sessions running in it.
+function sendWorkspaces(send) {
+  send({ type: "workspaces", list: workspacesForClient(memoryStore) });
+}
+
+function broadcastWorkspaces() {
+  for (const ws of sessions.keys()) {
+    if (ws.readyState === 1) sendWorkspaces((o) => ws.send(JSON.stringify(o)));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Announcements
 // ---------------------------------------------------------------------------
@@ -706,7 +722,20 @@ const PROJECT_KEY = process.cwd();
 // than waiting to be named out loud. Idempotent: re-registering a path already
 // known returns the existing alias and leaves its session counter alone, which
 // is what stops a week of restarts producing jarvis, jarvis-2, jarvis-3.
-if (addWorkspace(memoryStore, PROJECT_KEY)) saveStore(memoryStore);
+const boot = addWorkspace(memoryStore, PROJECT_KEY);
+let memoryChanged = Boolean(boot);
+
+// A first run has no main yet, and a session has to be able to start without
+// anyone having named a repository out loud first -- so the directory the
+// server itself was started in becomes the default until a person picks a
+// different one (a [MEMORY:SET main=...] tag, or the panel's set_main
+// message, both further down), at which point that choice sticks across
+// restarts instead of reverting to the cwd every time.
+if (boot && getMainRepo(memoryStore) === null) {
+  setMainRepo(memoryStore, boot.alias);
+  memoryChanged = true;
+}
+if (memoryChanged) saveStore(memoryStore);
 
 // The assistant can only ask for a build it has been told exists, so the persona
 // is derived from the registry that was just loaded rather than written by hand.
@@ -1433,6 +1462,12 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     return;
   }
 
+  // session.repo is already resolved by the time it gets here -- see the
+  // resolveRepoAlias call in the message handler, which runs before this
+  // session is ever described back as a confirmation sentence. Resolving it
+  // again here, a second time, is exactly how the confirmation and the
+  // dispatch once disagreed about which repository "start a session to fix
+  // the tests" meant.
   const workspace = getWorkspace(memoryStore, session.repo);
   const live = Array.isArray(roster) ? roster : [];
   // Only the sessions Dante itself started. Counting every background session
@@ -1801,6 +1836,7 @@ wss.on("connection", (ws) => {
   // The first poller tick is a baseline and fires no events, so a page opened
   // after it would sit empty until something changed.
   sendRoster(send, rosterPoller.current());
+  sendWorkspaces(send);
   ws.on("message", async (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
     // The page reporting that the floor is free and it will take one of the
@@ -1808,6 +1844,20 @@ wss.on("connection", (ws) => {
     // carries no text at all.
     if (msg.type === "announce_ready") {
       if (typeof msg.id === "string") await speakAnnouncement(send, msg.id);
+      return;
+    }
+    // Choosing a repository from the panel rather than saying it: same
+    // sanitizing and same refusal-by-silence as every other memory write here,
+    // just without a sentence to narrate it back through -- the panel's own
+    // re-render (from the workspaces broadcast below) is the confirmation.
+    if (msg.type === "set_main") {
+      if (setMainRepo(memoryStore, msg.alias)) {
+        saveStore(memoryStore);
+        broadcastWorkspaces();
+        log(`main repository set to ${getMainRepo(memoryStore)}`);
+      } else {
+        log(`set_main refused: ${JSON.stringify(msg.alias)}`);
+      }
       return;
     }
     if (msg.type !== "say" || !msg.text?.trim()) return;
@@ -1929,7 +1979,13 @@ wss.on("connection", (ws) => {
         const workspaces = applyWorkspaceTag(memoryStore, memory);
         if (workspaces) {
           saveStore(memoryStore);
-          log(`workspace set ${JSON.stringify(workspaces)}`);
+          // `workspaces` is `true`, not a {alias: path} map, when the tag only
+          // set a main -- registered nothing new to log a path for, so the log
+          // line says what actually happened instead of the word "true".
+          log(workspaces === true
+            ? `main repository set to ${getMainRepo(memoryStore)}`
+            : `workspace set ${JSON.stringify(workspaces)}`);
+          broadcastWorkspaces();
         }
         const saved = applyMemoryTag(memoryStore, PROJECT_KEY, memory);
         if (saved) {
@@ -1992,6 +2048,15 @@ wss.on("connection", (ws) => {
           return;
         }
 
+        // Read before the match below can clear it: a live interview about a
+        // start carries the repo it already asked about and got an answer to,
+        // and that answer must survive conv.interview being nulled a few
+        // lines down. Scoped to verb=start on the interview itself, not just
+        // on the session tag it produced -- INTERVIEW_VERBS also covers tell
+        // and interrupt, and their own "repo" means "which session," which
+        // has nothing to do with where an unrelated start should land.
+        const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
+
         // The interview is spent the moment its command is proposed: its
         // notes become the brief when the model did not write one itself, and
         // the state is cleared here so a later, unrelated session tag never
@@ -1999,6 +2064,17 @@ wss.on("connection", (ws) => {
         if (isLive(conv.interview) && matchesInterview(conv.interview, session)) {
           session.brief = composeBrief({ task: session.task, brief: session.brief, notes: conv.interview.notes });
           conv.interview = null;
+        }
+
+        // Resolved once, here, before this session is ever described back as
+        // a confirmation sentence or an activity line -- both of those and the
+        // eventual dispatch must all name the same repository, and reading
+        // session.repo straight off the tag in three different places is how
+        // they used to disagree. An interview's own answer outranks the main
+        // repository, since it is the more specific thing actually said; a
+        // named repo is untouched either way.
+        if (session.verb === "start") {
+          session.repo = session.repo?.trim() ? session.repo : (fromInterview || resolveRepoAlias(memoryStore, "") || session.repo);
         }
 
         // The request is settled either way: it is now a proposal waiting on a

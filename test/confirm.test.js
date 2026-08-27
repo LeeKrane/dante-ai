@@ -134,6 +134,18 @@ test("the workspace Dante resolved beats the alias the model wrote", () => {
   );
 });
 
+test("a start with no repo named still names the one it will actually run in", () => {
+  // server.js resolves session.repo to the main repository before this is
+  // ever called (see resolveRepoAlias in lib/memory.js), so `workspace` here
+  // is exactly what a real caller passes for "no repo said out loud" -- the
+  // confirmation must say where it lands, not go silent about it the way it
+  // would if `where` fell back to the never-set session.repo instead.
+  assert.equal(
+    describeIntent({ session: { verb: "start", task: "fix the tests" }, workspace: { alias: "fitness" } }),
+    "Start a session in fitness to fix the tests. Shall I, sir?",
+  );
+});
+
 test("a follow-up and a stop name the session, because that is what is at stake", () => {
   assert.equal(
     describeIntent({ session: { verb: "tell", name: "jarvis-1", task: "also run the tests" } }),
