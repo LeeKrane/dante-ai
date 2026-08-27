@@ -1129,7 +1129,7 @@ async function dispatchTell(send, session, preamble, roster) {
   await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
 }
 
-// Every session that can be asked about right now: what jarvis remembers
+// Every session that can be asked about right now: what Dante remembers
 // starting, minus whatever has no transcript on disk, plus what is running, all inside the
 // repositories named out loud. Built here rather than cached because the two
 // inputs both move -- the roster every five seconds, the workspace list the

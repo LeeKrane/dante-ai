@@ -22,7 +22,7 @@ function recall(remembered, roster, opts = {}) {
   return recallableSessions(remembered, roster, { roots: ROOTS, now: NOW, exists: () => true, ...opts });
 }
 
-// The store's own record of what jarvis started, as rememberSession writes it.
+// The store's own record of what Dante started, as rememberSession writes it.
 function remembered(entries) {
   return Object.fromEntries(entries.map((entry) => [entry.sessionId, entry]));
 }
@@ -40,7 +40,7 @@ function live(sessionId, patch = {}) {
 // recallableSessions
 // ---------------------------------------------------------------------------
 
-test("a session jarvis started that is no longer running is readable, and known to be finished", () => {
+test("a session Dante started that is no longer running is readable, and known to be finished", () => {
   const list = recall(remembered([started("a-1")]), []);
   assert.equal(list.length, 1);
   assert.equal(list[0].name, "jarvis-1-fix-tests");
@@ -77,7 +77,7 @@ test("a repository whose name merely starts the same is not the same repository"
   assert.deepEqual(list, []);
 });
 
-test("a running session jarvis did not start is readable when it is in a named repository", () => {
+test("a running session Dante did not start is readable when it is in a named repository", () => {
   // A terminal somebody opened themselves. It has a transcript and a name, and
   // "what has that one been doing" is the same question with the same answer.
   const list = recall({}, [live("b-2", { name: "roadmap-expansion" })]);
