@@ -191,6 +191,17 @@
     letter-spacing: .04em; color: var(--muted);
     white-space: pre-wrap; pointer-events: auto;
   }
+  /* A one-word title, so the panel reads as the brief at a glance. A
+     pseudo-element rather than markup, because app.js fills #brief with
+     textContent -- which would wipe a child element -- and the title has no
+     reason to exist apart from the panel it names. Styled like the build
+     HUD's caption but smaller and a shade quieter: it labels a thing to
+     read, not a state to notice. */
+  #brief::before {
+    content: "brief"; display: block; margin-bottom: 4px;
+    font-size: 10px; font-weight: 600; letter-spacing: .26em; text-transform: uppercase;
+    color: var(--cyan); opacity: .8;
+  }
   /* #stage -- and the orb inside it -- is a stacking context pinned to
      z-index: 1, below both #sessions and #dbg at z-index: 20, so nothing
      painted inside #stage can ever cover those two panels. #brief has to
