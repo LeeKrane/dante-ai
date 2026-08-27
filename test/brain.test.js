@@ -129,6 +129,12 @@ test("the persona explains how a repository is named, or the workspace tag is ne
   assert.match(persona, /\[MEMORY:SET workspace:/);
 });
 
+test("the persona explains that a session with no repo named starts in the main one", () => {
+  const persona = brain.buildPersona();
+  assert.match(persona, /repo= may be left out entirely/);
+  assert.match(persona, /\[MEMORY:SET main=/);
+});
+
 // ---------------------------------------------------------------------------
 // Proposing rather than assuming
 // ---------------------------------------------------------------------------
@@ -155,7 +161,7 @@ test("the persona teaches reading a finished session back, or the verb is unreac
   // The turn names finished sessions, and the dispatcher can read one, but
   // neither happens unless the model has been told the verb exists.
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /\[ACTION:SESSION verb=read name=<session name> question=/);
+  assert.match(persona, /\[ACTION:SESSION verb=read name="<session name>" question=/);
   assert.match(persona, /FINISHED as well as one still running/);
 });
 
@@ -185,7 +191,7 @@ test("the persona teaches the interrupt tag and when to reach for it over tell",
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(
     persona,
-    /\[ACTION:SESSION verb=interrupt name=<session name> task="the new instruction"\]/,
+    /\[ACTION:SESSION verb=interrupt name="<session name>" task="the new instruction"\]/,
   );
   // The choice is timing, not capability: interrupt displaces current work,
   // tell waits for it, and tell is the fallback when the request is ambiguous.

@@ -258,6 +258,22 @@ test("a session named by hand carries the repository in front of it", () => {
   assert.match(describeFinished(records, { fitness: FITNESS }, NOW), /fitness: roadmap-expansion/);
 });
 
+test("a finished session run from a worktree is named by the workspace's alias, not the worktree's own basename", () => {
+  // Dante's own sessions call EnterWorktree and move under
+  // .claude/worktrees/<name>; a finished one read back with the directory's
+  // own basename instead of the workspace alias is the same bug label() in
+  // lib/agents.js had for the live roster.
+  const records = [{
+    name: "jarvis-10-add-persistent-whitelist-main",
+    cwd: `${JARVIS}/.claude/worktrees/repo-persistence`,
+    running: false,
+    at: NOW - 1000,
+  }];
+  const line = describeFinished(records, { jarvis: JARVIS }, NOW);
+  assert.match(line, /jarvis-10-add-persistent-whitelist-main/);
+  assert.doesNotMatch(line, /repo-persistence:/);
+});
+
 test("a long list is cut, and says how many it left out", () => {
   const records = Array.from({ length: 8 }, (_, i) => ({
     name: `jarvis-${i}`, cwd: JARVIS, running: false, at: NOW - 1000,

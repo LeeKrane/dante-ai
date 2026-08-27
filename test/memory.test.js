@@ -30,6 +30,11 @@ import {
   resolveWorkspacePath,
   sanitizeAlias,
   workspacePaths,
+  MAIN_KEY,
+  setMainRepo,
+  getMainRepo,
+  resolveRepoAlias,
+  workspacesForClient,
   MAX_QUEUED_PER_SESSION,
   MAX_QUEUED_CHARS,
   QUEUE_TTL_MS,
@@ -649,6 +654,183 @@ test("a path someone dictated with a tilde still resolves", () => {
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The main repository
+// ---------------------------------------------------------------------------
+
+test("setMainRepo names a known workspace and getMainRepo reads it back", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    assert.equal(getMainRepo(store), null);
+    assert.equal(setMainRepo(store, "jarvis"), true);
+    assert.equal(getMainRepo(store), "jarvis");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setMainRepo refuses an alias that names no workspace", () => {
+  const store = emptyStore();
+  assert.equal(setMainRepo(store, "ghost"), false);
+  assert.equal(store.main, null);
+});
+
+test("setMainRepo refuses a __proto__-style alias the way sanitizeAlias already does", () => {
+  const store = emptyStore();
+  assert.equal(setMainRepo(store, "__proto__"), false);
+  assert.equal(store.main, null);
+});
+
+test("setMainRepo refuses an entry the key exists for but getWorkspace itself would reject", () => {
+  // A key present in `workspaces` is not the same thing as a workspace: a
+  // hand-edited file, or a bug elsewhere, can leave a key pointing at
+  // something with no path. Using getWorkspace's own check here rather than a
+  // bare key lookup is what stops that from wedging every unaddressed "start
+  // a session" on a main nothing can actually run in.
+  const notAnObject = emptyStore();
+  notAnObject.workspaces = { jarvis: "not-an-object" };
+  assert.equal(setMainRepo(notAnObject, "jarvis"), false);
+  assert.equal(notAnObject.main, null);
+
+  const noPath = emptyStore();
+  noPath.workspaces = { jarvis: {} };
+  assert.equal(setMainRepo(noPath, "jarvis"), false);
+  assert.equal(noPath.main, null);
+});
+
+test("the main repository survives a save and a load", () => {
+  const home = fakeHome();
+  try {
+    const path = join(home, "memory.json");
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    setMainRepo(store, "jarvis");
+    assert.equal(saveStore(store, path), true);
+    assert.equal(getMainRepo(loadStore(path)), "jarvis");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a stale main left over from a renamed or hand-edited file is dropped on load", () => {
+  withTempDir((dir) => {
+    const path = join(dir, "memory.json");
+    writeFileSync(path, JSON.stringify({ version: 1, projects: {}, workspaces: { jarvis: { path: "/x" } }, main: "ghost" }));
+    const loaded = loadStore(path);
+    assert.equal(loaded.main, null);
+    assert.equal(getMainRepo(loaded), null);
+  });
+});
+
+test("a file saved before main existed still loads, with no main set", () => {
+  withTempDir((dir) => {
+    const path = join(dir, "memory.json");
+    writeFileSync(path, JSON.stringify({ version: 1, projects: {}, workspaces: {} }));
+    assert.equal(getMainRepo(loadStore(path)), null);
+  });
+});
+
+test(`a "${MAIN_KEY}=" tag key sets the main repository and is not kept as a memory key`, () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    const result = applyWorkspaceTag(store, { [MAIN_KEY]: "jarvis", palette: "dark" }, { home });
+    assert.equal(result, true);
+    assert.equal(getMainRepo(store), "jarvis");
+
+    const saved = applyMemoryTag(store, "/cwd", { [MAIN_KEY]: "jarvis", palette: "dark" });
+    assert.deepEqual(saved, { palette: "dark" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a workspace pair and a main key in the same tag both take effect", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    const result = applyWorkspaceTag(
+      store,
+      { [`${WORKSPACE_PREFIX}fitness`]: join(home, "development", "KraneticFitness"), [MAIN_KEY]: "fitness" },
+      { home },
+    );
+    assert.deepEqual(result, { fitness: join(home, "development", "KraneticFitness") });
+    assert.equal(getMainRepo(store), "fitness");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a main key naming an unknown workspace changes nothing and applyWorkspaceTag says so", () => {
+  const store = emptyStore();
+  assert.equal(applyWorkspaceTag(store, { [MAIN_KEY]: "ghost" }), null);
+  assert.equal(getMainRepo(store), null);
+});
+
+test("workspacesForClient lists main first, then the rest alphabetically", () => {
+  // No path in the output: rosterForClient in server.js is explicit about why
+  // an absolute filesystem path never rides along with an alias to a page --
+  // a repository is called "jarvis" out loud, and a page has no business being
+  // told where it lives on disk.
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
+    setMainRepo(store, "fitness");
+
+    assert.deepEqual(workspacesForClient(store), [
+      { alias: "fitness", main: true },
+      { alias: "jarvis", main: false },
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("workspacesForClient is empty with no workspaces and needs no main", () => {
+  assert.deepEqual(workspacesForClient(emptyStore()), []);
+});
+
+test("workspacesForClient skips a workspace entry with no path, the same way getWorkspace refuses it", () => {
+  const store = emptyStore();
+  store.workspaces = { jarvis: { path: "/somewhere" }, ghost: { counter: 1 }, empty: {} };
+  assert.deepEqual(workspacesForClient(store), [{ alias: "jarvis", main: false }]);
+});
+
+// ---------------------------------------------------------------------------
+// resolveRepoAlias
+// ---------------------------------------------------------------------------
+
+test("resolveRepoAlias passes through a named repository untouched", () => {
+  // No workspace named "fitness" is registered here on purpose: an explicitly
+  // named repo is not second-guessed against the main one, even when it is
+  // unknown -- that is refuseStart's job, not this function's.
+  assert.equal(resolveRepoAlias(emptyStore(), "fitness"), "fitness");
+});
+
+test("resolveRepoAlias falls back to the main repository when nothing was named", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    setMainRepo(store, "jarvis");
+    assert.equal(resolveRepoAlias(store, ""), "jarvis");
+    assert.equal(resolveRepoAlias(store, "   "), "jarvis");
+    assert.equal(resolveRepoAlias(store, undefined), "jarvis");
+    assert.equal(resolveRepoAlias(store, null), "jarvis");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoAlias falls back to null, same as getMainRepo, when there is no main", () => {
+  assert.equal(resolveRepoAlias(emptyStore(), ""), null);
 });
 
 // ---------------------------------------------------------------------------

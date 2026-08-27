@@ -122,7 +122,11 @@ started in. It keeps the resumable session id, a rolling summary written when yo
 close the page, the last ten artifacts, and standing preferences: say *"I always
 want dark palettes"* and the model appends a `[MEMORY:SET palette=dark]` tag that
 is stripped before anything is spoken. Everything read back into a prompt is
-capped and sanitized — the store is treated as an injection surface.
+capped and sanitized — the store is treated as an injection surface. The same
+file also names your repositories (`workspace:<name>=<path>`) and which one is
+**main** (`main=<name>`) — the repository a session starts in when you don't
+name one; the panel lists it first, starred, and clicking any other
+repository's header there makes it the new main.
 
 **Builds.** *"Build me a landing page for a coffee shop called Ember."* It asks a
 question or two, then spawns a second Claude Code session with file tools on in a
@@ -142,6 +146,9 @@ it sees the ones you started in a terminal too — and you can drive them:
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `jarvis-3-fix-failing-builder-test`.
   Five at a time, counted from the roster so terminal sessions count too.
+  Naming no repository at all starts it in your **main** repository instead —
+  the one you last named as such, or whichever was current when the server
+  first ran with none set.
 - *"Tell jarvis three to run the tests as well"* — the message goes into that
   session's own input queue, exactly where a line you typed into its terminal
   would go, and it is picked up when the work in flight finishes.
@@ -351,7 +358,7 @@ Claude Code will still use a tool you leave off the list, which is why
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
-| **s** | sessions panel (what is running, where, for how long; on by default) |
+| **s** | sessions panel (grouped by repository, main starred first; what is running, where, for how long; on by default) |
 | **t** | the caption line |
 | **h** | the rest of the interface |
 
