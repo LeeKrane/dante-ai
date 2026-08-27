@@ -1,4 +1,4 @@
-# Jarvis: Memory Layer + Multi-Step Orchestration — Implementation Guide
+# Dante: Memory Layer + Multi-Step Orchestration — Implementation Guide
 
 ## 0. What these two features unlock
 
@@ -24,7 +24,7 @@ New file: `lib/memory.js`. Two call sites change: `server.js` (load on connect, 
 For this app's actual write pattern — one process, low write volume, no concurrent writers to the same key — a single JSON file beats SQLite: zero new dependency (README brags "one npm dependency"), human-readable/editable, trivial to `git ignore`. Move to SQLite only if you outgrow "one file, read-modify-write" (e.g. want to query across projects, or expect concurrent server instances).
 
 ```
-~/.config/jarvis/memory.json
+~/.config/dante/memory.json
 ```
 
 Not inside the repo — same reasoning as `~/.config/fish-audio/speak.json`: it's user state, not project state, and the repo's own `deniedDirs()` in `builder.js` already blocks builds from writing into `~/.config/**`, so this is also *safe from a build ever corrupting it*.
@@ -65,7 +65,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
-const DEFAULT_PATH = join(homedir(), ".config", "jarvis", "memory.json");
+const DEFAULT_PATH = join(homedir(), ".config", "dante", "memory.json");
 const MAX_ARTIFACTS_PER_PROJECT = 10;
 
 function emptyStore() {

@@ -36,7 +36,7 @@ function toolUseLine() {
 }
 
 function withTranscript(lines, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-transcript-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-transcript-"));
   const path = join(dir, "session.jsonl");
   try {
     writeFileSync(path, lines.join("\n") + "\n");
@@ -224,7 +224,7 @@ test("no transcript, no model, or no answer all mean no summary rather than no r
 test("a real transcript on disk is read through the path the summary would use", () => {
   // The one test that exercises slug, path and reader together, so a change to
   // any of the three cannot pass by agreeing with itself.
-  const home = mkdtempSync(join(tmpdir(), "jarvis-home-"));
+  const home = mkdtempSync(join(tmpdir(), "dante-home-"));
   try {
     const cwd = "/home/someone/dev/proj";
     const dir = join(home, ".claude", "projects", slugForCwd(cwd));

@@ -83,8 +83,8 @@ const sessionKinds = await loadSessionKinds();
 // Started below, after the store is loaded, because the events name sessions
 // using the workspace aliases the store holds.
 const rosterPoller = createRosterPoller({
-  // Jarvis's business, and nothing else. `claude agents --json` lists every
-  // session on this machine, including other tools' internals and jarvis's own
+  // Dante's business, and nothing else. `claude agents --json` lists every
+  // session on this machine, including other tools' internals and Dante's own
   // children, and reading those out loud was the least of it -- being able to
   // stop one is a bug with a process on the end of it.
   //
@@ -152,7 +152,7 @@ async function deliverQueued(record) {
 // One exit, reported once, whichever mechanism noticed it.
 //
 // Both do. The roster poller is the floor -- it works for sessions started
-// before jarvis existed and needs nothing installed -- and the Stop and
+// before Dante existed and needs nothing installed -- and the Stop and
 // SessionEnd hooks are the fast path, firing the moment it happens. They are
 // not alternatives, so the deduper is what keeps one exit from becoming two
 // lines in the thread.
@@ -168,7 +168,7 @@ async function postForSession(sessionId, line) {
   else await slack.postParent(line);
 }
 
-// Only sessions jarvis started are reported. The roster sees every terminal on
+// Only sessions Dante started are reported. The roster sees every terminal on
 // this machine, and posting to Slack every time somebody closes one would make
 // the channel worthless within a day.
 async function reportComplete(sessionId, context = {}) {
@@ -231,7 +231,7 @@ async function reportComplete(sessionId, context = {}) {
 // "On completion", deliberately, not "on success": a Claude Code session
 // exposes no pass/fail verdict for this to condition on (see the comment on
 // chainAfter in lib/memory.js). The one thing that does cancel a chain is
-// jarvis having stopped this session itself -- ending something on purpose is
+// Dante having stopped this session itself -- ending something on purpose is
 // not the same as it finishing the work it was asked to do -- which is why
 // `remembered.stoppedAt` is checked here rather than folded into "did it
 // finish" upstream.
@@ -256,7 +256,7 @@ async function dispatchChain(sessionId, remembered, chain, roster) {
     return;
   }
 
-  // Same ceiling, same counting as a spoken start: only sessions jarvis itself
+  // Same ceiling, same counting as a spoken start: only sessions Dante itself
   // started count against it, and a chained one is no exception.
   const live = Array.isArray(roster) ? roster : [];
   const own = ownRunning(live, getSessions(memoryStore));
@@ -309,11 +309,11 @@ async function reportAttention(event) {
   announce(formatSpoken({ kind: "needs-attention", name: remembered.name, detail: event.detail }));
 }
 
-// The session ids of jarvis's own Claude processes: the warm brain, and
+// The session ids of Dante's own Claude processes: the warm brain, and
 // whatever a live tab is resumed against. Exact ids rather than names, because
 // "never offer to stop my own brain" has to be impossible, not unlikely.
 //
-// Builds are not here -- they carry no id jarvis assigned -- but they do run in
+// Builds are not here -- they carry no id Dante assigned -- but they do run in
 // BUILDS, which the filter excludes by path instead.
 function ownSessionIds() {
   const ids = new Set(sessions.values());
@@ -344,7 +344,7 @@ let pendingApproval = null;
 // want of a listener would silently break every session started while you are
 // away, which is precisely when you need them working.
 async function requestApproval(payload = {}) {
-  // Only sessions jarvis started. The hook is installed globally, so it fires
+  // Only sessions Dante started. The hook is installed globally, so it fires
   // for the terminal you are sitting at too -- and that terminal can ask you
   // itself, better, on the screen you are already looking at.
   const remembered = getSessionRecord(memoryStore, payload.session_id);
@@ -530,7 +530,7 @@ function clearPendingAnnouncements() {
 // Propose, then act
 // ---------------------------------------------------------------------------
 
-// Everything jarvis can do to a live process used to run the moment a model
+// Everything Dante can do to a live process used to run the moment a model
 // wrote a tag. It showed: a request to start a session once ended with a
 // different, working session stopped. So a tag becomes a proposal, and the next
 // thing said decides it.
@@ -760,7 +760,7 @@ const server = createServer(async (req, res) => {
     const body = await readJsonBody(req);
     // Answered before anything is done with it. A hook blocks the session that
     // spawned it, and a summary can take twenty-five seconds; making a session
-    // wait on jarvis reporting about it would be exactly backwards.
+    // wait on Dante reporting about it would be exactly backwards.
     sendJson(res, 200, { ok: true });
 
     const event = parseHookEvent(body);
@@ -1070,8 +1070,8 @@ async function dispatchStop(send, session, preamble, roster) {
   takeQueued(memoryStore, record.sessionId);
   // Noted so the report when it leaves the roster says it was stopped rather
   // than that it finished -- which are different things to read at midnight.
-  // Only for sessions jarvis started: writing a record here for a terminal
-  // somebody was sitting at would turn "jarvis stopped it" into a Slack post
+  // Only for sessions Dante started: writing a record here for a terminal
+  // somebody was sitting at would turn "Dante stopped it" into a Slack post
   // about a session Slack has never heard of.
   if (getSessionRecord(memoryStore, record.sessionId)) {
     rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
@@ -1088,7 +1088,7 @@ async function dispatchStop(send, session, preamble, roster) {
 //
 // The gate is the whole stage. Resuming a session that is CURRENTLY WORKING is
 // not a join: two processes on one session id is the race askResilient and
-// conv.settled exist to prevent inside jarvis, and it is worse across
+// conv.settled exist to prevent inside Dante, and it is worse across
 // processes. So a busy session gets the message queued, and the roster poller
 // delivers it on the first tick that sees it idle.
 async function dispatchTell(send, session, preamble, roster) {
@@ -1176,12 +1176,12 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 
   const workspace = getWorkspace(memoryStore, session.repo);
   const live = Array.isArray(roster) ? roster : [];
-  // Only the sessions jarvis itself started. Counting every background session
+  // Only the sessions Dante itself started. Counting every background session
   // on the machine was a real bug: a Claude Code background job is
-  // indistinguishable from one of jarvis's, so a machine in ordinary use sat at
-  // four of five before jarvis had done anything, every start was refused, and
+  // indistinguishable from one of Dante's, so a machine in ordinary use sat at
+  // four of five before Dante had done anything, every start was refused, and
   // the refusal named somebody else's session as the thing to stop. What the
-  // ceiling bounds is unattended sessions jarvis is responsible for.
+  // ceiling bounds is unattended sessions Dante is responsible for.
   const own = ownRunning(live, getSessions(memoryStore));
   const refusal = refuseStart(session, {
     workspace,
@@ -1190,7 +1190,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     max: MAX_SESSIONS,
     // The oldest idle one is the obvious thing to stop, and naming it is what
     // makes a refusal actionable rather than a dead end -- now that it can only
-    // ever be a session jarvis started.
+    // ever be a session Dante started.
     oldestIdle: own.oldestIdle ?? undefined,
   });
   if (refusal) {
@@ -1412,7 +1412,7 @@ async function build(send, primitive, params, preamble = "") {
 // End-of-session summary
 // ---------------------------------------------------------------------------
 
-// Its own bookkeeping voice, deliberately not the JARVIS persona: the spoken
+// Its own bookkeeping voice, deliberately not the DANTE persona: the spoken
 // rules -- forty words, no lists, address Jesse as sir -- would shape a note
 // nobody is ever going to hear into something shorter and vaguer than the next
 // session needs.
@@ -1763,7 +1763,7 @@ server.on("error", (err) => {
 server.listen(PORT, "0.0.0.0", () => {
   const ids = [...registry.keys()];
   const kinds = [...sessionKinds.keys()];
-  console.log(`Jarvis on http://0.0.0.0:${PORT}`);
+  console.log(`Dante on http://0.0.0.0:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
   console.log(`slack: ${slack.enabled ? `on (${slackCfg.channel})` : "off"}`);

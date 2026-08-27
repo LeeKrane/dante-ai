@@ -11,7 +11,7 @@ test("parses reply + session id", () => {
   assert.equal(sessionId, "abc-123");
 });
 
-test("replaces the coding-agent prompt with the spoken Jarvis prompt", () => {
+test("replaces the coding-agent prompt with the spoken Dante prompt", () => {
   assert.equal(typeof brain.buildClaudeArgs, "function");
   const args = brain.buildClaudeArgs("Status report.", "session-1");
 

@@ -1,4 +1,4 @@
-// When Jarvis may be interrupted, and where the orb lands when he is.
+// When Dante may be interrupted, and where the orb lands when he is.
 //
 // The fourth of the pure client modules (stt-policy.js, visibility-policy.js,
 // progress-policy.js). app.js touches the DOM on its first line and can never be
@@ -12,7 +12,7 @@ export const ORB_STATES = new Set(["idle", "listening", "thinking", "working", "
 // canStartListening(state, holding, hasRecognizer)
 //
 // No state refuses the button any more, which is the whole point: whatever
-// Jarvis is doing, the person gets to talk. A clip being spoken is cancelled by
+// Dante is doing, the person gets to talk. A clip being spoken is cancelled by
 // the press; a turn still being thought about is superseded by the server, which
 // abandons it and folds what was said into the call that replaces it
 // (lib/turns.js). Both are the same promise — whoever spoke last has the floor.
@@ -80,7 +80,7 @@ export function shouldShowCancel(playing, chromeHidden) {
 // Announcements
 // ---------------------------------------------------------------------------
 //
-// A session finishing while nobody asked anything is the first thing Jarvis has
+// A session finishing while nobody asked anything is the first thing Dante has
 // to say that nobody is waiting for. Slack always gets it, durably; speaking it
 // is the convenience, and a convenience does not get to interrupt.
 //

@@ -1,8 +1,8 @@
-# Jarvis Roadmap: from artifact builder to voice control plane for Claude Code
+# Dante Roadmap: from artifact builder to voice control plane for Claude Code
 
 ## Context
 
-`jarvis-demo` shipped twenty stages (`docs/memory-and-orchestration-plan.md`) and is now a
+`dante-demo` shipped twenty stages (`docs/memory-and-orchestration-plan.md`) and is now a
 complete, fast voice loop: push-to-talk in Chrome, a warm `claude -p` CLI answering in ~800 ms,
 Fish Audio speaking the reply as it streams, cross-session memory on disk, and a machine-tag
 dispatch path that spawns real Claude Code builds with file tools on.
@@ -10,20 +10,20 @@ dispatch path that spawns real Claude Code builds with file tools on.
 What it is *not* yet is a coding assistant. It builds throwaway artifacts in `builds/<timestamp>/`
 and its deny list explicitly forbids touching real source. The stated target is different:
 
-> Jarvis should be primarily designed to orchestrate Claude Code sessions for me via my voice
+> Dante should be primarily designed to orchestrate Claude Code sessions for me via my voice
 > commands. Meaning spin up new sessions, interact with existing ones, get info from existing
 > sessions and report back to me (via a Slack webhook) once a Claude Code session needs attention
 > or is complete, with concise info.
 
 So: a **voice control plane over the Claude Code sessions running on this machine**, with Slack as
-the durable out-of-band channel. Jarvis stays read-only on repositories; the sessions it starts do
+the durable out-of-band channel. Dante stays read-only on repositories; the sessions it starts do
 the writing, under the user's own permissions.
 
 ### Decisions fixed in the interview
 
 | | |
 |---|---|
-| Jarvis's own repo access | **Read-only.** It never edits your source itself. |
+| Dante's own repo access | **Read-only.** It never edits your source itself. |
 | Code output | **Voice only.** No code panel, no editor hand-off, no reading symbols aloud. |
 | Spawned session permissions | **Your normal default** — voice-started and hand-started sessions behave identically. |
 | Session naming | `jarvis-1-builder-test-fix` — repo alias, per-workspace counter, task-derived slug. |
@@ -36,7 +36,7 @@ the writing, under the user's own permissions.
 | Voice vs Slack | **Slack always; voice too if the page is open and the floor is free.** |
 | Completion summaries | A cheap **Haiku pass** over the session transcript. |
 | Voice approval | **Yes, scoped** to file writes outside the repo and publishing git operations. |
-| Hook install | **You paste it**; the README documents it. Jarvis never writes `~/.claude/`. |
+| Hook install | **You paste it**; the README documents it. Dante never writes `~/.claude/`. |
 | Hands-free / wake word | **No.** Push-to-talk is fine. |
 | Remote access | **Already works** as intended. Not on this roadmap. |
 | `primitives/` builds | **Keep**, and repoint the tree HUD at session progress. |
@@ -44,7 +44,7 @@ the writing, under the user's own permissions.
 
 ---
 
-## What jarvis can do today
+## What Dante can do today
 
 **Input.** Chrome Web Speech push-to-talk. Self-interruption is merged rather than dropped —
 `mergeTurns` (`lib/turns.js`) carries up to three unanswered sentences, newest first, labelled. A
@@ -56,7 +56,7 @@ is never spoken. There is a cancel button.
 turn instead of 12,082, ~800 ms per turn after the first. Generation-tracked so two tabs sharing
 the CLI cannot kill each other's process.
 
-**Memory.** `~/.config/jarvis/memory.json`, keyed by the server's cwd (`lib/memory.js`): resumable
+**Memory.** `~/.config/dante/memory.json`, keyed by the server's cwd (`lib/memory.js`): resumable
 `sessionId`, a rolling `summary` written on socket close after three turns, standing `preferences`
 from a `[MEMORY:SET k=v]` tag, and the last ten `artifacts`. Everything that re-enters a prompt is
 sanitized and capped — the store is treated as a prompt-injection surface, deliberately.
@@ -78,7 +78,7 @@ everything impure takes an injectable override.
 
 ### The four gaps
 
-1. **No visibility** — jarvis has no idea what Claude Code sessions exist.
+1. **No visibility** — Dante has no idea what Claude Code sessions exist.
 2. **No spawn verb** — the only thing it can start is a throwaway build.
 3. **No way back in** — nothing can send a follow-up to a running session.
 4. **No out-of-band channel** — walk away and everything it knows is lost.
@@ -100,9 +100,9 @@ natively:
 | Stop one | `SIGTERM` the `pid` from the roster | — |
 
 `claude agents --json` explicitly "does not require a TTY (for scripting)" — a plain
-`child_process` call, the shape `lib/builder.js` already uses. It sees sessions jarvis did not
+`child_process` call, the shape `lib/builder.js` already uses. It sees sessions Dante did not
 start, which is exactly what tmux would have bought, without a system dependency.
-`--session-id <uuid>` lets jarvis assign the id at spawn rather than scraping it back out.
+`--session-id <uuid>` lets Dante assign the id at spawn rather than scraping it back out.
 
 **The record shape, as actually observed.** A live listing on this machine returned six sessions,
 and the important detail is how much of the record is *optional*:
@@ -130,7 +130,7 @@ and the important detail is how much of the record is *optional*:
 - `startedAt` is **epoch milliseconds as a number**, not an ISO string.
 
 That is why `parseRoster` normalises rather than validates: a record missing half its fields is
-still a session that exists, and dropping it would make jarvis confidently wrong about what is
+still a session that exists, and dropping it would make Dante confidently wrong about what is
 running.
 
 ---
@@ -155,11 +155,11 @@ Numbering continues the existing plan doc. **Stages 21–28 are the committed fi
 | 29 | `lib/slack.js` — threaded sink | `lib/slack.js`, `test/slack.test.js` | `server.js` |
 | 30 | `lib/transcript.js` + Haiku summaries | `lib/transcript.js`, `test/transcript.test.js` | `server.js` |
 | 31 | `lib/notify.js` — event prose | `lib/notify.js`, `test/notify.test.js` | `server.js` |
-| 32 | The hook bridge | `hooks/jarvis-notify.mjs` | `server.js`, `README.md` |
-| 33 | Voice approval | `lib/approval.js`, `hooks/jarvis-approve.mjs`, `test/approval.test.js` | `server.js`, `public/app.js` |
+| 32 | The hook bridge | `hooks/dante-notify.mjs` | `server.js`, `README.md` |
+| 33 | Voice approval | `lib/approval.js`, `hooks/dante-approve.mjs`, `test/approval.test.js` | `server.js`, `public/app.js` |
 | **D** | **Mean what you say** | | |
 | 34 | Only the repositories you named | — | `lib/agents.js`, `test/agents.test.js`, `server.js` |
-| 35 | The ceiling counts jarvis's own sessions | — | `lib/agents.js`, `test/agents.test.js`, `server.js` |
+| 35 | The ceiling counts Dante's own sessions | — | `lib/agents.js`, `test/agents.test.js`, `server.js` |
 | 36 | Propose, then act | `lib/confirm.js`, `test/confirm.test.js` | `server.js` |
 | 37 | A persona that proposes rather than assumes | — | `lib/brain.js`, `test/brain.test.js`, `README.md` |
 | **E** | **Polish** | | |
@@ -186,7 +186,7 @@ describeRoster(roster, aliases)  -> one short spoken line
 diffRoster(previous, next)       -> events[]        // added in Stage 26
 ```
 
-`parseRoster` must never throw. A CLI version that renames a field costs jarvis its roster for one
+`parseRoster` must never throw. A CLI version that renames a field costs Dante its roster for one
 turn, never the turn itself: a non-array top level, malformed JSON, or a missing `sessionId`
 degrades to `[]` — the posture of `loadStore` and `readSharedSettings`.
 
@@ -275,7 +275,7 @@ claude --bg -n "<name>" --session-id <uuid> [--model <m>] [--effort <e>]
 ```
 
 in the resolved workspace directory. `buildStartArgs(spec)` is pure and tested; `startSession` is
-the thin impure caller. Jarvis records `{ uuid, alias, name, task, kind, startedAt }` in memory,
+the thin impure caller. Dante records `{ uuid, alias, name, task, kind, startedAt }` in memory,
 speaks one short confirmation, posts the Slack parent message (Phase C), and returns. It never
 waits — that is the whole point.
 
@@ -284,8 +284,8 @@ terminal counts too, and a session that died does not. A sixth request gets "you
 running, sir" and names the oldest idle one as the obvious thing to stop.
 
 **Security posture, stated deliberately.** These sessions run with your settings, your permissions,
-your hooks, your MCP servers. Jarvis imposes no deny list, because you asked for an orchestrator,
-not a sandbox, and a jarvis-shaped restriction would only make voice-started sessions weaker than
+your hooks, your MCP servers. Dante imposes no deny list, because you asked for an orchestrator,
+not a sandbox, and a Dante-shaped restriction would only make voice-started sessions weaker than
 terminal-started ones for no real gain. Three rules keep that deliberate rather than careless:
 
 - **Never pass `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`,** and
@@ -317,10 +317,10 @@ in that session's `cwd` — the cold path `lib/brain.js` already implements.
 
 **The gotcha, and it is real:** resuming a session that is *currently working* is not a join. Two
 processes on one session id is exactly the race `askResilient` and `conv.settled` exist to prevent
-inside jarvis, and it is worse across processes.
+inside Dante, and it is worse across processes.
 
 So `verb=tell` is gated on the roster. An `idle` session takes the follow-up immediately. A `busy`
-one gets it **queued** — jarvis says "queued, sir", stores it against that `sessionId` in memory,
+one gets it **queued** — Dante says "queued, sir", stores it against that `sessionId` in memory,
 and the Stage 26 poller delivers it on the first tick that sees the session idle. Queued text is
 capped and expires, so a follow-up from two hours ago does not surprise a session tomorrow.
 `--fork-session` is the wrong tool here: it starts a *new* conversation, which is not what "also
@@ -344,8 +344,8 @@ Threading needs a message timestamp back from Slack, and an incoming webhook ret
 this uses a **bot token and `chat.postMessage`** — still strictly outbound, no Socket Mode, no
 inbound surface of any kind.
 
-Config at `~/.config/jarvis/slack.json` (`{ botToken, channel }`), mirroring `lib/config.js`, with
-`JARVIS_SLACK_TOKEN` overriding. Unlike `loadFishConfig`, a missing config **does not throw at
+Config at `~/.config/dante/slack.json` (`{ botToken, channel }`), mirroring `lib/config.js`, with
+`DANTE_SLACK_TOKEN` overriding. Unlike `loadFishConfig`, a missing config **does not throw at
 startup** — Slack is an enhancement, and a user without it should still get a working assistant.
 
 ```
@@ -407,13 +407,13 @@ reachable over the VPN.
 
 - Reject anything but `POST`, a small `Content-Length`, `application/json`.
 - Parse strictly; anything unexpected is dropped silently. Any local process can reach this, and it
-  must never become a way to make jarvis say arbitrary things.
+  must never become a way to make Dante say arbitrary things.
 - **Nothing from the payload reaches a model prompt.** It reaches `formatEvent` and the speaker,
   both of which sanitize.
 
-Ship `hooks/jarvis-notify.mjs`: a small `node:`-only script that reads the hook event on stdin and
+Ship `hooks/dante-notify.mjs`: a small `node:`-only script that reads the hook event on stdin and
 POSTs it to `http://127.0.0.1:3210/hook`. You wire it into `~/.claude/settings.json` under `Stop`,
-`Notification` and `SessionEnd`; the README documents the snippet. **Jarvis never writes
+`Notification` and `SessionEnd`; the README documents the snippet. **Dante never writes
 `~/.claude/` itself** — its own build deny list forbids exactly that, on the grounds that hooks are
 code that runs on your next session, and it would be incoherent for the assistant to make an
 exception for itself.
@@ -444,7 +444,7 @@ parseYesNo(text)                                -> "yes" | "no" | "unclear"
 Both pure, both in `lib/approval.js`, both heavily tested — `inApprovalScope` decides whether you
 get interrupted, and `parseYesNo` decides whether a `git push` happens.
 
-`hooks/jarvis-approve.mjs` POSTs the tool call to `/approve` and blocks on the response. Server
+`hooks/dante-approve.mjs` POSTs the tool call to `/approve` and blocks on the response. Server
 side:
 
 - **No connected browser → return no decision immediately.** The session falls back to its normal
@@ -467,8 +467,8 @@ scoping problem.
 
 **The defect.** "Start a session to summarize the README" was refused, and a *different, working*
 session was stopped. The five-session ceiling counted `kind === "background"` straight off the
-roster, and a Claude Code background job is indistinguishable from one jarvis started. Observed
-with **zero** jarvis sessions ever created: four background sessions, none of them jarvis's. And
+roster, and a Claude Code background job is indistinguishable from one Dante started. Observed
+with **zero** Dante sessions ever created: four background sessions, none of them Dante's. And
 the refusal then named one of them -- "... is idle if you want it stopped" -- pointing at a session
 the user never created and inviting exactly the stop that followed.
 
@@ -477,7 +477,7 @@ lossy channel; the guardrail for that is not a better prompt, it is a confirmati
 actually gives.
 
 **The scoping problem.** The roster is *every* session on the machine, which means other tools'
-internals -- a claude-mem skill keeps two running -- plus jarvis's own brain and builders. A control
+internals -- a claude-mem skill keeps two running -- plus Dante's own brain and builders. A control
 plane that narrates its own plumbing is one that can also be asked to stop it.
 
 **Stage 34 — only the repositories you named.** `visibleSessions(roster, { roots, hideIds,
@@ -486,14 +486,14 @@ the roster line in every turn, `diffRoster`'s events, `matchSessions`, queue del
 ceiling all read what it returns. A hidden session cannot be named, told, counted or stopped,
 because nothing downstream ever sees it. `roots` are the workspaces already in memory -- one
 concept, not two -- and containment uses `resolveWorkspacePath`'s rule, so `jarvis-notes` is not
-inside `jarvis`. `hideIds` hides jarvis's own brain exactly, by id rather than by name, because
+inside `jarvis`. `hideIds` hides Dante's own brain exactly, by id rather than by name, because
 offering to stop your own brain must be impossible rather than unlikely; `hideRoots` covers builds,
-which carry no id jarvis assigned but do live in `builds/`.
+which carry no id Dante assigned but do live in `builds/`.
 
-**Stage 35 — the ceiling counts jarvis's own sessions.** `ownRunning(roster, remembered)`
+**Stage 35 — the ceiling counts Dante's own sessions.** `ownRunning(roster, remembered)`
 intersects the live roster with the sessions `rememberSession` recorded starting. Exact in both
-directions: a session started in a terminal never counts, and one jarvis started that has since
-died does not either. A refusal can then only name a session jarvis itself started.
+directions: a session started in a terminal never counts, and one Dante started that has since
+died does not either. A refusal can then only name a session Dante itself started.
 
 **Stage 36 — propose, then act.** `lib/confirm.js`: `describeIntent` builds the confirmation
 sentence **from the parsed tag**, never from the model's spoken reply, so a model that says one
@@ -530,7 +530,7 @@ this is a second panel, not a repoint.
 "conditional — chain on success, report on failure," and that turned out not to be implementable: a
 Claude Code session exposes no pass/fail verdict, only `idle` or `gone` from the Stage 26 poller, and
 `reportComplete` has a transcript summary to read rather than a result to check. So a chain fires on
-**completion**, with one carve-out — a session stopped from jarvis itself has its chain dropped,
+**completion**, with one carve-out — a session stopped from Dante itself has its chain dropped,
 because ending something on purpose is not the same as it finishing what it was asked to do. The
 table lives in `lib/memory.js` beside the follow-up queue, bounded the same three ways: depth, age
 and total size. Chains are capped in depth and expire, and a chained session counts against the
@@ -554,7 +554,7 @@ primitive, are all running today.
 
 ## Deliberately not on this roadmap
 
-- **Jarvis editing your source.** Read-only. The sessions it starts do the writing.
+- **Dante editing your source.** Read-only. The sessions it starts do the writing.
 - **A code panel or editor hand-off.** Voice-only, by decision.
 - **Wake word / hands-free.** Push-to-talk stays.
 - **Remote access work.** Already working as intended.
@@ -583,22 +583,22 @@ claude --help | grep -E -- '--bg|--session-id|-n,|--append-system-prompt|--effor
 `npm test` passing is automated and green; every checklist below is a person standing in the room
 doing the thing, and for every phase, A through E, that check is still owed.
 
-- **A** — start a session by hand in another repo; ask jarvis "what's running?". It names the repo
+- **A** — start a session by hand in another repo; ask Dante "what's running?". It names the repo
   and its state without being told anything. Kill the CLI mid-listing and confirm the turn still
   answers, just without the roster.
 - **B** — "start a session in jarvis to read the README": `claude agents --json` shows a new
   background session in that cwd within a second, named `jarvis-N-read-the-readme`. Say "tell it to
-  summarize what it found" **while it is busy** and confirm jarvis queues rather than forks — then
+  summarize what it found" **while it is busy** and confirm Dante queues rather than forks — then
   confirm delivery once it goes idle. Start six sessions and confirm the sixth is refused by name.
   "Stop jarvis one" and confirm it leaves the roster.
 - **C** — install the hook snippet, run a short session, confirm exactly **one** Slack thread with a
   parent and threaded replies (not two — the poller and hooks must dedupe). Confirm the completion
-  reply carries a real one-sentence summary. Kill the jarvis server mid-session and confirm the
+  reply carries a real one-sentence summary. Kill the Dante server mid-session and confirm the
   session itself is unaffected. For Stage 33: trigger a `git push` from a session with the browser
   closed and confirm it falls through rather than denying; repeat with the browser open and answer
   by voice both ways.
 - **D** — with a claude-mem observer session live, "what's running?" must not mention it, and
-  jarvis's own brain must never appear. With four background jobs running and no jarvis session
+  Dante's own brain must never appear. With four background jobs running and no Dante session
   ever started, "start a session in jarvis" must propose rather than refuse. Answer a proposal
   three ways — yes, no, and a correction — and confirm nothing is stopped that was not named out
   loud.

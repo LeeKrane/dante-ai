@@ -32,7 +32,7 @@ function spec(overrides = {}) {
 // buildStartArgs
 // ---------------------------------------------------------------------------
 
-test("a session starts detached, named, and with an id jarvis chose", () => {
+test("a session starts detached, named, and with an id Dante chose", () => {
   // The id is assigned rather than scraped back out of the output, which is
   // what lets everything afterwards refer to this session without waiting.
   assert.deepEqual(buildStartArgs(spec()), [
@@ -157,7 +157,7 @@ async function writeFake(name, body) {
 }
 
 before(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "jarvis-spawn-"));
+  workspace = await mkdtemp(join(tmpdir(), "dante-spawn-"));
 
   // A background agent detaches and leaves the parent alone, which from here
   // looks like a clean exit.

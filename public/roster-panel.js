@@ -11,7 +11,7 @@
 // function is one here, where it can be tested.
 
 // More than a handful on screen is a wall of text beside an orb. The roster
-// jarvis can see is already whitelisted to named repositories server-side, so
+// Dante can see is already whitelisted to named repositories server-side, so
 // this cap is about the panel rather than about scope.
 export const MAX_ROWS = 6;
 

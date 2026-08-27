@@ -53,7 +53,7 @@ function dbg(message) {
   dbgLines.push(`${time}  ${message}`);
   if (dbgLines.length > 16) dbgLines.shift();
   if (dbgEl) dbgEl.textContent = dbgLines.join("\n");
-  console.log(`[jarvis] ${message}`);
+  console.log(`[dante] ${message}`);
 }
 
 // ---- Build progress readout ----
@@ -158,7 +158,7 @@ function setCaption(text, who) { capEl.textContent = text; capEl.dataset.who = w
 // must never point itself at the artifact.
 function openArtifact(url) {
   // An empty url would resolve to the app's own address and open a second copy
-  // of Jarvis, so it is rejected before it reaches the URL parser.
+  // of Dante, so it is rejected before it reaches the URL parser.
   if (typeof url !== "string" || url.trim() === "") {
     dbg("open: ignored a missing url");
     return;
@@ -211,7 +211,7 @@ let freqBins = null;
 let timeBins = null;
 // The clip currently audible, and the state it was going to hand the orb to.
 // Kept because a source node cannot be stopped without a reference to it, which
-// is the whole reason Jarvis used to be impossible to interrupt.
+// is the whole reason Dante used to be impossible to interrupt.
 let playbackSource = null;
 let playbackHandoff = null;
 // The clip being received off the wire, which is not always the clip being
@@ -228,7 +228,7 @@ let incoming = null;
 // throughout because a private tab or a browser with storage disabled throws on
 // touching localStorage at all, and a volume button must not be able to break
 // the rest of the page over that.
-const VOLUME_KEY = "jarvis-volume";
+const VOLUME_KEY = "dante-volume";
 let volume = loadVolume();
 function loadVolume() {
   try { return parseStoredVolume(localStorage.getItem(VOLUME_KEY)); }
@@ -339,7 +339,7 @@ ws.onmessage = async (ev) => {
   let msg; try { msg = JSON.parse(ev.data); } catch { return; }
   if (msg.type === "state") setState(msg.value);
   else if (msg.type === "reply_text") {
-    setCaption(msg.text, "jarvis");
+    setCaption(msg.text, "dante");
     dbg(`reply: ${msg.text}`);
   }
   else if (msg.type === "progress") pushProgress(msg.line);
@@ -350,9 +350,9 @@ ws.onmessage = async (ev) => {
     watchSessions();
   }
   else if (msg.type === "ask") {
-    // A build needs a detail Jarvis doesn't have yet; the question is spoken as
+    // A build needs a detail Dante doesn't have yet; the question is spoken as
     // well, so the caption just mirrors it.
-    setCaption(msg.text, "jarvis");
+    setCaption(msg.text, "dante");
     // Whatever is said next answers this question rather than starting a new
     // request, which is how the HUD tells the two apart.
     awaitingAnswer = true;
@@ -413,7 +413,7 @@ ws.onmessage = async (ev) => {
 // locally -- a session's age changes every second and none of that is worth a
 // message.
 //
-// Only sessions jarvis may see reach here: the server filters to the
+// Only sessions Dante may see reach here: the server filters to the
 // repositories that were named out loud before any of this is sent.
 const sessionsEl = document.getElementById("sessions");
 let roster = [];
@@ -431,7 +431,7 @@ function renderSessions() {
     const line = document.createElement("div");
     line.className = `sess ${row.condition}`;
     // textContent throughout: a session name is written by whoever started the
-    // session, which is not always jarvis.
+    // session, which is not always Dante.
     const name = document.createElement("span");
     name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
     const cond = document.createElement("span");

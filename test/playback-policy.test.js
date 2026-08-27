@@ -14,7 +14,7 @@ import {
   takeAnnouncement,
 } from "../public/playback-policy.js";
 
-test("the button may be pressed while Jarvis is speaking, which is what makes him interruptible", () => {
+test("the button may be pressed while Dante is speaking, which is what makes him interruptible", () => {
   assert.equal(canStartListening("speaking", false, true), true);
 });
 

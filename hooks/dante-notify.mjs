@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Claude Code hook -> jarvis. Reads one hook event on stdin, posts it to the
-// local jarvis server, exits.
+// Claude Code hook -> Dante. Reads one hook event on stdin, posts it to the
+// local Dante server, exits.
 //
-// You install this yourself; jarvis never writes ~/.claude/. Its own build deny
+// You install this yourself; Dante never writes ~/.claude/. Its own build deny
 // list forbids exactly that, on the grounds that a hook is code that runs on
 // your next session, and it would be incoherent for the assistant to make an
 // exception for itself. The README carries the snippet.
@@ -11,15 +11,15 @@
 // notifier must never be able to damage the session it is notifying about.
 //
 //   - It always exits 0. A non-zero exit from a hook is a signal to Claude
-//     Code, and "jarvis is not running" is not a thing a session should be
+//     Code, and "Dante is not running" is not a thing a session should be
 //     told about, let alone blocked by.
 //   - It prints nothing. Hook stdout can be fed back into the session.
-//   - It gives up fast. A jarvis that is down or wedged must cost a session
+//   - It gives up fast. A Dante that is down or wedged must cost a session
 //     a second, not a stall.
 
 import { request } from "node:http";
 
-const PORT = Number(process.env.JARVIS_PORT) || 3210;
+const PORT = Number(process.env.DANTE_PORT) || 3210;
 const TIMEOUT_MS = 1000;
 const MAX_BODY = 4096;
 
@@ -39,7 +39,7 @@ process.stdin.on("end", () => {
   try { payload = JSON.parse(raw); } catch { return done(); }
   if (!payload || typeof payload !== "object") return done();
 
-  // Only the fields jarvis reads. The transcript path, the tool input and
+  // Only the fields Dante reads. The transcript path, the tool input and
   // everything else stays on this side: the server has a small body limit, and
   // sending what nothing reads is how a limit gets raised later for no reason.
   const body = JSON.stringify({
@@ -63,7 +63,7 @@ process.stdin.on("end", () => {
     (res) => { res.resume(); res.on("end", done); },
   );
   req.on("timeout", () => { req.destroy(); done(); });
-  req.on("error", done); // jarvis not running is the ordinary case, not an error
+  req.on("error", done); // Dante not running is the ordinary case, not an error
   req.end(body);
 });
 

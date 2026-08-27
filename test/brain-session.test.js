@@ -76,7 +76,7 @@ async function calls() {
 }
 
 before(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "jarvis-session-"));
+  workspace = await mkdtemp(join(tmpdir(), "dante-session-"));
   log = join(workspace, "calls.log");
 });
 

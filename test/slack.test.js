@@ -31,7 +31,7 @@ function fakeFetch(replies) {
 }
 
 function withTempConfig(contents, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "jarvis-slack-"));
+  const dir = mkdtempSync(join(tmpdir(), "dante-slack-"));
   const path = join(dir, "slack.json");
   try {
     if (contents !== null) writeFileSync(path, contents);
@@ -63,7 +63,7 @@ test("a config file with both halves enables Slack", () => {
 
 test("the environment beats the file, so a token need never be written to disk", () => {
   withTempConfig(JSON.stringify(CFG), (path) => {
-    const cfg = loadSlackConfig(path, { JARVIS_SLACK_TOKEN: "xoxb-env", JARVIS_SLACK_CHANNEL: "C999" });
+    const cfg = loadSlackConfig(path, { DANTE_SLACK_TOKEN: "xoxb-env", DANTE_SLACK_CHANNEL: "C999" });
     assert.equal(cfg.botToken, "xoxb-env");
     assert.equal(cfg.channel, "C999");
   });
