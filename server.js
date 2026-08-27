@@ -37,7 +37,7 @@ import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
-  addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
+  addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace,
   setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
@@ -1578,18 +1578,16 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 //
 // Split out because a chained session is started by a poller tick with no
 // socket in sight, and it must be started exactly the way a spoken one is --
-// same numbering, same naming, same thread. A second implementation would drift
-// on the first change to either.
+// same naming, same thread. A second implementation would drift on the first
+// change to either.
 async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined }) {
   const kind = sessionKinds.get(kindId) ?? null;
-  // Reserved before the spawn, not after: two requests in flight must not be
-  // handed the same number, and a number burned by a failed start is cheaper
-  // than two sessions called jarvis-3.
-  const number = nextSessionNumber(memoryStore, workspace.alias);
-  saveStore(memoryStore);
-
+  // No per-repository counter reserved here any more: a session's number on
+  // screen is its position in orderRoster's own order, decided fresh on every
+  // tick, not a value burned into the name at start time. buildName's only
+  // guard against a collision is the live names already in `taken`.
   const name = buildName(
-    { alias: workspace.alias, number, task, hint: kind?.nameHint?.({ task }) },
+    { task, hint: kind?.nameHint?.({ task }) },
     (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
   const sessionId = newSessionId();

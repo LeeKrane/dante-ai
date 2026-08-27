@@ -210,53 +210,33 @@ test("a task made entirely of filler still names something", () => {
   assert.equal(slugify(42), "");
 });
 
-test("a session is named for its repository, its number and its task", () => {
-  assert.equal(
-    buildName({ alias: "jarvis", number: 1, task: "fix the failing builder test" }),
-    "jarvis-1-fix-failing-builder-test",
-  );
+test("a session is named for its task alone, with no repository or counter in front of it", () => {
+  assert.equal(buildName({ task: "fix the failing builder test" }), "fix-failing-builder-test");
 });
 
 test("a kind's own hint beats the first few words of the task", () => {
   // "review" is a better name for a review than "look-over-my-recent-changes".
   assert.equal(
-    buildName({ alias: "jarvis", number: 3, task: "look over my recent changes", hint: "review" }),
-    "jarvis-3-review",
+    buildName({ task: "look over my recent changes", hint: "review" }),
+    "review",
   );
 });
 
-test("numbers count per repository, so jarvis one and fitness one are both sayable", () => {
-  assert.equal(buildName({ alias: "jarvis", number: 1, task: "x" }), "jarvis-1-x");
-  assert.equal(buildName({ alias: "fitness", number: 1, task: "x" }), "fitness-1-x");
-});
-
-test("a name with nothing to say is still a name", () => {
-  assert.equal(buildName({ alias: "jarvis", number: 2 }), "jarvis-2");
-  assert.equal(buildName({}), "session-1");
-  assert.equal(buildName({ alias: "jarvis", number: 0 }), "jarvis-1");
-  assert.equal(buildName({ alias: "jarvis", number: -4 }), "jarvis-1");
-  assert.equal(buildName({ alias: "jarvis", number: 1.5 }), "jarvis-1");
-});
-
-test("an alias is one word, whatever was stored", () => {
-  assert.equal(buildName({ alias: "Kranetic Fitness", number: 1, task: "x" }), "kranetic-1-x");
+test("a name with nothing to say falls back to the word session, never to nothing", () => {
+  assert.equal(buildName({}), "session");
+  assert.equal(buildName({ task: "the a of and" }), "session");
 });
 
 test("a name already in use gets a sibling rather than being reused", () => {
-  // Two live sessions with one name makes every later "stop jarvis one"
-  // ambiguous, and that command signals a real process.
-  const taken = ["jarvis-1-review"];
-  assert.equal(buildName({ alias: "jarvis", number: 1, hint: "review" }, taken), "jarvis-1-review-2");
-  assert.equal(
-    buildName({ alias: "jarvis", number: 1, hint: "review" }, [...taken, "jarvis-1-review-2"]),
-    "jarvis-1-review-3",
-  );
+  // Two live sessions with one name makes every later "tell review to also run
+  // the linter" ambiguous, and that command signals a real process.
+  const taken = ["review"];
+  assert.equal(buildName({ hint: "review" }, taken), "review-2");
+  assert.equal(buildName({ hint: "review" }, [...taken, "review-2"]), "review-3");
 });
 
 test("a very long task does not produce a name nobody can say", () => {
   const name = buildName({
-    alias: "jarvis",
-    number: 1,
     task: "completely rewrite the entire authentication subsystem including every single test",
   });
   assert.ok(name.length <= MAX_NAME_CHARS, `name was ${name.length} chars: ${name}`);
@@ -264,13 +244,13 @@ test("a very long task does not produce a name nobody can say", () => {
 
 test("a collision suffix never pushes the name past the cap", () => {
   const long = "x".repeat(MAX_NAME_CHARS * 2);
-  const first = buildName({ alias: "jarvis", number: 1, task: long });
-  const second = buildName({ alias: "jarvis", number: 1, task: long }, [first]);
+  const first = buildName({ task: long });
+  const second = buildName({ task: long }, [first]);
   assert.ok(second.length <= MAX_NAME_CHARS, `name was ${second.length} chars`);
   assert.notEqual(second, first);
 });
 
 test("a taken list full of things that are not names is ignored rather than trusted", () => {
-  assert.equal(buildName({ alias: "jarvis", number: 1, hint: "review" }, null), "jarvis-1-review");
-  assert.equal(buildName({ alias: "jarvis", number: 1, hint: "review" }, [null, 42, {}]), "jarvis-1-review");
+  assert.equal(buildName({ hint: "review" }, null), "review");
+  assert.equal(buildName({ hint: "review" }, [null, 42, {}]), "review");
 });
