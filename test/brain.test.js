@@ -214,3 +214,30 @@ test("the persona says to ask rather than fill a gap in, on both tags", () => {
   // the same failure as one that guesses a subject.
   assert.equal(persona.match(/ask him\b/g)?.length, 2);
 });
+
+test("the persona interviews before a session, one question per turn, and marks each question with the interview tag", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /verb=interview for=/);
+  assert.match(persona, /one question per reply/);
+});
+
+test("the persona teaches the brief, and the two characters it may not contain", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /brief="/);
+  assert.match(persona, /double quotes/);
+  assert.match(persona, /square brackets/);
+});
+
+test("the persona skips the interview when the request is already clear, and obeys the question limit", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /four questions/);
+  assert.match(persona, /machine-state lines/);
+});
+
+test("the interview paragraph does not add another ask him", () => {
+  // The new paragraph teaches the same "do not guess, ask instead" idea as the
+  // rule it sits beside, so it would be easy to reuse the same two words by
+  // accident and break the count the older test pins.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.equal(persona.match(/ask him\b/g)?.length, 2);
+});
