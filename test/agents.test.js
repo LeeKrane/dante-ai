@@ -269,6 +269,35 @@ test("an alias someone chose beats the directory basename", () => {
   );
 });
 
+test("a session running in a worktree of a workspace is named by that workspace's alias", () => {
+  // Dante's own sessions call EnterWorktree and move under
+  // .claude/worktrees/<name>, which is still inside the repo (visibleSessions
+  // already treats it that way), so the spoken label must agree or the model
+  // hears a repository - "repo-persistence" - that does not exist and later
+  // reads it back into an [ACTION:SESSION ...] tag verbatim.
+  const JARVIS = "/home/krane/development/jarvis";
+  const aliases = { jarvis: JARVIS };
+
+  const worktree = session({
+    cwd: `${JARVIS}/.claude/worktrees/repo-persistence`,
+    name: "jarvis-10-add-persistent-whitelist-main",
+  });
+  const line = describeRoster(rosterOf(worktree), aliases, NOW);
+  assert.ok(line.includes("jarvis-10-add-persistent-whitelist-main"), line);
+  assert.ok(!line.includes("repo-persistence:"), line);
+
+  // A hand-named session in the same worktree still gets the repo prefix,
+  // because unlike a Dante-named one its name says nothing about where it lives.
+  const handNamed = session({
+    cwd: `${JARVIS}/.claude/worktrees/repo-persistence`,
+    name: "Empty Session",
+    status: "idle",
+    state: null,
+  });
+  const handLine = describeRoster(rosterOf(handNamed), aliases, NOW);
+  assert.ok(handLine.includes("jarvis: Empty Session"), handLine);
+});
+
 test("a session with no name at all is still described", () => {
   const roster = rosterOf(session({ name: null, status: "idle", state: null }));
   assert.equal(describeRoster(roster, {}, NOW), "one session: jarvis idle");
