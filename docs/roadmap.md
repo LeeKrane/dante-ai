@@ -547,9 +547,27 @@ most code questions is "ask the session already in that repo." But `primitives/a
 answering in prose — covers the case where nothing is running. One file, no wiring, exactly as the
 registry promises.
 
+**Stage 43 — ask first.** A one-line spoken request is rarely a brief a session can work from.
+When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what
+must not be touched, what done looks like), Dante interviews you with **one question per turn**, at
+most four, most important first; *"just start it"* or *"that's enough"* ends it early. The pure half
+is `lib/interview.js` — `noteInterview`, `interviewBlock`, `composeBrief`, `wantsToProceed`, a
+four-question cap and a ten-minute TTL. Each question carries an `[ACTION:SESSION verb=interview …]`
+marker so the server can count questions and keep the notes; `mergeTurns` folds that tally into
+every turn as a machine-state line, which is what makes the cap and the escape phrase enforced
+rather than hoped for, and what lets the interview survive a brain restart. When the picture is
+clear the ordinary start (or tell/interrupt) tag carries a `brief="…"` key; `lib/spawn-session.js`
+sends the brief as the session's prompt with the task kept as its name. The brief is deliberately
+**not read aloud** — a decision taken with the user: the spoken proposal only mentions it, and the
+page shows it in full while the yes is awaited. `public/activity-policy.js` and an `activity`
+message add a line below the state label naming what Dante is doing right now (*interviewing*,
+*awaiting your yes*, *starting jarvis*, *telling jarvis-1*, *reading jarvis-2*, *building landing
+page*), blank when nothing is. A request that is already specific gets no interview.
+
 Phases D and E shipped too, and are in daily use like A–C before them: the visibility and
 confirmation guardrails, and Phase E's announcements, sessions panel, chaining, recap and read-only
-primitive, are all running today.
+primitive, are all running today. Stage 43 is the newest and, like the rest, has had no manual
+walk-through yet.
 
 ---
 
@@ -604,6 +622,7 @@ doing the thing, and for every phase, A through E, that check is still owed.
   three ways — yes, no, and a correction — and confirm nothing is stopped that was not named out
   loud.
 - **E** — start a long session, walk away, come back, "catch me up".
+- **F** — start a vague session by voice, confirm one question per turn and the "interviewing" line, say "that's enough", confirm the proposal mentions the brief and the page shows it, say yes, and confirm the session's first user message in its transcript is the brief rather than the one-liner; then a specific request ("run npm test in jarvis") gets no interview.
 
 Every stage leaves `npm test` green and the browser working before the next starts — the rule the
 first twenty stages ran under, unchanged.
