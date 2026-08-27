@@ -220,3 +220,60 @@ test("an alias from the memory store names the repo the session lives in", () =>
   });
   assert.match(merged, /fitness: Empty Session idle/);
 });
+
+// ---------------------------------------------------------------------------
+// The interview line riding along in the turn
+// ---------------------------------------------------------------------------
+
+test("a turn with no interview is byte-identical to what it was", () => {
+  // The whole reason the interview is opt-in: every turn of an ordinary
+  // conversation has to be byte-identical to what it was, or the assistant
+  // starts paying for a feature nobody asked for on every sentence.
+  const baseline = mergeTurns(["x"]);
+  assert.equal(mergeTurns(["x"], { interview: "" }), baseline);
+  assert.equal(mergeTurns(["x"], { interview: undefined }), baseline);
+  assert.equal(
+    mergeTurns(["x"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: "" }),
+  );
+  assert.equal(
+    mergeTurns(["x"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: undefined }),
+  );
+});
+
+test("an interview line rides in the machine-state block after the roster lines", () => {
+  const merged = mergeTurns(["what's running?"], {
+    roster: ROSTER,
+    now: NOW,
+    interview: "we were building a feature",
+  });
+  // The interview line appears after the roster.
+  assert.match(merged, /jarvis-1-builder-test-fix working/);
+  assert.match(merged, /we were building a feature/);
+  // The interview line is before what was said, confirming it is in the
+  // machine-state block.
+  assert.ok(merged.indexOf("we were building a feature") < merged.indexOf("what's running?"));
+  // The request is still the last thing in the prompt.
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("an interview line with no roster still comes before what was said", () => {
+  const merged = mergeTurns(["what's running?"], {
+    interview: "we were building a feature",
+  });
+  // The interview line appears before what was said.
+  assert.match(merged, /we were building a feature/);
+  assert.ok(merged.indexOf("we were building a feature") < merged.indexOf("what's running?"));
+  // The request is still the last thing in the prompt.
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("a blank interview line adds nothing", () => {
+  const baseline = mergeTurns(["x"]);
+  assert.equal(mergeTurns(["x"], { interview: "   " }), baseline);
+  assert.equal(
+    mergeTurns(["x"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: "   " }),
+  );
+});
