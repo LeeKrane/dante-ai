@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   MAX_SESSIONS,
   MAX_TASK_CHARS,
+  MAX_BRIEF_CHARS,
   buildStartArgs,
   newSessionId,
   MAX_REPLY_CHARS,
@@ -141,6 +142,31 @@ test("a multi-line task becomes one line", () => {
   // thing that forges structure wherever the command is later rendered.
   const args = buildStartArgs(spec({ task: "fix the tests\nthen push" }));
   assert.equal(args[args.length - 1], "fix the tests then push");
+});
+
+test("a brief, when there is one, is what the session is told, and the task still names it", () => {
+  const args = buildStartArgs(spec({ brief: "Fix the flaky test. Do not touch lib/builder.js." }));
+  assert.equal(args[args.length - 2], "--");
+  assert.equal(args[args.length - 1], "Fix the flaky test. Do not touch lib/builder.js.");
+  assert.ok(args.includes("-n"));
+  assert.ok(args.includes("jarvis-1-fix-failing-builder-test"));
+});
+
+test("a start with a brief but no task is still not startable", () => {
+  assert.equal(buildStartArgs(spec({ task: "", brief: "x" })), null);
+});
+
+test("a brief is capped and cleaned like a task, at its own larger limit", () => {
+  const args = buildStartArgs(spec({ brief: "x".repeat(MAX_BRIEF_CHARS * 2) }));
+  assert.equal(args[args.length - 1].length, MAX_BRIEF_CHARS);
+  const argsWithControl = buildStartArgs(spec({ brief: "fix\u0000 the\u202e tests" }));
+  assert.equal(argsWithControl[argsWithControl.length - 1], "fix the tests");
+});
+
+test("a follow-up no longer loses the end of a brief-length message", () => {
+  const longText = "x".repeat(1500);
+  const args = buildTellArgs({ sessionId: ID, text: longText });
+  assert.equal(args[args.length - 1].length, 1500);
 });
 
 // ---------------------------------------------------------------------------
