@@ -152,10 +152,11 @@ it sees the ones you started in a terminal too — and you can drive them:
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `fix-failing-builder-test`, off the
   task alone — no repository or counter baked into the name, since the panel
-  already numbers it. Fifteen at a time, counted from the roster so terminal
-  sessions count too. Naming no repository at all starts it in your **main**
-  repository instead — the one you last named as such, or whichever was
-  current when the server first ran with none set.
+  already numbers it. Fifteen at a time — counted against the roster, so one
+  that has since died no longer holds its place, but only sessions Dante
+  itself started count toward the ceiling at all. Naming no repository at all
+  starts it in your **main** repository instead — the one you last named as
+  such, or whichever was current when the server first ran with none set.
 - *"Tell session three to run the tests as well"* — the message goes into
   that session's own input queue, exactly where a line you typed into its
   terminal would go, and it is picked up when the work in flight finishes.

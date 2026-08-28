@@ -18,6 +18,7 @@ import {
   stopSession,
   tellSession,
 } from "../lib/spawn-session.js";
+import { MAX_LISTED } from "../lib/agents.js";
 
 const ID = "abcd1234-0000-4000-8000-000000000000";
 
@@ -320,6 +321,13 @@ test("with no repositories known at all, the answer says so instead of listing n
 test("the ceiling is counted from the roster, so a session started in a terminal counts", () => {
   const spoken = refuseStart({ task: "x" }, { workspace: WORKSPACE, running: MAX_SESSIONS });
   assert.match(spoken, new RegExp(`${MAX_SESSIONS} sessions running`));
+});
+
+test("the session ceiling matches the panel's own cap, not a number of its own", () => {
+  // A numbered line is exactly as sayable at fifteen as it was at five, which
+  // is the whole reason this ceiling moved off its old, smaller default -- it
+  // has no business drifting from MAX_LISTED (lib/agents.js) again on its own.
+  assert.equal(MAX_SESSIONS, MAX_LISTED);
 });
 
 test("a refusal for being full names the obvious one to stop", () => {

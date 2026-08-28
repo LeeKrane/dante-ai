@@ -9,6 +9,7 @@ import {
   MAX_LISTED,
   MAX_ROSTER_AGE_MS,
   POLL_MS,
+  countWord,
   createRosterPoller,
   describeRoster,
   idleAmong,
@@ -315,6 +316,21 @@ test("an unrecognised state is never read aloud verbatim", () => {
   assert.match(line, /jarvis-1-builder-test-fix in jarvis, running/);
 });
 
+test("counting words reach all the way to the cap, not just the old five", () => {
+  // MAX_LISTED is fifteen; a hidden count or a refusal naming "how many are
+  // running" has to be able to say any of them as a word, not fall back to a
+  // bare digit the moment it passes ten.
+  assert.equal(countWord(11), "eleven");
+  assert.equal(countWord(12), "twelve");
+  assert.equal(countWord(13), "thirteen");
+  assert.equal(countWord(14), "fourteen");
+  assert.equal(countWord(15), "fifteen");
+});
+
+test("a count past the word list is read as the digit rather than nothing", () => {
+  assert.equal(countWord(16), "16");
+});
+
 // ---------------------------------------------------------------------------
 // orderRoster
 // ---------------------------------------------------------------------------
@@ -430,6 +446,25 @@ test("orderRoster tolerates a missing order and a missing roster", () => {
   assert.deepEqual(orderRoster(undefined), []);
   const [record] = orderRoster(rosterOf(session()));
   assert.equal(record.number, 1);
+});
+
+test("a duplicate alias in order cannot number the same repository's sessions twice", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const roster = rosterOf(
+    session({ sessionId: "a", cwd: JARVIS, startedAt: 1000 }),
+    session({ sessionId: "b", cwd: JARVIS, startedAt: 2000 }),
+  );
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis", "jarvis"] });
+  assert.equal(result.length, 2);
+  assert.deepEqual(result.map((r) => r.number), [1, 2]);
+});
+
+test("a non-object entry on the roster is skipped rather than crashing", () => {
+  const JARVIS = "/home/krane/development/jarvis";
+  const roster = [null, undefined, "not a session", 42, ...rosterOf(session({ cwd: JARVIS }))];
+  const result = orderRoster(roster, { aliases: { jarvis: JARVIS }, order: ["jarvis"] });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].number, 1);
 });
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { MAX_ROWS, elapsedLabel, groupsFromRoster, panelIsVisible, rowsFromRoster } from "../public/roster-panel.js";
+import { MAX_LISTED } from "../lib/agents.js";
 
 const NOW = 1_800_000_000_000;
 const record = (overrides = {}) => ({
@@ -50,7 +51,10 @@ test("more than a handful is a wall of text in the panel", () => {
     record({ sessionId: `s${i}`, number: i + 1, startedAt: NOW - i * 1000 }));
   const rows = rowsFromRoster(roster, NOW);
   assert.equal(rows.length, MAX_ROWS);
-  assert.equal(MAX_ROWS, 15);
+  // Not a number of its own: public/ cannot import lib/, so this local copy
+  // has to be kept in step by hand, and the whole point of the wire and the
+  // panel agreeing is that they cannot silently drift back apart.
+  assert.equal(MAX_ROWS, MAX_LISTED);
   // Cut after sorting by number, so what survives is the first fifteen numbers
   // rather than whatever the caller happened to hand this function.
   assert.equal(rows[0].id, "s0");
