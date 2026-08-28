@@ -768,8 +768,8 @@ const PROJECT_KEY = process.cwd();
 // The directory the server was started in is a workspace by definition -- it is
 // the repository the person is standing in -- so it is registered here rather
 // than waiting to be named out loud. Idempotent: re-registering a path already
-// known returns the existing alias and leaves its session counter alone, which
-// is what stops a week of restarts producing jarvis, jarvis-2, jarvis-3.
+// known returns the existing alias unchanged, which is what stops a week of
+// restarts producing jarvis, jarvis-2, jarvis-3.
 const boot = addWorkspace(memoryStore, PROJECT_KEY);
 let memoryChanged = Boolean(boot);
 

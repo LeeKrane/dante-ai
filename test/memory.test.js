@@ -26,7 +26,6 @@ import {
   applyWorkspaceTag,
   getWorkspace,
   getWorkspaces,
-  nextSessionNumber,
   resolveWorkspacePath,
   sanitizeAlias,
   workspacePaths,
@@ -474,14 +473,13 @@ test("a file, a missing path and a path with a NUL are all refused", () => {
   }
 });
 
-test("registering a repository gives it an alias and a counter", () => {
+test("registering a repository gives it an alias", () => {
   const home = fakeHome();
   try {
     const store = emptyStore();
     const added = addWorkspace(store, join(home, "development", "jarvis"), null, { home });
     assert.equal(added.alias, "jarvis");
     assert.equal(added.path, join(home, "development", "jarvis"));
-    assert.equal(added.counter, 0);
     assert.deepEqual(workspacePaths(store), { jarvis: join(home, "development", "jarvis") });
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -490,16 +488,14 @@ test("registering a repository gives it an alias and a counter", () => {
 
 test("registering the same repository twice does not accumulate aliases", () => {
   // The server registers its own cwd at every startup. Without this, a week of
-  // restarts leaves jarvis, jarvis-2, jarvis-3 and a counter that resets.
+  // restarts leaves jarvis, jarvis-2, jarvis-3.
   const home = fakeHome();
   try {
     const store = emptyStore();
     const repo = join(home, "development", "jarvis");
     const first = addWorkspace(store, repo, null, { home });
-    nextSessionNumber(store, "jarvis");
     const second = addWorkspace(store, repo, "something-else", { home });
     assert.equal(second.alias, first.alias);
-    assert.equal(second.counter, 1, "the counter must survive a re-registration");
     assert.equal(Object.keys(getWorkspaces(store)).length, 1);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -557,31 +553,12 @@ test("the number of remembered repositories is capped", () => {
   }
 });
 
-test("session numbers count per repository, so jarvis one and fitness one are both sayable", () => {
-  const home = fakeHome();
-  try {
-    const store = emptyStore();
-    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
-    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
-
-    assert.equal(nextSessionNumber(store, "jarvis"), 1);
-    assert.equal(nextSessionNumber(store, "jarvis"), 2);
-    assert.equal(nextSessionNumber(store, "fitness"), 1);
-    assert.equal(nextSessionNumber(store, "nobody"), null);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test("a counter corrupted on disk starts over rather than producing a session named NaN", () => {
-  const store = emptyStore();
-  store.workspaces = { jarvis: { path: "/somewhere", counter: "seven" } };
-  assert.equal(nextSessionNumber(store, "jarvis"), 1);
-});
-
 test("a store written before workspaces existed still reads", () => {
   assert.deepEqual(getWorkspaces({ version: 1, projects: {} }), {});
   assert.deepEqual(getWorkspaces(null), {});
+  // `counter` is a stray field a memory.json written before session numbering
+  // moved to orderRoster may still carry -- workspacePaths must not choke on
+  // it, or on any other field an entry has besides `path`.
   assert.deepEqual(workspacePaths({ workspaces: { a: "not an object", b: { counter: 1 } } }), {});
 });
 
@@ -629,12 +606,11 @@ test("workspaces survive a save and a load", () => {
   try {
     const path = join(home, "memory.json");
     const store = emptyStore();
-    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
-    nextSessionNumber(store, "jarvis");
+    const added = addWorkspace(store, join(home, "development", "jarvis"), null, { home });
     assert.equal(saveStore(store, path), true);
 
     const reloaded = loadStore(path);
-    assert.equal(getWorkspace(reloaded, "jarvis").counter, 1);
+    assert.equal(getWorkspace(reloaded, "jarvis").path, added.path);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
