@@ -211,7 +211,6 @@ test("a finished session is never named when the listing itself failed", () => {
   assert.equal(mergeTurns(["what's running?"], { roster: null, recalled: RECALLED, now: NOW }), "what's running?");
 });
 
-
 // ---------------------------------------------------------------------------
 // The interview line riding along in the turn
 // ---------------------------------------------------------------------------
