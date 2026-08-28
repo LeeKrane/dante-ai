@@ -529,12 +529,20 @@ let sessionsOpen = true;
 // textContent throughout: a session name is written by whoever started the
 // session, which is not always Dante, and a repository alias is a person's
 // own word for it.
-function sessionRowEl(row) {
+// `showRepo` is what actually decides whether the row repeats the repository:
+// the grouped panel already draws a header naming it (repoHeaderEl, below),
+// so a row there says only "3: name" -- but the flat fallback below (no
+// "workspaces" message has arrived yet) draws no headers at all, and a row
+// there is the only place the repository is ever said, so it keeps the
+// "repo/3: name" form. Either way the number, not the path, is what a spoken
+// "session three" refers to.
+function sessionRowEl(row, { showRepo } = {}) {
   const line = document.createElement("div");
   line.className = `sess ${row.condition}`;
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = row.where ? `${row.where}/${row.name}` : row.name;
+  const label = typeof row.number === "number" ? `${row.number}: ${row.name}` : row.name;
+  name.textContent = showRepo && row.where ? `${row.where}/${label}` : label;
   const cond = document.createElement("span");
   cond.className = "cond";
   cond.textContent = row.condition;
@@ -601,9 +609,9 @@ function renderSessions() {
       sessionsEl.replaceChildren(noneRowEl());
       return;
     }
-    // Rebuilt wholesale rather than diffed: eight rows of text is not a thing
+    // Rebuilt wholesale rather than diffed: fifteen rows of text is not a thing
     // worth reconciling, and a stale row would describe a session that has ended.
-    sessionsEl.replaceChildren(...rows.map(sessionRowEl));
+    sessionsEl.replaceChildren(...rows.map((row) => sessionRowEl(row, { showRepo: true })));
     return;
   }
 
@@ -611,7 +619,9 @@ function renderSessions() {
   const nodes = [];
   for (const group of groups) {
     nodes.push(repoHeaderEl(group));
-    nodes.push(...group.sessions.map(sessionRowEl));
+    // The group's own header just named this repository -- see showRepo's
+    // own comment on sessionRowEl for why a grouped row does not say it again.
+    nodes.push(...group.sessions.map((row) => sessionRowEl(row, { showRepo: false })));
   }
   // A row of headings with nothing under any of them reads, at a glance, like
   // the panel failed to load rather than like an idle machine -- the same

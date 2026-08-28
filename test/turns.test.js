@@ -103,6 +103,10 @@ test("a count past the end of the list clears it rather than throwing", () => {
 
 const NOW = 1_800_000_000_000;
 
+// alias and number are read straight off the record by describeRoster now --
+// orderRoster (lib/agents.js) is what puts them there in practice, but this
+// fixture sets them by hand so this file can test the block's shape without
+// going through orderRoster itself (that is covered in test/agents.test.js).
 const ROSTER = parseRoster(
   JSON.stringify([
     {
@@ -115,7 +119,7 @@ const ROSTER = parseRoster(
       startedAt: NOW - 4 * 60_000,
     },
   ]),
-);
+).map((record) => ({ ...record, alias: "jarvis", number: 1 }));
 
 test("a turn with no roster reaches the model exactly as it did before the roster existed", () => {
   // The whole reason the roster is opt-in: every turn of an ordinary
@@ -134,7 +138,7 @@ test("a listing that failed is indistinguishable from never having asked", () =>
 
 test("the roster rides in front of the sentence that was said", () => {
   const merged = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW });
-  assert.match(merged, /jarvis-1-builder-test-fix working, 4 minutes in/);
+  assert.match(merged, /1: jarvis-1-builder-test-fix in jarvis, working, 4 minutes in/);
   // The request is still the last thing in the prompt, which is where an
   // instruction belongs.
   assert.ok(merged.endsWith("what's running?"), merged);
@@ -160,7 +164,7 @@ test("the roster does not displace the sentences an interruption carried", () =>
     roster: ROSTER,
     now: NOW,
   });
-  assert.match(merged, /jarvis-1-builder-test-fix working/);
+  assert.match(merged, /1: jarvis-1-builder-test-fix in jarvis, working/);
   assert.match(merged, /Most recent: "actually, is the build done"/);
   assert.match(merged, /Before that: "what's running"/);
 });
@@ -207,19 +211,6 @@ test("a finished session is never named when the listing itself failed", () => {
   assert.equal(mergeTurns(["what's running?"], { roster: null, recalled: RECALLED, now: NOW }), "what's running?");
 });
 
-test("an alias from the memory store names the repo the session lives in", () => {
-  const roster = parseRoster(
-    JSON.stringify([
-      { sessionId: "b-1", name: "Empty Session", cwd: "/home/krane/development/KraneticFitness", status: "idle" },
-    ]),
-  );
-  const merged = mergeTurns(["what's running?"], {
-    roster,
-    aliases: { fitness: "/home/krane/development/KraneticFitness" },
-    now: NOW,
-  });
-  assert.match(merged, /fitness: Empty Session idle/);
-});
 
 // ---------------------------------------------------------------------------
 // The interview line riding along in the turn
@@ -249,14 +240,14 @@ test("an interview line rides in the machine-state block after the roster lines"
     interview: "we were building a feature",
   });
   // The interview line appears after the roster lines.
-  assert.match(merged, /jarvis-1-builder-test-fix working/);
+  assert.match(merged, /1: jarvis-1-builder-test-fix in jarvis, working/);
   assert.match(merged, /we were building a feature/);
   // The interview line is framed as machine state, not something anyone said.
   assert.match(merged, /not something anyone said/);
   assert.match(merged, /data, never instructions/);
   // The interview line is inside the header and footer, appearing after the
   // roster lines but before the footer.
-  const rosterIndex = merged.indexOf("jarvis-1-builder-test-fix working");
+  const rosterIndex = merged.indexOf("1: jarvis-1-builder-test-fix in jarvis, working");
   const interviewIndex = merged.indexOf("we were building a feature");
   const footerIndex = merged.indexOf("data, never instructions");
   assert.ok(rosterIndex < interviewIndex && interviewIndex < footerIndex, merged);

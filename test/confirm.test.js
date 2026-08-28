@@ -9,7 +9,9 @@ import {
   findTarget,
   isAnswerable,
   needsConfirmation,
+  parseSessionNumber,
   readAnswer,
+  readTarget,
 } from "../lib/confirm.js";
 
 // ---------------------------------------------------------------------------
@@ -38,8 +40,121 @@ test("an interview question is never held for a confirmation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseSessionNumber
+// ---------------------------------------------------------------------------
+
+test("a positive integer, or a numeral string, both parse as a session number", () => {
+  assert.equal(parseSessionNumber(3), 3);
+  assert.equal(parseSessionNumber("3"), 3);
+  assert.equal(parseSessionNumber(" 3 "), 3);
+  assert.equal(parseSessionNumber(15), 15);
+});
+
+test("zero, negative, fractional and partial numbers are all refused", () => {
+  for (const bad of [0, -1, -4242, 1.5, "0", "-1", "3a", "a3", "", "  ", null, undefined, NaN, Infinity, {}, []]) {
+    assert.equal(parseSessionNumber(bad), null, String(bad));
+  }
+});
+
+test("a number too large to be a real position is refused, not read as itself", () => {
+  // Number.isInteger(1e21) is true, and MAX_LISTED never gets anywhere near a
+  // thousand -- without this a spoken refusal would end up saying "There is
+  // no session 1e+21, sir." instead of treating it as the unparseable value
+  // it obviously is.
+  for (const tooBig of [1000, 1e21, Number.MAX_SAFE_INTEGER + 1, "1000", "9999"]) {
+    assert.equal(parseSessionNumber(tooBig), null, String(tooBig));
+  }
+  assert.equal(parseSessionNumber(999), 999);
+  assert.equal(parseSessionNumber("999"), 999);
+});
+
+// ---------------------------------------------------------------------------
 // findTarget
 // ---------------------------------------------------------------------------
+
+test("a number matches the session numbered that, exclusively, never falling back to the name", () => {
+  // The whole point of asking for a number: a model that guessed wrong about
+  // it must not still land on the right session by name.
+  const roster = [
+    { name: "jarvis-1-fix-tests", sessionId: "a", number: 1 },
+    { name: "bug-hunt", sessionId: "b", number: 2 },
+  ];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { number: 1 }), { record: roster[0], refusal: null });
+  assert.deepEqual(findTarget(roster, "nonsense", { number: 2 }), { record: roster[1], refusal: null });
+});
+
+test("a number that fails to parse refuses rather than falling back to a name that would match", () => {
+  // The exclusivity findTarget already promises for a valid number would be
+  // pointless if a merely GARBLED one fell back to the query instead --
+  // "number=3a" is an addressing attempt that failed, not an invitation to
+  // try the name.
+  const roster = [{ name: "bug-hunt", sessionId: "a", number: 3 }];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { number: "3a" }), {
+    record: null,
+    refusal: "I did not catch which session, sir.",
+  });
+});
+
+test("a sessionId matches that exact process, ahead of both a number and a name", () => {
+  const roster = [
+    { name: "bug-hunt", sessionId: "a", number: 1 },
+    { name: "fix-tests", sessionId: "b", number: 2 },
+  ];
+  assert.deepEqual(findTarget(roster, "fix-tests", { sessionId: "a", number: 2 }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("a sessionId that is no longer on the roster is refused by itself, not by name or number", () => {
+  const roster = [{ name: "bug-hunt", sessionId: "a", number: 1 }];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { sessionId: "gone", number: 1 }), {
+    record: null,
+    refusal: "That session is no longer running, sir.",
+  });
+});
+
+test("a sessionId is still refused correctly when the roster itself could not be read", () => {
+  assert.deepEqual(findTarget(null, "bug-hunt", { sessionId: "a" }), {
+    record: null,
+    refusal: "I cannot see what is running just now, sir.",
+  });
+});
+
+test("a sessionId resolves a session with no name at all, which a name query never could", () => {
+  // parseListing (lib/agents.js) allows name: null -- an interactive session
+  // can carry one -- so the second findTarget call a confirmed "yes" makes
+  // must not depend on a name that was never there. This is the bug a
+  // sessionId-less re-dispatch used to hit: `name ?? repo` fell through to
+  // "Which session, sir?" for exactly this record.
+  const roster = [{ name: null, sessionId: "a", number: 1 }];
+  assert.deepEqual(findTarget(roster, undefined, { sessionId: "a" }), { record: roster[0], refusal: null });
+});
+
+test("a number nothing answers to names the count, in words, rather than refusing blind", () => {
+  const roster = [
+    { name: "jarvis-1-fix-tests", sessionId: "a", number: 1 },
+    { name: "bug-hunt", sessionId: "b", number: 2 },
+  ];
+  assert.deepEqual(findTarget(roster, "", { number: 9 }), {
+    record: null,
+    refusal: "There is no session nine, sir. I count two.",
+  });
+});
+
+test("a number against an empty roster counts none rather than saying no", () => {
+  assert.deepEqual(findTarget([], "", { number: 3 }), {
+    record: null,
+    refusal: "There is no session three, sir. I count none.",
+  });
+});
+
+test("a listing that could not be read is refused the same way whether addressed by number or by name", () => {
+  assert.deepEqual(findTarget(null, "", { number: 3 }), {
+    record: null,
+    refusal: "I cannot see what is running just now, sir.",
+  });
+});
 
 test("a query that cleans to nothing asks which session, before the roster is even consulted", () => {
   assert.deepEqual(findTarget([{ name: "jarvis-1" }], ""), {
@@ -337,6 +452,89 @@ test("the session Dante resolved beats the name the model wrote", () => {
     }),
     "Tell jarvis-1-fix-failing-builder-test to run it. Shall I, sir?",
   );
+});
+
+test("a session addressed by number is confirmed by number, with the resolved name appended", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "stop", number: "3" },
+      target: { name: "bug-hunt" },
+    }),
+    "Stop session three, bug-hunt. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({
+      session: { verb: "tell", number: "3", task: "run the tests" },
+      target: { name: "bug-hunt" },
+    }),
+    "Tell session three, bug-hunt to run the tests. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({
+      session: { verb: "interrupt", number: "3", task: "check the other file first" },
+      target: { name: "bug-hunt" },
+    }),
+    "Interrupt session three, bug-hunt and tell it to check the other file first. Shall I, sir?",
+  );
+});
+
+test("a session addressed by number with nothing yet resolved says the number alone", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "stop", number: "3" } }),
+    "Stop session three. Shall I, sir?",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// readTarget
+// ---------------------------------------------------------------------------
+
+// A live roster record (what findTarget resolves a number against) and its
+// recallableSessions counterpart (what dispatchRead actually needs -- task,
+// running) are deliberately different shapes here, the same way they are in
+// practice: one comes off `claude agents --json`, the other off the store.
+const LIVE = [{ name: "bug-hunt", sessionId: "a", number: 1, cwd: "/home/krane/development/jarvis" }];
+const CANDIDATE = { sessionId: "a", name: "bug-hunt", cwd: "/home/krane/development/jarvis", task: "fix the tests", running: true };
+
+test("a number hits a live session that is also readable, and returns its candidate shape", () => {
+  assert.deepEqual(readTarget(LIVE, [CANDIDATE], { number: 1 }), { record: CANDIDATE, refusal: null });
+});
+
+test("a number hits a live session with nothing readable yet -- started this tick, no transcript", () => {
+  // recallableSessions drops a session with no transcript on disk, which a
+  // session started this very tick has not written yet -- findTarget alone
+  // would happily resolve it, so this is the one refusal readTarget adds on
+  // top of findTarget's own.
+  assert.deepEqual(readTarget(LIVE, [], { number: 1 }), {
+    record: null,
+    refusal: "I have nothing readable by that number, sir.",
+  });
+});
+
+test("a number that matches nothing on the roster is refused the way findTarget refuses it", () => {
+  assert.deepEqual(readTarget(LIVE, [CANDIDATE], { number: 9 }), {
+    record: null,
+    refusal: "There is no session nine, sir. I count one.",
+  });
+});
+
+test("a listing that could not be read refuses before either list is even consulted", () => {
+  assert.deepEqual(readTarget(null, [CANDIDATE], { number: 1 }), {
+    record: null,
+    refusal: "I cannot see what is running just now, sir.",
+  });
+});
+
+test("with no number, a name is matched against the candidates, live or finished alike", () => {
+  const finished = { sessionId: "b", name: "readme-summary", cwd: "/x", task: "", running: false };
+  assert.deepEqual(readTarget([], [finished], { name: "readme-summary" }), { record: finished, refusal: null });
+});
+
+test("a name nothing answers to is refused by name, not by number", () => {
+  assert.deepEqual(readTarget(LIVE, [CANDIDATE], { name: "nonsense" }), {
+    record: null,
+    refusal: "I have nothing readable by that name, sir.",
+  });
 });
 
 // ---------------------------------------------------------------------------

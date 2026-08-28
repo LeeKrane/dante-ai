@@ -8,7 +8,9 @@ import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
-import { clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer } from "./lib/confirm.js";
+import {
+  clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer, readTarget,
+} from "./lib/confirm.js";
 // `matches` is imported under a longer name because dispatchRead already has a
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
@@ -20,7 +22,9 @@ import { recallableSessions } from "./lib/recall.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
-import { createRosterPoller, idleAmong, isWorking, matchSessions, ownRunning, visibleSessions } from "./lib/agents.js";
+import {
+  MAX_LISTED, createRosterPoller, idleAmong, isWorking, orderRoster, ownRunning, visibleSessions,
+} from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
@@ -33,7 +37,7 @@ import { describeFailure } from "./lib/outcome.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
-  addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace, nextSessionNumber,
+  addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace,
   setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
@@ -99,11 +103,25 @@ const rosterPoller = createRosterPoller({
   //
   // Evaluated per tick rather than captured once, so naming a repository
   // mid-conversation widens it on the next tick with no restart.
-  filter: (roster) => visibleSessions(roster, {
-    roots: Object.values(workspacePaths(memoryStore)),
-    hideIds: ownSessionIds(),
-    hideRoots: [BUILDS],
-  }),
+  //
+  // orderRoster is applied here, in the one place every consumer of the roster
+  // shares -- onRoster, onEvents/broadcastRoster, current(), read() (the
+  // say-handler's own snapshot, and proposeSession's maxAgeMs: 0 re-read) and
+  // dispatchRead's recallable(roster) all see the same numbered records this
+  // produces. A workspace or main-repo change is picked up on the next poll
+  // tick, same as everything else that reads workspacePaths/workspacesForClient
+  // here -- except a main change made through the panel or a [MEMORY:SET
+  // main=...] tag, which renumbers right away (see renumberNow, below), since
+  // that reorders orderRoster's own buckets and is exactly the kind of change
+  // someone is looking at the panel to see happen.
+  filter: (roster) => orderRoster(
+    visibleSessions(roster, {
+      roots: Object.values(workspacePaths(memoryStore)),
+      hideIds: ownSessionIds(),
+      hideRoots: [BUILDS],
+    }),
+    { aliases: workspacePaths(memoryStore), order: workspacesForClient(memoryStore).map((w) => w.alias) },
+  ),
 
   // Drained on every tick a session is seen idle, not only the tick it
   // becomes idle, because a queue can gain an entry after that moment or
@@ -455,18 +473,22 @@ async function answerApproval(send, text) {
 // second and the page can count that itself.
 // More than this is a wall of text beside an orb, and the panel caps itself
 // again anyway. Cut here as well so the message stays small whatever a machine
-// running twenty sessions does.
-const MAX_ROSTER_ROWS = 8;
-
-function rosterForClient(roster, aliases) {
+// running twenty sessions does. MAX_LISTED, not a number of its own: the
+// numbering below is only meaningful if the panel and the model are looking at
+// the same cut of the same list.
+function rosterForClient(roster) {
   if (!Array.isArray(roster)) return [];
-  const byPath = Object.entries(aliases ?? {});
-  return roster.slice(0, MAX_ROSTER_ROWS).map((record) => ({
+  // The roster arrives already numbered (see the poller's own filter, above) --
+  // over the FULL list, not the slice below, so a hidden sixteenth session
+  // still has a number and "stop session sixteen" still resolves even though
+  // the panel never draws that row.
+  return roster.slice(0, MAX_LISTED).map((record) => ({
     sessionId: record.sessionId,
     name: record.name,
     // The alias rather than the path: a repository is called "jarvis" out loud,
     // and a page has no business being told where it lives on disk.
-    alias: byPath.find(([, path]) => record.cwd === path || record.cwd?.startsWith(`${path}/`))?.[0] ?? "",
+    alias: typeof record.alias === "string" ? record.alias : "",
+    number: record.number,
     state: record.state,
     status: record.status,
     startedAt: record.startedAt,
@@ -474,7 +496,7 @@ function rosterForClient(roster, aliases) {
 }
 
 function sendRoster(send, roster) {
-  send({ type: "roster", sessions: rosterForClient(roster, workspacePaths(memoryStore)) });
+  send({ type: "roster", sessions: rosterForClient(roster) });
 }
 
 function broadcastRoster(roster) {
@@ -496,6 +518,19 @@ function broadcastWorkspaces() {
   for (const ws of sessions.keys()) {
     if (ws.readyState === 1) sendWorkspaces((o) => ws.send(JSON.stringify(o)));
   }
+}
+
+// A new main repository (or a newly named workspace) can move where a
+// session's bucket sits in orderRoster's own canonical order -- main is
+// always first -- and that is a change worth showing right away, not on
+// whichever poll tick happens to land next. It is not, on its own, a change
+// diffRoster would ever notice: no session started, stopped, or changed
+// state, so the ordinary broadcastRoster call inside onEvents never fires for
+// it. A fresh, unforced read (maxAgeMs: 0) recomputes the numbering against
+// the memory store's new order and pushes that -- same re-read
+// proposeSession's own "yes" path already relies on for the same reason.
+function renumberNow() {
+  rosterPoller.read({ maxAgeMs: 0 }).then(broadcastRoster).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +637,11 @@ async function proposeSession(send, conv, session, roster) {
     // Resolved before it is ever proposed: a yes to a session that does not
     // exist is a false confirmation, and asking "shall I stop jarvis-1, sir?"
     // only to say "I cannot find jarvis-1 running" after the yes is worse than
-    // saying so up front.
-    const { record, refusal } = findTarget(roster, session.name ?? session.repo);
+    // saying so up front. The raw tag value is passed through rather than
+    // pre-parsed: findTarget itself now tells a garbled number apart from no
+    // number at all, and pre-parsing here would collapse that distinction
+    // before it ever got there.
+    const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
     // Every hop the name takes, on one line: what the tag actually carried,
     // what query that became, and what it resolved to or why it did not -- so
     // a truncated or mismatched name shows up here rather than only as a
@@ -612,7 +650,7 @@ async function proposeSession(send, conv, session, roster) {
     // than repeated below, which used to log the same refusal a second time
     // with none of the name or repo it was refused for.
     log(
-      `${verb} target: tag name=${JSON.stringify(session.name ?? null)} repo=${JSON.stringify(session.repo ?? null)} -> ${
+      `${verb} target: tag name=${JSON.stringify(session.name ?? null)} repo=${JSON.stringify(session.repo ?? null)} number=${JSON.stringify(session.number ?? null)} -> ${
         record ? `resolved ${JSON.stringify(record.name)} (${record.sessionId})` : `refused: ${refusal}`
       }`,
     );
@@ -641,7 +679,17 @@ async function proposeSession(send, conv, session, roster) {
     run: async () =>
       dispatchSession(
         send,
-        { ...session, ...(target ? { name: target.name } : {}) },
+        // The number is cleared here, deliberately: the roster re-read below
+        // can have reshuffled between the proposal and this "yes" (something
+        // else finished, freeing up a number), and resolving by number a
+        // second time would then target whatever session that number belongs
+        // to NOW, not the one just confirmed. sessionId is carried instead --
+        // it identifies the exact process this was proposed for, findTarget
+        // checks it before either a number or a name, and it stays correct
+        // even across a rename or a reshuffle, unlike the name field this
+        // used to rely on alone (a record with no name at all, `name: null`,
+        // is a real roster shape and made that plan silently unresolvable).
+        { ...session, ...(target ? { name: target.name, sessionId: target.sessionId } : {}), number: undefined },
         "",
         // Read again on the way in: the roster that produced the proposal is
         // however many seconds old the answer took to arrive, and a stop
@@ -1178,9 +1226,19 @@ function firstUnanswered(primitive, params) {
 //
 // The matching and the wording of each refusal live in lib/confirm.js's
 // findTarget, so they can be tested without a live roster; this is only the
-// wiring that speaks the refusal when there is one.
-async function resolveSession(send, roster, query, preamble) {
-  const { record, refusal } = findTarget(roster, query);
+// wiring that speaks the refusal when there is one. Takes the session itself,
+// not a pre-built query, because addressing by number or by sessionId needs
+// the tag's own `number`/`sessionId` keys alongside the name/repo query -- a
+// caller building that query by hand would otherwise have to remember to pass
+// those along too, and a forgotten one silently falls back to name matching.
+// Both are passed raw, unparsed: findTarget itself now tells "no number was
+// given" apart from "a number was given and it was garbled," and parsing here
+// first would collapse that distinction before it ever got there.
+async function resolveSession(send, roster, session, preamble) {
+  const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
+    number: session.number,
+    sessionId: session.sessionId,
+  });
   if (refusal) {
     await say(send, joinSpoken(preamble, refusal));
     return null;
@@ -1190,7 +1248,7 @@ async function resolveSession(send, roster, query, preamble) {
 
 // Ask a session to stop, and confirm it did before saying so.
 async function dispatchStop(send, session, preamble, roster) {
-  const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
+  const record = await resolveSession(send, roster, session, preamble);
   if (!record) return;
 
   activity(send, "stopping", { subject: record.name });
@@ -1236,7 +1294,7 @@ async function dispatchStop(send, session, preamble, roster) {
 // path stays underneath as the fallback for a session that has no peer
 // address to answer to.
 async function dispatchTell(send, session, preamble, roster, verb = "tell") {
-  const record = await resolveSession(send, roster, session.name ?? session.repo, preamble);
+  const record = await resolveSession(send, roster, session, preamble);
   if (!record) return;
 
   // The name resolved above is what this actually delivers to, not necessarily
@@ -1359,25 +1417,16 @@ function recallable(roster) {
 // is simply not readable, with no cached answer standing in for it.
 async function dispatchRead(send, session, preamble, roster) {
   const candidates = recallable(roster);
-  // Deliberately not resolveSession: that one resolves against the live roster,
-  // and every session this is for has left it. The matcher is the same
-  // (matchSessions works on anything carrying a name), so "jarvis three" finds
-  // jarvis-3-fix-failing-builder-test here exactly as it does for a stop.
-  const matches = matchSessions(candidates, session.name ?? session.repo);
-  if (matches.length === 0) {
-    await say(send, joinSpoken(preamble, "I have nothing readable by that name, sir."));
-    return;
-  }
-  if (matches.length > 1) {
-    // Never the first of several. Reading the wrong session's work back is a
-    // quieter mistake than stopping the wrong process, but it is still an answer
-    // about work that was never done.
-    const names = matches.slice(0, 3).map((record) => record.name).join(", ");
-    await say(send, joinSpoken(preamble, `Which one, sir? ${names}.`));
+  // The number-then-name resolution, and the wording of each refusal, live in
+  // lib/confirm.js's readTarget so they can be tested without a live roster or
+  // a real transcript on disk -- this is only the wiring that speaks the
+  // refusal when there is one.
+  const { record, refusal } = readTarget(roster, candidates, session);
+  if (refusal) {
+    await say(send, joinSpoken(preamble, refusal));
     return;
   }
 
-  const record = matches[0];
   const question = session.question ?? session.task ?? session.text ?? session.message;
 
   activity(send, "reading", { subject: record.name });
@@ -1521,18 +1570,16 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 //
 // Split out because a chained session is started by a poller tick with no
 // socket in sight, and it must be started exactly the way a spoken one is --
-// same numbering, same naming, same thread. A second implementation would drift
-// on the first change to either.
+// same naming, same thread. A second implementation would drift on the first
+// change to either.
 async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined }) {
   const kind = sessionKinds.get(kindId) ?? null;
-  // Reserved before the spawn, not after: two requests in flight must not be
-  // handed the same number, and a number burned by a failed start is cheaper
-  // than two sessions called jarvis-3.
-  const number = nextSessionNumber(memoryStore, workspace.alias);
-  saveStore(memoryStore);
-
+  // No per-repository counter reserved here any more: a session's number on
+  // screen is its position in orderRoster's own order, decided fresh on every
+  // tick, not a value burned into the name at start time. buildName's only
+  // guard against a collision is the live names already in `taken`.
   const name = buildName(
-    { alias: workspace.alias, number, task, hint: kind?.nameHint?.({ task }) },
+    { task, hint: kind?.nameHint?.({ task }) },
     (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
   const sessionId = newSessionId();
@@ -1854,6 +1901,7 @@ wss.on("connection", (ws) => {
       if (setMainRepo(memoryStore, msg.alias)) {
         saveStore(memoryStore);
         broadcastWorkspaces();
+        renumberNow();
         log(`main repository set to ${getMainRepo(memoryStore)}`);
       } else {
         log(`set_main refused: ${JSON.stringify(msg.alias)}`);
@@ -1986,6 +2034,7 @@ wss.on("connection", (ws) => {
             ? `main repository set to ${getMainRepo(memoryStore)}`
             : `workspace set ${JSON.stringify(workspaces)}`);
           broadcastWorkspaces();
+          renumberNow();
         }
         const saved = applyMemoryTag(memoryStore, PROJECT_KEY, memory);
         if (saved) {

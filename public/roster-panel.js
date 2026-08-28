@@ -10,10 +10,12 @@
 // The fifth pure client module. app.js paints; every decision that can be a
 // function is one here, where it can be tested.
 
-// Matches the server's own MAX_ROSTER_ROWS (server.js): a dedicated panel has
+// Matches the server's own MAX_LISTED (lib/agents.js): a dedicated panel has
 // room for everything the server ever sends, so the cap is about agreeing
-// with the wire shape rather than about trimming for space.
-export const MAX_ROWS = 8;
+// with the wire shape rather than about trimming for space. A local copy
+// rather than an import -- public/ is served straight off disk with no
+// bundler, and cannot import from lib/.
+export const MAX_ROWS = 15;
 
 // Below this, "0s" flickering on every tick says less than nothing.
 const MIN_ELAPSED_MS = 1000;
@@ -52,29 +54,35 @@ function rowFromRecord(record, now) {
     // saying so with a blank name beats leaving a gap in the count.
     name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : "unnamed",
     where: typeof record.alias === "string" ? record.alias : "",
+    // The server numbers the roster once, the same way for the panel and for
+    // the model (lib/agents.js's orderRoster) -- a row's own number is that
+    // decision, not this panel's, so a click and a spoken "session three" name
+    // the same session.
+    number: Number.isInteger(record.number) ? record.number : null,
     condition: condition(record),
     elapsed: elapsedLabel(now - record.startedAt),
   };
 }
 
-// The roster, filtered to real sessions and sorted newest first -- the shared
-// first half of both rowsFromRoster and groupsFromRoster, so the one cap
-// (MAX_ROWS) and the one sort order are enforced in exactly one place.
+// The roster, filtered to real sessions -- the shared first half of both
+// rowsFromRoster and groupsFromRoster, so the one cap (MAX_ROWS) is enforced
+// in exactly one place.
+//
+// Sorted by number rather than left in whatever order the server sent, but
+// only defensively: the server already sends the roster in numbered order, and
+// this is what keeps the panel correct even so -- a session with no number
+// (a wire message from an older server, or a row the caller built by hand for
+// a test) sorts last rather than first, the same posture every other missing-
+// value sort in this codebase takes.
 function liveSorted(roster) {
   const list = Array.isArray(roster) ? roster : [];
   return list
     .filter((record) => record && typeof record.sessionId === "string" && record.sessionId)
-    // Sorted before the cap, so the six that survive are the six most recent
-    // rather than the first six the CLI happened to print. A session with no
-    // start time sorts last: an unknown age is not evidence of being new.
     .slice()
-    .sort((a, b) => (b.startedAt ?? -Infinity) - (a.startedAt ?? -Infinity));
+    .sort((a, b) => (a.number ?? Infinity) - (b.number ?? Infinity));
 }
 
-// rowsFromRoster(roster, now) -> what to paint, newest first.
-//
-// Newest first because a session started thirty seconds ago is the one being
-// thought about, and the one running since this morning is furniture.
+// rowsFromRoster(roster, now) -> what to paint, in numbered order.
 export function rowsFromRoster(roster, now = Date.now()) {
   return liveSorted(roster)
     .slice(0, MAX_ROWS)
@@ -87,9 +95,9 @@ export function rowsFromRoster(roster, now = Date.now()) {
 // the exact shape rowsFromRoster produces.
 //
 // The MAX_ROWS cap is applied once, globally, before any grouping happens --
-// the same newest-first cut rowsFromRoster makes -- so a machine running more
-// than a panel's worth of sessions loses the oldest ones everywhere, not just
-// within whichever repository happens to be drawn first.
+// the same cut rowsFromRoster makes, by number rather than by age -- so a
+// machine running more than a panel's worth of sessions loses the same ones
+// everywhere, not just within whichever repository happens to be drawn first.
 //
 // A session whose alias matches no known workspace (a stale alias, one from
 // before a repository was ever named) is not dropped: it goes into a trailing
