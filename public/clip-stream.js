@@ -1,9 +1,10 @@
 // Feeding a clip to a SourceBuffer as its bytes arrive.
 //
-// One of the pure client modules (see the others under public/*-policy.js):
-// browser-safe, no DOM, imported by app.js and the tests. app.js owns the
-// MediaSource, the media element and the audio graph, none of which exist
-// outside a browser; the part with the actual rule in it lives here and is
+// One of the pure client modules (the *-policy.js files, clip-stream.js,
+// roster-panel.js): browser-safe, no DOM, imported by app.js and the tests.
+// app.js owns the MediaSource, the media element and the audio graph, none of
+// which exist outside a browser; the part with the actual rule in it lives
+// here and is
 // tested against a fake sink.
 //
 // The rule: SourceBuffer.appendBuffer throws InvalidStateError if it is called

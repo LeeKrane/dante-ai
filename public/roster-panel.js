@@ -7,9 +7,10 @@
 // has been at it. That is a list, not a spiral, so it is a list -- the HUD is
 // left alone to do the thing it is good at.
 //
-// One of the pure client modules (see the others under public/*-policy.js):
-// browser-safe, no DOM, imported by app.js and the tests. app.js paints;
-// every decision that can be a function is one here, where it can be tested.
+// One of the pure client modules (the *-policy.js files, clip-stream.js,
+// roster-panel.js): browser-safe, no DOM, imported by app.js and the tests.
+// app.js paints; every decision that can be a function is one here, where it
+// can be tested.
 
 // Matches the server's own MAX_LISTED (lib/agents.js): a dedicated panel has
 // room for everything the server ever sends, so the cap is about agreeing

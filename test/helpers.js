@@ -31,6 +31,11 @@ export function logsArgvPreamble(logPath) {
   ];
 }
 
+// fn must be synchronous: the finally block below rmSync's the directory as
+// soon as fn returns, so an async fn would race its own cleanup and could
+// still be reading from the directory after it is gone. withTempFiles is the
+// async sibling of this, and its `return await` guard is what buys it the
+// right to take one.
 export function withTempDir(prefix, fn) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   try { return fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
