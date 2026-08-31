@@ -1,9 +1,10 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { writeFakeCli, logsArgvPreamble } from "./helpers.js";
 import { askResilient } from "../lib/brain.js";
 
 let workspace;
@@ -13,21 +14,7 @@ let log;
 // as opts.bin, so the spawn path is exercised for real rather than stubbed. Each
 // fake logs the arguments it was called with, which is how a test can tell the
 // retry went out cold.
-async function writeFake(name, body) {
-  const path = join(workspace, name);
-  await writeFile(
-    path,
-    [
-      "#!/usr/bin/env node",
-      'const fs = require("node:fs");',
-      `const LOG = ${JSON.stringify(join(workspace, "calls.log"))};`,
-      'fs.appendFileSync(LOG, process.argv.slice(2).join(" ") + "\\n");',
-      body,
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  return path;
-}
+const writeFake = (name, body) => writeFakeCli(workspace, name, body, { preamble: logsArgvPreamble(log) });
 
 const OK = 'process.stdout.write(JSON.stringify({ result: "Very good, sir.", session_id: "fresh-1" }));';
 const DIE = 'process.stderr.write("no conversation found"); process.exit(1);';

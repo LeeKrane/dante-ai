@@ -1,32 +1,28 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeCli } from "./helpers.js";
 import { ask, askResilient } from "../lib/brain.js";
 
 // Same shape as test/brain-resume.test.js: real fake CLIs on disk, passed as
 // opts.bin, each recording that it ran so an abandoned turn can be proved not to
-// have spawned a second one.
+// have spawned a second one. Unlike brain-resume.js/brain-session.js, the log
+// line here is a fixed "ran", not the argv — an abandoned turn's whole point is
+// that no one ever inspects what it was asked, only whether it ran at all.
 let workspace;
 const fake = {};
 
-async function writeFake(name, body) {
-  const path = join(workspace, name);
-  await writeFile(
-    path,
-    [
-      "#!/usr/bin/env node",
+const writeFake = (name, body) =>
+  writeFakeCli(workspace, name, body, {
+    preamble: [
       'const fs = require("node:fs");',
       `const LOG = ${JSON.stringify(join(workspace, "calls.log"))};`,
       'fs.appendFileSync(LOG, "ran\\n");',
-      body,
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  return path;
-}
+    ],
+  });
 
 const callCount = async () =>
   existsSync(join(workspace, "calls.log"))

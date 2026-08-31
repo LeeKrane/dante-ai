@@ -1,9 +1,10 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { writeFakeCli } from "./helpers.js";
 import {
   LIST_TIMEOUT_MS,
   MAX_LISTED,
@@ -476,11 +477,7 @@ const fake = {};
 
 // Same trick as test/builder.test.js: a real executable script, spawned for
 // real, so the child-process plumbing is under test rather than mocked away.
-async function writeFake(name, body) {
-  const path = join(workspace, name);
-  await writeFile(path, ["#!/usr/bin/env node", body].join("\n"), { mode: 0o755 });
-  return path;
-}
+const writeFake = (name, body) => writeFakeCli(workspace, name, body);
 
 before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "dante-agents-"));

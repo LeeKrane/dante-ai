@@ -15,10 +15,10 @@ These are enforced by the existing code but written down nowhere else:
   that last reason: `public/` is served straight off disk, so nothing there can `import` from
   `node_modules`. A browser-side dependency would mean a bundler, which is the rule this one is
   not allowed to break.
-- **Tests are `node:test` + `node:assert/strict`**, run by `npm test` (`node --test`). No test
-  framework, no mocking library. Impure code is tested against real temp directories
-  (`mkdtemp`) and real fake CLIs written to disk and passed as `opts.bin` — see the `writeFake`
-  helper in `test/builder.test.js`. Reuse the existing fixtures rather than inventing new ones.
+- **Tests are `node:test` + `node:assert/strict`**, run by `npm test` (`node --test 'test/*.test.js'`).
+  No test framework, no mocking library. Impure code is tested against real temp directories and
+  real fake CLIs written to disk and passed as `opts.bin` — see `writeFakeCli`, `withTempDir`, and
+  `withTempFiles` in `test/helpers.js`. Reuse the existing fixtures rather than inventing new ones.
 - **Note `assert.deepEqual` is strict here** (it comes from `node:assert/strict`), so widening a
   function's return shape breaks every whole-object assertion against it.
 - **Test names are full sentences** describing behaviour: `"a non-zero exit is a failed build,

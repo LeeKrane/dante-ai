@@ -1,9 +1,10 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { writeFakeCli, logsArgvPreamble } from "./helpers.js";
 import {
   askResilient,
   buildSessionArgs,
@@ -20,21 +21,7 @@ let log;
 // executable on disk, passed as opts.bin, so the spawn path is exercised for
 // real. One line per spawn in calls.log, which is how a test counts processes —
 // the whole point of this stage being that there is normally only ever one.
-async function writeFake(name, body) {
-  const path = join(workspace, name);
-  await writeFile(
-    path,
-    [
-      "#!/usr/bin/env node",
-      'const fs = require("node:fs");',
-      `const LOG = ${JSON.stringify(join(workspace, "calls.log"))};`,
-      'fs.appendFileSync(LOG, process.argv.slice(2).join(" ") + "\\n");',
-      body,
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  return path;
-}
+const writeFake = (name, body) => writeFakeCli(workspace, name, body, { preamble: logsArgvPreamble(log) });
 
 // A CLI that speaks stream-json: one prompt per line in, one result event per
 // line out, and a system event before each to prove the reader ignores them.

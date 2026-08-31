@@ -4,6 +4,7 @@ import { mkdtemp, readdir, rm, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFakeCli } from "./helpers.js";
 import { buildSpawnArgs, configuredMcpServers, run, stepSpec } from "../lib/builder.js";
 import marketingSite from "../primitives/marketing-site.mjs";
 
@@ -157,20 +158,10 @@ const CHAIN_BODY = (secondExit) => [
 // A fake CLI ignores its arguments entirely: it exists to produce a stream and
 // an exit code. `BIG` makes the tool_use line larger than one pipe chunk, which
 // is what proves the line reassembly in run() actually works.
-async function writeFake(name, body) {
-  const path = join(workspace, name);
-  await writeFile(
-    path,
-    [
-      "#!/usr/bin/env node",
-      'const fs = require("node:fs");',
-      'const BIG = "x".repeat(200000);',
-      body,
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  return path;
-}
+const writeFake = (name, body) =>
+  writeFakeCli(workspace, name, body, {
+    preamble: ['const fs = require("node:fs");', 'const BIG = "x".repeat(200000);'],
+  });
 
 before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "dante-builder-"));

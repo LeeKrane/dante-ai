@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, existsSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { withTempDir as withTempDirIn } from "./helpers.js";
 import {
   emptyStore,
   loadStore,
@@ -68,14 +69,7 @@ import { MAX_BRIEF_CHARS } from "../lib/interview.js";
 // mkdtempSync and cleans up in a try/finally, so nothing here ever reads or
 // writes the real ~/.config/dante/memory.json.
 
-function withTempDir(fn) {
-  const dir = mkdtempSync(join(tmpdir(), "dante-memory-"));
-  try {
-    return fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = (fn) => withTempDirIn("dante-memory-", fn);
 
 // --- loadStore --------------------------------------------------------
 

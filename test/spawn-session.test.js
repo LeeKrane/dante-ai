@@ -1,9 +1,10 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { writeFakeCli } from "./helpers.js";
 import {
   MAX_SESSIONS,
   MAX_TASK_CHARS,
@@ -190,11 +191,7 @@ test("a follow-up keeps its line breaks too, for the same reason a start brief d
 let workspace;
 const fake = {};
 
-async function writeFake(name, body) {
-  const path = join(workspace, name);
-  await writeFile(path, ["#!/usr/bin/env node", body].join("\n"), { mode: 0o755 });
-  return path;
-}
+const writeFake = (name, body) => writeFakeCli(workspace, name, body);
 
 before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "dante-spawn-"));

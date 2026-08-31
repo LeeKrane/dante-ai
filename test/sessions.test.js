@@ -1,10 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
+import { withTempFiles } from "./helpers.js";
 import {
   MAX_NAME_CHARS,
   buildName,
@@ -26,19 +25,8 @@ function validKind(overrides = {}) {
 }
 
 // Each temp dir gets a fresh path so dynamic import() never serves a cached
-// module. `return await` is load-bearing: without it the finally block deletes
-// the directory while fn is still awaiting an import.
-async function withTempSessions(files, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "dante-sessions-"));
-  try {
-    for (const [name, source] of Object.entries(files)) {
-      writeFileSync(join(dir, name), source);
-    }
-    return await fn(pathToFileURL(dir + "/"));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+// module — see test/helpers.js for the `return await` rationale.
+const withTempSessions = (files, fn) => withTempFiles("dante-sessions-", files, fn);
 
 const kindSource = (body) => `export default ${body};\n`;
 

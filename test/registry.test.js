@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { withTempFiles } from "./helpers.js";
 import { loadRegistry, validatePrimitive } from "../lib/registry.js";
 
 const PRIMITIVES = new URL("../primitives/", import.meta.url);
@@ -23,21 +24,9 @@ function validPrimitive(overrides = {}) {
   };
 }
 
-// Each temp dir gets a fresh path so dynamic import() never serves a cached module.
-// `return await` is load-bearing: without it the finally block deletes the
-// directory while fn is still awaiting an import, which only looks fine when
-// the fixture has a single file and the loader wins the race.
-async function withTempPrimitives(files, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "dante-primitives-"));
-  try {
-    for (const [name, source] of Object.entries(files)) {
-      writeFileSync(join(dir, name), source);
-    }
-    return await fn(pathToFileURL(dir + "/"));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+// Each temp dir gets a fresh path so dynamic import() never serves a cached
+// module — see test/helpers.js for the `return await` rationale.
+const withTempPrimitives = (files, fn) => withTempFiles("dante-primitives-", files, fn);
 
 function primitiveSource(body) {
   return `export default ${body};\n`;
