@@ -105,7 +105,7 @@ numbers.
 | Change | Where | Est. gain | Risk |
 |---|---|---|---|
 | **Keep the Fish connection warm.** `speakStream` calls bare global `fetch` with no dispatcher, no agent, and no keep-alive tuning. Undici's default keep-alive timeout is 4 seconds; conversational gaps are longer, so most clips pay a fresh TLS handshake to `api.fish.audio`. Fixable inside the no-new-dependencies rule with `node:https` and an `Agent({ keepAlive: true })`, or by prewarming the connection. Fish's own published time-to-first-audio is ~90 ms against the 350–450 ms observed here — the gap is network, not model. | `lib/tts.js` `speakStream`, `fishRequest` | ~100–200 ms | Rewrite |
-| **Delete the dead buffered path.** `speak()` has no production call site — `server.js` imports only `speakStream`. Housekeeping rather than latency, but it removes the tempting wrong answer. | `lib/tts.js` `speak` | — | Low |
+| **Delete the dead buffered path.** ~~`speak()` has no production call site — `server.js` imports only `speakStream`.~~ **Done:** `speak()` has been removed from `lib/tts.js`. | `lib/tts.js` `speak` | — | Low |
 
 ### Phase 3 — sentence pipelining, the structural one (est. 350–450 ms)
 

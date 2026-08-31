@@ -45,8 +45,8 @@ test("omits volume 0 from prosody, fish's own default", () => {
 test("fish is asked to start sending before the clip is finished", () => {
   // "normal" holds the whole clip server-side and sends it in one go: measured
   // 2213 ms to the first byte against 2256 ms for the last. "balanced" puts the
-  // first byte at 350 ms for the same reply. speak() still awaits the whole body,
-  // so today that is worth about 250 ms; the rest of it is what a streaming
+  // first byte at 350 ms for the same reply. A whole-body await, what speakStream
+  // replaces, is worth about 250 ms today; the rest of it is what a streaming
   // client spends, and it cannot spend it unless the bytes are already in flight.
   assert.equal(buildTtsRequest("hello", cfg).body.latency, "balanced");
 });
