@@ -1,9 +1,10 @@
 // Feeding a clip to a SourceBuffer as its bytes arrive.
 //
-// The fifth of the pure client modules (stt-policy.js, visibility-policy.js,
-// progress-policy.js, playback-policy.js). app.js owns the MediaSource, the
-// media element and the audio graph, none of which exist outside a browser; the
-// part with the actual rule in it lives here and is tested against a fake sink.
+// One of the pure client modules (see the others under public/*-policy.js):
+// browser-safe, no DOM, imported by app.js and the tests. app.js owns the
+// MediaSource, the media element and the audio graph, none of which exist
+// outside a browser; the part with the actual rule in it lives here and is
+// tested against a fake sink.
 //
 // The rule: SourceBuffer.appendBuffer throws InvalidStateError if it is called
 // while a previous append is still in flight, and `updateend` is the only signal

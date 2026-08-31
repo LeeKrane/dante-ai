@@ -7,10 +7,10 @@
 // trade-off, not a bug, and there is no other way to get pitch out of a clip
 // that was already synthesized at a fixed rate.
 //
-// The sixth of the pure client modules alongside volume-policy.js,
-// stt-policy.js, playback-policy.js, progress-policy.js, visibility-policy.js.
-// app.js owns the audio nodes; the numbers they are driven by live here so
-// they can be tested without a browser.
+// One of the pure client modules (see the others under public/*-policy.js):
+// browser-safe, no DOM, imported by app.js and the tests. app.js owns the
+// audio nodes; the numbers they are driven by live here so they can be
+// tested without a browser.
 
 export const MIN_PITCH = -12;
 export const MAX_PITCH = 12;

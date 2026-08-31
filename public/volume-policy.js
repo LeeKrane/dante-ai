@@ -4,8 +4,8 @@
 // browser's own output, set by the on-screen button and remembered on this
 // machine only.
 //
-// The fifth of the pure client modules alongside stt-policy.js,
-// playback-policy.js, progress-policy.js, visibility-policy.js. app.js owns the
+// One of the pure client modules (see the others under public/*-policy.js):
+// browser-safe, no DOM, imported by app.js and the tests. app.js owns the
 // GainNode and localStorage; the numbers it is driven by live here so they can
 // be tested without a browser.
 

@@ -1,9 +1,9 @@
 // When Dante may be interrupted, and where the orb lands when he is.
 //
-// The fourth of the pure client modules (stt-policy.js, visibility-policy.js,
-// progress-policy.js). app.js touches the DOM on its first line and can never be
-// unit-tested, so every decision that can be phrased as a function is phrased
-// here instead.
+// One of the pure client modules (see the others under public/*-policy.js):
+// browser-safe, no DOM, imported by app.js and the tests. app.js touches the
+// DOM on its first line and can never be unit-tested, so every decision that
+// can be phrased as a function is phrased here instead.
 
 // The five states the orb knows. Exported because the handoff a clip carries
 // arrives off the wire and has to be checked against something.
