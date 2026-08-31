@@ -1,4 +1,6 @@
-# dante-demo
+# Dante AI
+
+*A voice for Claude Code.*
 
 Talk to Claude Code out loud. Hold a key, speak, release — your words go to Claude
 Code running headless on your machine, and the reply comes back in a cloned voice
@@ -513,6 +515,10 @@ is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
 | "The build ran out of time" | it hit the primitive's `timeoutMs` → raise it, or ask for something smaller |
 | "The build finished but never wrote index.html" | the model stopped without producing the primitive's `outputContract` → read the log |
 | Any build failure, in detail | `builds/<timestamp>/build.log` — the on-screen error prints the full path |
+
+## Attribution
+
+Built on the original [jarvis-demo](https://github.com/jdrurka/jarvis-demo) fork.
 
 ## License
 
