@@ -32,6 +32,10 @@ import {
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
+import {
+  DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, discussionSection, listNotes,
+  notesContext, pruneNotes, recentNotes, sessionNoteSpec, topicIsLive, writeSection,
+} from "./lib/notes.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
@@ -56,6 +60,7 @@ import {
   setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
+  applyNoteLimitsTag, getNoteLimits,
 } from "./lib/memory.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -830,11 +835,26 @@ async function answerHeld(send, conv, text) {
   return true;
 }
 
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+
 // What earlier runs left behind. One server serves one project, so the whole
 // store is keyed by the directory it was started in. Read once here; every
 // write below goes through saveStore, which is atomic.
 const memoryStore = loadStore();
 const PROJECT_KEY = process.cwd();
+
+// Notes prune themselves on every write during a normal run (see writeSection
+// in lib/notes.js), but a limit lowered by hand in memory.json while the
+// server was down has to take effect without waiting for the next note to be
+// written, so cleanup also runs once here, against whatever limits the store
+// holds right now.
+{
+  const bootPruned = pruneNotes(NOTES_DIR, getNoteLimits(memoryStore));
+  const entries = listNotes(NOTES_DIR);
+  const totalBytes = entries.reduce((sum, e) => sum + (Number.isFinite(e.bytes) ? e.bytes : 0), 0);
+  log(`notes: ${entries.length} file(s), ${(totalBytes / 1024).toFixed(1)} KB in ${NOTES_DIR}`);
+  if (bootPruned.length > 0) log(`notes pruned at startup: ${bootPruned.join(", ")}`);
+}
 
 // The directory the server was started in is a workspace by definition -- it is
 // the repository the person is standing in -- so it is registered here rather
@@ -898,8 +918,6 @@ function brainSession() {
 }
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
-
-const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 // ---------------------------------------------------------------------------
 // Static files
@@ -1509,7 +1527,12 @@ function recallable(roster) {
 // produces goes into the recap log (recordEvent, a short list that a recap
 // reads once and clears), and this never consults it: a deleted session
 // is simply not readable, with no cached answer standing in for it.
-async function dispatchRead(send, session, preamble, roster) {
+//
+// What Dante says here IS kept, though: a successful read is filed as a note
+// (lib/notes.js) so the conversation that follows can build on it and a
+// restart does not forget it. The note is written from what was just read,
+// never read from -- see lib/recall.js's own comment for the full rule.
+async function dispatchRead(send, session, preamble, roster, conv) {
   const candidates = recallable(roster);
   // The number-then-name resolution, and the wording of each refusal, live in
   // lib/confirm.js's readTarget so they can be tested without a live roster or
@@ -1542,14 +1565,41 @@ async function dispatchRead(send, session, preamble, roster) {
     }
 
     log(`read ${record.name} (${text.length} chars)`);
+
+    // Filed before the answer is spoken, not after: a failed write here must
+    // never fail the read, so writeSection's null is simply "not saved" and
+    // the sentence below is spoken exactly the same either way.
+    const now = Date.now();
+    const spec = sessionNoteSpec(record, question, text, now);
+    const written = spec && writeSection(
+      NOTES_DIR,
+      spec.topic,
+      { ...spec.section, title: spec.title, summary: spec.summary, about: spec.about, facts: spec.facts },
+      getNoteLimits(memoryStore),
+    );
+    if (written) {
+      conv.notes.touch(written.note);
+      conv.topic = { topic: spec.topic, at: now };
+      log(`note saved ${spec.topic}`);
+      if (written.pruned.length > 0) log(`notes pruned: ${written.pruned.join(", ")}`);
+      const flag = describeContradictions(conv.notes.contradictions());
+      if (flag) conv.flag = joinSpoken(conv.flag, flag);
+    }
+
     // Said plainly when the session is still going, because "it decided X" and
     // "it has decided X so far" are different facts and the difference is whether
     // to act on it. `running` is null when the listing failed, and then nothing is
     // claimed either way rather than something being guessed.
+    //
+    // conv.flag rides last, after the answer: the read is what was asked for,
+    // and a contradiction between notes is a caveat about something else
+    // entirely, worth hearing only once the actual answer has been.
     await say(send, joinSpoken(
       preamble,
       record.running === true ? `${record.name} is still working, sir. So far: ${text}` : text,
+      conv.flag,
     ));
+    conv.flag = "";
   } finally {
     activity(send, null);
   }
@@ -1595,7 +1645,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     return;
   }
   if (session.verb === "read") {
-    await dispatchRead(send, session, preamble, roster);
+    await dispatchRead(send, session, preamble, roster, conv);
     return;
   }
   if (session.verb !== "start") {
@@ -1957,7 +2007,15 @@ wss.on("connection", (ws) => {
   // the call in flight, and `settled` is how the next one waits for the abandoned
   // child to finish dying -- two of them resuming one session id at the same
   // time is the race this whole arrangement exists to avoid.
-  const conv = { pending: null, proposal: null, interview: null, held: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
+  // notes/topic/flag are this conversation's memory-notes state: `notes` is the
+  // per-conversation tracker of notes touched (so a contradiction is only ever
+  // spoken once), `topic` is the note a session read most recently landed in
+  // (or null, once it goes stale -- see topicIsLive), and `flag` is a
+  // contradiction sentence waiting to be appended to the next thing spoken.
+  const conv = {
+    pending: null, proposal: null, interview: null, held: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve(),
+    notes: createNoteTracker(), topic: null, flag: "",
+  };
   const gate = createTurnGate();
 
   // Read fresh from the store rather than from a boot-time snapshot: a second
@@ -2079,9 +2137,20 @@ wss.on("connection", (ws) => {
       // The recallable list rides along for the same reason the roster does: a
       // finished session appears in no listing, so without it the model has
       // never heard the name it is being asked about.
+      // Folding a note into the prompt counts as accessing it, the same as a
+      // read does -- so every note this turn is about to fold in is touched
+      // before it is folded, and any contradiction that touch surfaces against
+      // a note touched earlier this conversation is queued in conv.flag to be
+      // spoken alongside whatever this turn ends up saying.
+      const folded = recentNotes(NOTES_DIR);
+      for (const note of folded) conv.notes.touch(note);
+      const flag = describeContradictions(conv.notes.contradictions());
+      if (flag) conv.flag = joinSpoken(conv.flag, flag);
+
       const asked = mergeTurns(conv.unanswered, {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
+        notes: notesContext(folded),
       });
       const answering = conv.unanswered.length;
 
@@ -2134,6 +2203,17 @@ wss.on("connection", (ws) => {
             : `workspace set ${JSON.stringify(workspaces)}`);
           broadcastWorkspaces();
           renumberNow();
+        }
+        // Lowering memory-max-mb or memory-max-files is itself a write to the
+        // memory system, so the cleanup it implies runs right here rather than
+        // waiting for the next note to be saved -- the same reason a lowered
+        // limit is also swept at startup, above.
+        const limits = applyNoteLimitsTag(memoryStore, memory);
+        if (limits) {
+          saveStore(memoryStore);
+          const pruned = pruneNotes(NOTES_DIR, getNoteLimits(memoryStore));
+          log(`note limits set ${JSON.stringify(limits)}`);
+          if (pruned.length > 0) log(`notes pruned: ${pruned.join(", ")}`);
         }
         const saved = applyMemoryTag(memoryStore, PROJECT_KEY, memory);
         if (saved) {
@@ -2332,8 +2412,28 @@ wss.on("connection", (ws) => {
           () => dispatchAction(send, conv, action, ""));
         if (!held) await dispatchAction(send, conv, action, reply);
       } else if (reply) {
-        if (await say(send, reply, undefined, () => gate.isCurrent(token))) {
+        // Captured before dropAnswered removes the prefix it addresses: `said`
+        // is exactly what this reply answered, and it is what a discussion
+        // section below records Krane as having said.
+        const said = conv.unanswered.slice(0, answering);
+        if (await say(send, joinSpoken(conv.flag, reply), undefined, () => gate.isCurrent(token))) {
           dropAnswered(conv.unanswered, answering);
+          conv.flag = "";
+          // Only a plain reply is ever appended to the note a read just landed
+          // in. A build or a session command is its own record already -- an
+          // artifact on disk, a line in the recap log -- so appending it here
+          // too would duplicate it; the discussion that follows a read is what
+          // the note exists to keep, and this branch is the only place that
+          // discussion is heard.
+          if (topicIsLive(conv.topic, Date.now())) {
+            const section = discussionSection(said, reply, Date.now());
+            const written = section && writeSection(NOTES_DIR, conv.topic.topic, section, getNoteLimits(memoryStore));
+            if (written) {
+              conv.topic.at = Date.now();
+              log(`note updated ${conv.topic.topic}`);
+              if (written.pruned.length > 0) log(`notes pruned: ${written.pruned.join(", ")}`);
+            }
+          }
         }
       } else {
         dropAnswered(conv.unanswered, answering);
@@ -2368,6 +2468,11 @@ wss.on("connection", (ws) => {
     conv.proposal = null;
     conv.interview = null;
     conv.held = null;
+    // The tracker itself lives only as long as the conv object does; a note's
+    // topic surviving past the conversation that read it would let a stale
+    // "still live" topic append an unrelated chat to it, so both die here too.
+    conv.topic = null;
+    conv.flag = "";
     // A question already asked is left to time out rather than answered by a
     // closing tab. Nothing is decided by a page going away.
     if (voice === send) voice = null;

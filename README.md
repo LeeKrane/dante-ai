@@ -133,6 +133,21 @@ file also names your repositories (`workspace:<name>=<path>`) and which one is
 name one; the panel lists it first, starred, and clicking any other
 repository's header there makes it the new main.
 
+**Notes** — `~/.config/dante/memory/`, one Markdown file per topic: a header
+(title, summary, a one-line description, created/updated timestamps, and any
+facts it holds) followed by dated sections, oldest first. What goes in: every
+session read, and the conversation that follows it for the next half hour —
+after that the topic goes stale and later chat is just chat again. What comes
+back: the four most recently updated notes ride along with every turn, so
+*"what did it decide"* still has an answer after a restart. Capacity defaults
+to 50 MB or 500 files, whichever comes first — the oldest-updated note is
+pruned first on every write, and the newest is never pruned even alone over
+the cap. Say *"keep your notes under a hundred megabytes"* and the model
+appends `[MEMORY:SET memory-max-mb=100]`; file count works the same way via
+`memory-max-files`. When two notes about the same session disagree on a fact
+— a task that changed, a status that moved on — Dante says so once per
+conversation and goes with the newer.
+
 **Builds.** *"Build me a landing page for a coffee shop called Ember."* It asks a
 question or two, then spawns a second Claude Code session with file tools on in a
 fresh `builds/<timestamp>/`, streams the work into the HUD around the orb, and
@@ -403,6 +418,7 @@ where there are no keys, tapping those is how the panels are toggled.
 | `lib/brain.js` | **the seam.** The warm CLI, the persona, `ask` / `askResilient`. |
 | `lib/agents.js` | the session roster: `claude agents --json`, parsed and said out loud. |
 | `lib/memory.js` | the store — preferences, summaries, artifacts, workspace aliases. |
+| `lib/notes.js` | the second half of memory — one Markdown file per topic, weighted and pruned. |
 | `lib/turns.js` | what one call carries: merged interruptions, the roster, the turn gate. |
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
@@ -470,6 +486,14 @@ reachable only for a session inside a repository you named out loud, and only
 while the file is there. The session id is checked against a strict alphabet
 before it names a file, because it arrives from a roster listing and from
 model-authored tags and neither is trusted to be a uuid.
+
+**Notes are a persistence surface too.** Files under `~/.config/dante/memory/`
+are written mode `0600`, same as `memory.json`. A topic name is always run
+through `topicSlug` before it becomes a filename, so nothing — a session
+name, a repository path — can walk a note out of that directory. Every line
+folded from a note back into a prompt is capped the same way the roster and
+the preference store are, because a note is exactly as much of an injection
+surface as either.
 
 **The gate.** The check that matters is at the WebSocket upgrade, not on the login
 page: a UI-only gate is skipped by opening the socket directly. `builds/` is gated
