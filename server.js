@@ -2264,17 +2264,6 @@ wss.on("connection", (ws) => {
       // what it was asked behind for the call that supersedes it, and only the
       // sentences this reply addressed come off, so one said during synthesis is
       // still waiting afterwards.
-      // conv.flag (a note contradiction found while folding notes into this
-      // turn's prompt, above) is only ever fused into something spoken by the
-      // two branches that speak sentence-shaped text -- dispatchRead's own
-      // read-back (reached through the session branch below) and the plain-
-      // reply branch further down. A session or build dispatch never speaks
-      // the flag, so without the finally it would sit on conv untouched and
-      // surface, wrongly glued onto whatever the NEXT turn happens to reply
-      // with. Clearing it here, once this turn's branch has run its course
-      // whether or not it was actually spoken, is what keeps it from ever
-      // crossing into a turn that had nothing to do with raising it.
-      try {
       if (session) {
         // The exact string the model produced, tag and all, before parseAction
         // ever touches it -- so a truncated or mangled name= can be traced back
@@ -2468,9 +2457,6 @@ wss.on("connection", (ws) => {
         dropAnswered(conv.unanswered, answering);
         log("brain returned no speakable text");
       }
-      } finally {
-        conv.flag = "";
-      }
     } catch (e) {
       // An abandoned turn is not a failure to report. Nobody is waiting on it,
       // the person is already mid-sentence, and the turn that superseded it owns
@@ -2489,6 +2475,19 @@ wss.on("connection", (ws) => {
       send({ type: "debug", stage: "error", msg: String(e.message || e) });
       send({ type: "error", message: String(e.message || e) });
       send({ type: "state", value: "idle" });
+    } finally {
+      // conv.flag (a note contradiction found while folding notes into
+      // this turn's prompt, well before this try) is only ever fused into
+      // something spoken by the two branches that speak sentence-shaped
+      // text -- dispatchRead's own read-back and the plain-reply branch
+      // above. Every other way this turn can end -- a session or build
+      // dispatch that never speaks it, the superseded-turn return above,
+      // or landing in the catch just above this -- leaves it unspoken, and
+      // only a finally on the OUTER try is guaranteed to run after every
+      // one of those. Clearing it here, unconditionally, is what keeps it
+      // from ever surviving into a turn that had nothing to do with
+      // raising it.
+      conv.flag = "";
     }
   });
   ws.on("close", () => {

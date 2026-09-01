@@ -731,6 +731,23 @@ test("saveNote returns saved: false for a note with an empty topic slug", () => 
   });
 });
 
+test("saveNote refuses to write a note whose created or updated is not a finite number", () => {
+  withTempDir((dir) => {
+    // isoOf writes "" rather than throwing for a non-finite timestamp, which
+    // means formatNote would happily produce a header line reading
+    // "created: " with nothing after it -- a file parseHeaderText refuses to
+    // read back. Writing it anyway would leave the topic worse off than no
+    // write at all, so saveNote refuses before formatNote ever runs.
+    const badCreated = saveNote(dir, { ...makeNote(), topic: "jarvis-3", created: NaN });
+    assert.deepEqual(badCreated, { saved: false, pruned: [] });
+
+    const badUpdated = saveNote(dir, { ...makeNote(), topic: "jarvis-3", updated: Infinity });
+    assert.deepEqual(badUpdated, { saved: false, pruned: [] });
+
+    assert.deepEqual(readdirSync(dir), []);
+  });
+});
+
 test("saveNote returns saved: false and leaves no temp file when the write fails", () => {
   if (process.getuid && process.getuid() === 0) return; // root ignores permission bits
 
@@ -1106,6 +1123,26 @@ test("a section whose text contains a forged '## ... · ...' boundary survives w
     assert.equal(reloadedAgain.sections[0].text, tricky);
     assert.equal(reloadedAgain.sections[1].text, "reply");
   });
+});
+
+test("a section text line already escaped (starting with a backslash before '## ') round-trips byte-identical through format/parse twice", () => {
+  // If escaping only triggered on a bare "## " line, a line that already
+  // read like this -- real text, or the output of a PRIOR write/parse cycle
+  // on this same note -- would pass through unescaped on write and then lose
+  // its one real leading backslash on parse: indistinguishable from an
+  // escape this module added and meant to remove. Escaping the escape is
+  // what makes every additional write/parse cycle a no-op instead of a slow
+  // one-backslash-per-cycle leak.
+  const original = {
+    title: "t", summary: "s", about: "a", created: 1000, updated: 1000, facts: {},
+    sections: [{ at: 1000, kind: "read", text: "\\## x \u00b7 y" }],
+  };
+
+  const once = parseNote(formatNote(original));
+  assert.equal(once.sections[0].text, "\\## x \u00b7 y");
+
+  const twice = parseNote(formatNote(once));
+  assert.equal(twice.sections[0].text, "\\## x \u00b7 y");
 });
 
 test("formatNote does not throw when created or updated is not finite", () => {
