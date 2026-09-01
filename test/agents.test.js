@@ -733,6 +733,35 @@ test("a listing that failed keeps the last roster rather than reporting it gone"
   assert.equal(poller.current().length, 1);
 });
 
+test("a fresh read hands back the roster only when the listing actually succeeded", async () => {
+  const poller = createRosterPoller({ list: scripted(rosterOf(session()), null, rosterOf()), maxAgeMs: 0 });
+  await poller.read();
+  // The second listing fails: read() would keep the first roster, fresh()
+  // must not pass it off as taken now.
+  assert.equal(await poller.fresh(), null);
+  assert.equal(poller.current().length, 1);
+  // The third succeeds and is empty, and empty is a real answer.
+  assert.deepEqual(await poller.fresh(), []);
+  poller.stop();
+});
+
+test("a fresh read waits out a listing already in flight rather than reusing its answer", async () => {
+  // The in-flight tick started before the caller acted, so its roster says
+  // nothing about what the caller just did.
+  let resolveFirst;
+  const answers = [new Promise((r) => { resolveFirst = r; }), rosterOf()];
+  let i = 0;
+  const list = () => answers[Math.min(i++, answers.length - 1)];
+  const poller = createRosterPoller({ list, maxAgeMs: 0 });
+  const first = poller.read();
+  const fresh = poller.fresh();
+  resolveFirst(rosterOf(session()));
+  assert.equal((await first).length, 1);
+  assert.deepEqual(await fresh, []);
+  assert.equal(i, 2);
+  poller.stop();
+});
+
 test("a fresh enough roster is reused rather than re-read", async () => {
   const list = scripted(rosterOf(session()));
   const poller = createRosterPoller({ list, maxAgeMs: 60_000 });

@@ -46,6 +46,7 @@ import {
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
 import { describeFailure } from "./lib/outcome.js";
+import { isListed, startVerdict, stopVerdict, tellVerdict } from "./lib/verdict.js";
 import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
@@ -115,7 +116,8 @@ const rosterPoller = createRosterPoller({
   //
   // orderRoster is applied here, in the one place every consumer of the roster
   // shares -- onRoster, onEvents/broadcastRoster, current(), read() (the
-  // say-handler's own snapshot, and proposeSession's maxAgeMs: 0 re-read) and
+  // say-handler's own snapshot, and proposeSession's maxAgeMs: 0 re-read),
+  // fresh() (the roster a stop or a start is checked against afterwards) and
   // dispatchRead's recallable(roster) all see the same numbered records this
   // produces. A workspace or main-repo change is picked up on the next poll
   // tick, same as everything else that reads workspacePaths/workspacesForClient
@@ -1252,6 +1254,13 @@ async function resolveSession(send, roster, session, preamble) {
 }
 
 // Ask a session to stop, and confirm it did before saying so.
+//
+// "Confirm" means the roster, not the signal. stopSession polls the pid it
+// signalled until it is gone, and that used to be the whole check -- until a
+// stop was reported done on a session that was still on the roster two
+// minutes later: its worker went away, the daemon handed the session to
+// another one, and the pid check could not see that. So the roster is re-read
+// after the signal, and what is said, and what is recorded, comes from that.
 async function dispatchStop(send, session, preamble, roster) {
   const record = await resolveSession(send, roster, session, preamble);
   if (!record) return;
@@ -1260,28 +1269,32 @@ async function dispatchStop(send, session, preamble, roster) {
   try {
     send({ type: "state", value: "thinking" });
     const result = await stopSession(record);
-    if (!result.ok) {
-      log(`stop ${record.name} failed: ${result.error}`);
-      await say(send, joinSpoken(preamble, `I could not stop ${record.name}, sir. ${result.error}.`));
-      return;
-    }
+    // fresh() rather than read({ maxAgeMs: 0 }): read() falls back to the last
+    // roster when the listing fails, and that roster is from before the stop.
+    const listed = result.ok ? isListed(await rosterPoller.fresh(), record.sessionId) : null;
+    const verdict = stopVerdict({ name: record.name, result, listed });
 
-    // Anything still waiting for it can never be delivered now.
-    takeQueued(memoryStore, record.sessionId);
-    // Noted so the report when it leaves the roster says it was stopped rather
-    // than that it finished -- which are different things to read at midnight.
-    // Only for sessions Dante started: writing a record here for a terminal
-    // somebody was sitting at would turn "Dante stopped it" into a recap entry
-    // about a session the recap log has never heard of.
-    if (getSessionRecord(memoryStore, record.sessionId)) {
-      rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
+    if (verdict.stopped) {
+      // Anything still waiting for it can never be delivered now.
+      takeQueued(memoryStore, record.sessionId);
+      // Noted so the report when it leaves the roster says it was stopped rather
+      // than that it finished -- which are different things to read at midnight.
+      // Only for sessions Dante started: writing a record here for a terminal
+      // somebody was sitting at would turn "Dante stopped it" into a recap entry
+      // about a session the recap log has never heard of.
+      if (getSessionRecord(memoryStore, record.sessionId)) {
+        rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
+      }
+      saveStore(memoryStore);
+      log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
+    } else if (!result.ok) {
+      log(`stop ${record.name} failed: ${result.error}`);
+    } else {
+      // Neither the queue nor stoppedAt is touched: the session may still
+      // deliver the one and the recap must not claim the other.
+      log(`stop ${record.name} sent but not confirmed: ${listed === null ? "roster unreadable" : "still listed"}`);
     }
-    saveStore(memoryStore);
-    log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
-    await say(
-      send,
-      joinSpoken(preamble, result.alreadyGone ? `${record.name} had already finished, sir.` : `${record.name} is stopped, sir.`),
-    );
+    await say(send, joinSpoken(preamble, verdict.spoken));
   } finally {
     activity(send, null);
   }
@@ -1343,18 +1356,14 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
       priority: plan.priority,
     });
     if (delivered.ok) {
-      log(`${verb === "interrupt" ? "interrupted" : "told"} ${record.name} over the peer channel`);
-      // "has it" is as far as this can honestly go: sendToSession resolving ok
+      log(`${verb} sent to ${record.name} over the peer channel`);
+      // "Sent" is as far as this can honestly go: sendToSession resolving ok
       // means the frame reached the session's socket, not that the model has
       // read it, acted on it, or replied -- the CLI sends no acknowledgement for
-      // a user frame at all.
-      await say(
-        send,
-        joinSpoken(
-          preamble,
-          verb === "interrupt" ? `${record.name} is interrupted and has it, sir.` : `${record.name} has it, sir.`,
-        ),
-      );
+      // a user frame at all. This used to say "has it", which is already a
+      // claim about the far end; tellVerdict says what was done and that the
+      // rest cannot be checked.
+      await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "peer" })));
       return;
     }
     log(`peer send to ${record.name} failed: ${delivered.error}`);
@@ -1374,9 +1383,9 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
       }
       saveStore(memoryStore);
       log(`queued for ${record.name}: ${JSON.stringify(queued)}`);
-      // Said plainly, because "queued" and "told" are different promises and the
+      // Said plainly, because "queued" and "sent" are different promises and the
       // difference is minutes.
-      await say(send, joinSpoken(preamble, `${record.name} is busy, sir. I will pass it on when it stops.`));
+      await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "queued" })));
       return;
     }
 
@@ -1389,7 +1398,9 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
       return;
     }
     log(`told ${record.name}`);
-    await say(send, joinSpoken(preamble, result.reply || `${record.name} has it, sir.`));
+    // The resumed session ran to completion, so its reply is the one delivery
+    // here that is verified rather than merely sent.
+    await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "resume", reply: result.reply })));
   } finally {
     activity(send, null);
   }
@@ -1561,10 +1572,15 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
     }
 
     send({ type: "debug", stage: "session", msg: `started ${started.name}` });
+    // startSession's ok means the CLI outlived its startup window, which is a
+    // fact about the process. "Running" is a fact about the session, and the
+    // roster is what knows that, so it is asked before the word is used.
+    const listed = isListed(await rosterPoller.fresh(), started.sessionId);
+    if (listed !== true) log(`started ${started.name} but ${listed === null ? "roster unreadable" : "not yet listed"}`);
     // The preamble is the model's own confirmation, which is usually the whole
     // sentence. The name is added because it is how every later command refers to
     // this session, and hearing it once is what makes "stop jarvis three" possible.
-    await say(send, joinSpoken(preamble, `Running as ${started.name}.`));
+    await say(send, joinSpoken(preamble, startVerdict({ name: started.name, listed })));
   } finally {
     activity(send, null);
   }

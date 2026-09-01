@@ -170,8 +170,10 @@ it sees the ones you started in a terminal too — and you can drive them:
   channel, but it cuts in front of the work in flight. The session drops what
   it was doing, takes the new instruction, and carries on. It is **not** a
   stop: same process, same transcript, same session id.
-- *"Stop session three"* — SIGTERM, never SIGKILL, and confirmed gone before
-  it says so.
+- *"Stop session three"* — SIGTERM, never SIGKILL, and confirmed gone from the
+  roster before it says so. A session still listed after the signal is
+  reported as exactly that — *"the stop went to it, but it is still on the
+  roster"* — never as stopped.
 - *"Start a session in jarvis to fix the tests, then run the linter"* — records a
   successor and starts it the moment the first session **finishes**, not when it
   succeeds: a Claude Code session exposes no pass/fail verdict, so there is
@@ -202,9 +204,26 @@ The difference between *tell* and *interrupt* is timing and nothing else, and
 when it isn't clear which you meant, it picks *tell*. Neither one forks the
 session or waits for it to go idle — both used to, and the machinery that did
 is still there as the fallback for a Claude Code that doesn't offer the
-channel. What Dante can promise either way is that the session **has** the
-message, never that it has acted on it: nothing acknowledges a delivered line,
-so "has it" is the strongest thing it will say.
+channel. What Dante can promise either way is that the message was **sent**,
+never that the session has read it or acted on it: nothing acknowledges a
+delivered line, so *"sent to it, sir; I cannot confirm it was read"* is the
+strongest thing it will say.
+
+**Three kinds of sentence, and it never confuses them.** Every session command
+is spoken about in one of three states, and the wording tells you which:
+
+- **Proposed** — *"Stop session three. Shall I, sir?"* Nothing has happened
+  yet. The model's own sentence is an offer, never a report.
+- **Sent** — *"Sent to bug-hunt, sir. I cannot confirm it was read."* Something
+  was done and nothing reports what came of it. A *tell* or an *interrupt*
+  over the live channel always lands here, because the CLI acknowledges
+  nothing; a *start* that the roster hasn't listed yet is *"started"*, not
+  *"running"*.
+- **Verified** — *"bug-hunt is stopped, sir."* / *"Running as bug-hunt."* Said
+  only after Dante re-read the roster and found the session gone, or there.
+  When that re-read itself fails, it says it could not check rather than
+  guessing either way, and nothing is recorded as stopped that was not seen
+  to stop.
 
 Repositories get spoken aliases: *"the fitness repo is at
 ~/development/KraneticFitness"* stores one, and every session started there
@@ -387,7 +406,7 @@ where there are no keys, tapping those is how the panels are toggled.
 | `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
-| `lib/action.js`, `outcome.js`, `progress.js`, `tts.js`, `config.js` | tags, success detection, readable progress, speech, config. |
+| `lib/action.js`, `outcome.js`, `verdict.js`, `progress.js`, `tts.js`, `config.js` | tags, build success detection, what a session command may claim afterwards, readable progress, speech, config. |
 | `claude-settings.json` | small and load-bearing — hooks off, thinking off. A build gets a throwaway copy with path deny rules merged on. |
 
 `npm test` — `node --test`, no network and no keys needed.
