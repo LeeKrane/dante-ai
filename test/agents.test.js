@@ -21,6 +21,8 @@ import {
   orderRoster,
   ownRunning,
   parseRoster,
+  rosterForClient,
+  rosterWire,
   visibleSessions,
 } from "../lib/agents.js";
 
@@ -245,6 +247,19 @@ test("an idle session is not told how long it has been idle", () => {
   assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix in jarvis, idle");
 });
 
+test("a session whose task still reads working but whose process is idle is said to be idle", () => {
+  // The CLI leaves `state` at "working" across a turn that ended without
+  // finishing anything, and reports the process itself as `status: "idle"`.
+  // Reading `state` first told the person a session was four hours into work
+  // it had stopped doing; the process is what they are asking about.
+  const roster = [numbered({ state: "working", status: "idle", startedAt: NOW - 4 * 3_600_000 })];
+  assert.equal(describeRoster(roster, NOW), "1: jarvis-1-builder-test-fix in jarvis, idle");
+  // And a working state with no status at all is still working -- only an
+  // idle status contradicts it, not a missing one.
+  const unknown = [numbered({ state: "working", status: null, startedAt: NOW - 4 * 60_000 })];
+  assert.equal(describeRoster(unknown, NOW), "1: jarvis-1-builder-test-fix in jarvis, working, 4 minutes in");
+});
+
 test("a blocked session gets the same elapsed suffix a working one does", () => {
   // "blocked" is waiting on a person, which is exactly the kind of thing worth
   // saying how long it has been waiting for.
@@ -330,6 +345,53 @@ test("counting words reach all the way to the cap, not just the old five", () =>
 
 test("a count past the word list is read as the digit rather than nothing", () => {
   assert.equal(countWord(16), "16");
+});
+
+// ---------------------------------------------------------------------------
+// rosterForClient / rosterWire
+// ---------------------------------------------------------------------------
+
+test("a row for the page carries what it paints and nothing that names a process or a path", () => {
+  const roster = [numbered({ pid: 4242, cwd: "/home/krane/development/jarvis" })];
+  assert.deepEqual(rosterForClient(roster), [{
+    sessionId: "abcd1234-0000-0000-0000-000000000000",
+    name: "jarvis-1-builder-test-fix",
+    alias: "jarvis",
+    number: 1,
+    state: "working",
+    status: "busy",
+    startedAt: 1_000_000,
+  }]);
+  assert.deepEqual(rosterForClient(null), []);
+  assert.deepEqual(rosterForClient("not a roster"), []);
+});
+
+test("the page is sent the same cut of the list the model is told about", () => {
+  const many = Array.from({ length: MAX_LISTED + 3 }, (_, i) =>
+    numbered({ sessionId: `${String(i).padStart(8, "0")}-0000-0000-0000-000000000000`, number: i + 1 }));
+  assert.equal(rosterForClient(many).length, MAX_LISTED);
+});
+
+test("a status that moved under an unchanged state changes the wire, so the panel is pushed", () => {
+  // diffRoster would see nothing here: isWorking reads `state` first and it is
+  // still "working" on both sides. The panel painted this session as working
+  // until some unrelated session started or ended, because the only broadcast
+  // hung off diffRoster's events. Comparing the projection is what fixes it.
+  const busy = [numbered({ state: "working", status: "busy" })];
+  const idle = [numbered({ state: "working", status: "idle" })];
+  assert.deepEqual(diffRoster(busy, idle), []);
+  assert.notEqual(rosterWire(busy), rosterWire(idle));
+});
+
+test("a tick that changed nothing the page paints leaves the wire unchanged", () => {
+  // A fresh listing is a new array of new objects every five seconds; only the
+  // content may decide whether the page hears about it.
+  const a = [numbered({ pid: 1 }), numbered({ sessionId: "b", pid: 2, number: 2 })];
+  const b = [numbered({ pid: 1 }), numbered({ sessionId: "b", pid: 2, number: 2 })];
+  assert.equal(rosterWire(a), rosterWire(b));
+  // Renumbering is a change the page paints, and one diffRoster never sees.
+  const renumbered = [numbered({ pid: 1, number: 2 }), numbered({ sessionId: "b", pid: 2, number: 1 })];
+  assert.notEqual(rosterWire(a), rosterWire(renumbered));
 });
 
 // ---------------------------------------------------------------------------

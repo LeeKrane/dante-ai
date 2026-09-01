@@ -34,6 +34,24 @@ test("blocked is its own word, because it is the one you can do something about"
   assert.equal(rowsFromRoster([record({ state: null, status: "busy" })], NOW)[0].condition, "working");
 });
 
+test("a session whose task still reads working but whose process is idle is shown idle", () => {
+  // `state` is where the task stands and `status` is what the process is doing
+  // now; the CLI leaves `state` at "working" across a turn that ended without
+  // finishing anything, so a live listing had this exact pair for hours. The
+  // person is asking what the machine is doing, and the process is doing
+  // nothing.
+  assert.equal(rowsFromRoster([record({ state: "working", status: "idle" })], NOW)[0].condition, "idle");
+  // The pairs the CLI actually sends for the other three words still say what
+  // they said before.
+  assert.equal(rowsFromRoster([record({ state: "working", status: "busy" })], NOW)[0].condition, "working");
+  assert.equal(rowsFromRoster([record({ state: "blocked", status: "waiting" })], NOW)[0].condition, "blocked");
+  assert.equal(rowsFromRoster([record({ state: "blocked", status: null })], NOW)[0].condition, "blocked");
+  assert.equal(rowsFromRoster([record({ state: "done", status: "idle" })], NOW)[0].condition, "done");
+  // A working state with no status at all is still working: only a status that
+  // says idle contradicts it.
+  assert.equal(rowsFromRoster([record({ state: "working", status: null })], NOW)[0].condition, "working");
+});
+
 test("rows keep the server's own numbered order rather than being resorted here", () => {
   // The server numbers the roster once (lib/agents.js's orderRoster) so a
   // click and a spoken "session three" name the same session; a panel that

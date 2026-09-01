@@ -35,7 +35,8 @@ import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, createRosterPoller, idleAmong, isWorking, orderRoster, ownRunning, visibleSessions,
+  createRosterPoller, idleAmong, isWorking, orderRoster, ownRunning, rosterForClient, rosterWire,
+  visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
@@ -105,6 +106,10 @@ const sessionKinds = await loadSessionKinds();
 //
 // Started below, after the store is loaded, because the events name sessions
 // using the workspace aliases the store holds.
+// What the panel was last sent, as rosterWire's string. Null until the first
+// broadcast, so the first successful tick always pushes.
+let lastRosterWire = null;
+
 const rosterPoller = createRosterPoller({
   // Dante's business, and nothing else. `claude agents --json` lists every
   // session on this machine, including other tools' internals and Dante's own
@@ -115,7 +120,7 @@ const rosterPoller = createRosterPoller({
   // mid-conversation widens it on the next tick with no restart.
   //
   // orderRoster is applied here, in the one place every consumer of the roster
-  // shares -- onRoster, onEvents/broadcastRoster, current(), read() (the
+  // shares -- onRoster/broadcastRoster, onEvents, current(), read() (the
   // say-handler's own snapshot, and proposeSession's maxAgeMs: 0 re-read),
   // fresh() (the roster a stop or a start is checked against afterwards) and
   // dispatchRead's recallable(roster) all see the same numbered records this
@@ -141,6 +146,11 @@ const rosterPoller = createRosterPoller({
   // not one is.
   onRoster: (roster) => {
     for (const record of idleAmong(roster, queuedSessionIds(memoryStore))) deliverQueued(record);
+    // The panel is pushed from here, on every tick the page would paint
+    // differently, rather than from onEvents: diffRoster's events are
+    // isWorking's edges, and a status that went busy -> idle under a state
+    // still reading "working" is not one of those (see rosterWire).
+    if (rosterWire(roster) !== lastRosterWire) broadcastRoster(roster);
   },
 
   onEvents: (events, roster) => {
@@ -154,8 +164,6 @@ const rosterPoller = createRosterPoller({
         }).catch((e) => log("report failed:", e.message || e));
       }
     }
-    // Whatever changed, the panel is now describing a machine that has moved on.
-    broadcastRoster(roster);
     // A queue or a chain for a session that ended is a promise that can never
     // be kept, and leaving either behind means a reused id would inherit a
     // stranger's follow-up or successor.
@@ -478,41 +486,19 @@ async function answerApproval(send, text) {
 // ---------------------------------------------------------------------------
 
 // The same roster the turn carries, sent to the page so the panel beside the
-// orb can paint it. Only what a row needs -- no pid, no path, no session id
-// beyond the one that keys the row -- because everything sent here is written
-// by whoever started the session and lands in a browser.
+// orb can paint it (rosterForClient, lib/agents.js, says what a row carries).
 //
 // Sent when it changes rather than on a timer: a session's age changes every
-// second and the page can count that itself.
-// More than this is a wall of text beside an orb, and the panel caps itself
-// again anyway. Cut here as well so the message stays small whatever a machine
-// running twenty sessions does. MAX_LISTED, not a number of its own: the
-// numbering below is only meaningful if the panel and the model are looking at
-// the same cut of the same list.
-function rosterForClient(roster) {
-  if (!Array.isArray(roster)) return [];
-  // The roster arrives already numbered (see the poller's own filter, above) --
-  // over the FULL list, not the slice below, so a hidden sixteenth session
-  // still has a number and "stop session sixteen" still resolves even though
-  // the panel never draws that row.
-  return roster.slice(0, MAX_LISTED).map((record) => ({
-    sessionId: record.sessionId,
-    name: record.name,
-    // The alias rather than the path: a repository is called "jarvis" out loud,
-    // and a page has no business being told where it lives on disk.
-    alias: typeof record.alias === "string" ? record.alias : "",
-    number: record.number,
-    state: record.state,
-    status: record.status,
-    startedAt: record.startedAt,
-  }));
-}
-
+// second and the page can count that itself. What was last sent is kept as
+// the wire string (lastRosterWire, declared above the poller that closes over
+// it) so the poller's onRoster can tell a tick that moved the panel from one
+// that did not.
 function sendRoster(send, roster) {
   send({ type: "roster", sessions: rosterForClient(roster) });
 }
 
 function broadcastRoster(roster) {
+  lastRosterWire = rosterWire(roster);
   for (const ws of sessions.keys()) {
     if (ws.readyState === 1) sendRoster((o) => ws.send(JSON.stringify(o)), roster);
   }
@@ -538,12 +524,14 @@ function broadcastWorkspaces() {
 // always first -- and that is a change worth showing right away, not on
 // whichever poll tick happens to land next. It is not, on its own, a change
 // diffRoster would ever notice: no session started, stopped, or changed
-// state, so the ordinary broadcastRoster call inside onEvents never fires for
-// it. A fresh, unforced read (maxAgeMs: 0) recomputes the numbering against
-// the memory store's new order and pushes that -- same re-read
-// proposeSession's own "yes" path already relies on for the same reason.
+// state, and onRoster only compares on a poll tick, so left alone it would
+// show up to five seconds late. A fresh, unforced read (maxAgeMs: 0) runs a
+// tick now -- same re-read proposeSession's own "yes" path already relies on
+// for the same reason -- and that tick's own onRoster sees the renumbered
+// wire and pushes it. Nothing is sent from here directly: doing so as well
+// sent the same roster twice.
 function renumberNow() {
-  rosterPoller.read({ maxAgeMs: 0 }).then(broadcastRoster).catch(() => {});
+  rosterPoller.read({ maxAgeMs: 0 }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------

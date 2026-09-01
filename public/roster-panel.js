@@ -40,11 +40,23 @@ export function elapsedLabel(ms) {
 
 // A session's one-word condition. "blocked" is its own word rather than folded
 // into working, because it is the one a person can do something about.
+//
+// The CLI reports two fields that look like one: `state` is where the TASK
+// stands (working until it is done or blocked, and it stays "working" across
+// a turn that ended without finishing anything), and `status` is what the
+// PROCESS is doing right now (busy, idle, waiting). A live listing showed a
+// session carrying `state: "working"` next to `status: "idle"` for hours --
+// the one that was stopped mid-task and respawned -- and reading `state`
+// first painted it as working. So an idle status is believed over a working
+// state: nothing is happening in that process, whatever the task's ledger
+// says. Deliberately not the order lib/agents.js's isWorking uses, which is
+// about whether a follow-up may be delivered rather than what to paint.
 function condition(record) {
   if (record.state === "blocked") return "blocked";
-  if (record.state === "working") return "working";
   if (record.state === "done") return "done";
-  return record.status === "busy" ? "working" : "idle";
+  if (record.status === "idle") return "idle";
+  if (record.state === "working" || record.status === "busy") return "working";
+  return "idle";
 }
 
 // The one row shape both rowsFromRoster and groupsFromRoster paint. Split out
