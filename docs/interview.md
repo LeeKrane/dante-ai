@@ -112,10 +112,19 @@ facet without reading it back. What a confirmation question is:
 - **A correction re-opens only what it corrected.** "No, the other test" puts
   `goal` back on the table; the read-back that follows covers `goal` alone.
 
-The only way past this is Krane saying so: the escape phrases ("just start it",
-"stop asking", and the rest) still end the interview and propose with what Dante
-has, confirmed or not. That is Krane overriding the rule out loud, which is his
-to do.
+There are two ways past this, and both are deliberate:
+
+- **Krane saying so.** The escape phrases ("just start it", "stop asking", and
+  the rest) still end the interview and propose with what Dante has, confirmed
+  or not. That is Krane overriding the rule out loud, which is his to do.
+- **A slash command.** A start whose prompt is a command (`command="/review
+  high"`, see the README) has no facets to read back: the command line is its
+  goal, constraints and acceptance all at once, and the proposal already says
+  that line back exactly — "Start a session in jarvis running /review high.
+  Shall I, sir?" A read-back in front of it would be the same question asked
+  twice, which is the padding this page forbids. If Dante is not sure which
+  command or which arguments, it interviews as usual first; the exemption is
+  only for a tag that arrives with a vetted command on it.
 
 ## How the machine enforces it
 

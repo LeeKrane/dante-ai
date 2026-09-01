@@ -551,3 +551,19 @@ test("a real process really does stop", async () => {
     }
   }
 });
+
+test("a slash command is the whole prompt, ahead of both the brief and the task", () => {
+  const args = buildStartArgs(spec({ command: "/review high", brief: "Goal: x\nConstraints:\n- y" }));
+  assert.deepEqual(args.slice(-2), ["--", "/review high"]);
+});
+
+test("a command that lost its slash is refused rather than run as a sentence about a command", () => {
+  assert.equal(buildStartArgs(spec({ command: "review high" })), null);
+  // An empty command is no command, and the task is the prompt as before.
+  assert.deepEqual(buildStartArgs(spec({ command: "" })).slice(-2), ["--", "fix the failing builder test"]);
+});
+
+test("a command is one line on the command line, whatever the model wrote", () => {
+  const args = buildStartArgs(spec({ command: "/review\nhigh" }));
+  assert.deepEqual(args.slice(-2), ["--", "/review high"]);
+});

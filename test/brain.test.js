@@ -267,3 +267,15 @@ test("the interview paragraph does not add another ask him", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.equal(persona.match(/ask him\b/g)?.length, 2);
 });
+
+test("the persona lists the slash commands it may send, and says nothing about them when there are none", () => {
+  const commands = new Map([["review", { name: "review" }], ["compact", { name: "compact" }]]);
+  const persona = brain.buildPersona(registry, null, kinds, commands);
+  assert.match(persona, /COMMANDS: /);
+  assert.match(persona, /\/compact, \/review\./);
+  assert.match(persona, /command="\/<name> <arguments>"/);
+  assert.doesNotMatch(brain.buildPersona(registry, null, kinds), /COMMANDS: /);
+  // The command paragraph teaches "say you do not know it" without adding a
+  // third "ask him", which the older test pins at two.
+  assert.equal(persona.match(/ask him\b/g)?.length, 2);
+});

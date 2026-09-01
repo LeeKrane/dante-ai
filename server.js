@@ -46,6 +46,7 @@ import {
   MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession, createInFlight,
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
+import { loadCommands, parseCommand, refuseCommand } from "./lib/commands.js";
 import { describeFailure } from "./lib/outcome.js";
 import { isListed, startVerdict, stopVerdict, tellVerdict } from "./lib/verdict.js";
 import { run as runBuild } from "./lib/builder.js";
@@ -98,6 +99,11 @@ const registry = await loadRegistry();
 // must not break a live conversation. An empty map is a working install --
 // free-form (a task and no kind) is the ordinary path.
 const sessionKinds = await loadSessionKinds();
+
+// The slash commands the persona may send, discovered once here like the
+// session kinds are, and again whenever the persona is rebuilt below -- a repo
+// named mid-conversation brings its own .claude/skills with it.
+let knownCommands = loadCommands({ repos: [] });
 
 // One place that knows what Claude Code sessions are running. A turn reads it
 // (usually from cache, so an ordinary turn costs no child process at all), and
@@ -810,10 +816,12 @@ if (memoryChanged) saveStore(memoryStore);
 // restart, with nothing anywhere reporting why. Caveat: a --resume'd CLI session
 // keeps the system prompt it started with, so a refreshed persona is guaranteed
 // to reach the model on the next cold start rather than on the next turn.
-let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds);
+knownCommands = loadCommands({ repos: Object.values(workspacePaths(memoryStore)) });
+let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds, knownCommands);
 
 function refreshPersona() {
-  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds);
+  knownCommands = loadCommands({ repos: Object.values(workspacePaths(memoryStore)) });
+  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds, knownCommands);
 }
 
 // One CLI for the whole server rather than a fresh one per sentence. Two thirds
@@ -1331,7 +1339,12 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
     // the task is only its label. Written as `||` over `(task ?? text ??
     // message)` rather than a chain of `??`, so an empty-string brief (never
     // written) does not win over a real task the way `??` alone would let it.
-    const text = session.brief || (session.task ?? session.text ?? session.message);
+    // A slash command outranks all of them: it was vetted and normalised
+    // where the tag was read, and the line is the whole message -- a brief
+    // after it would become the command's arguments, not the session's
+    // instructions.
+    const command = typeof session.command === "string" && session.command.startsWith("/") ? session.command : "";
+    const text = command || session.brief || (session.task ?? session.text ?? session.message);
     // Checked before the busy branch: without this, a tag with no message at all
     // reports a full queue, which is a different problem with a different fix.
     if (typeof text !== "string" || text.trim() === "") {
@@ -1350,12 +1363,23 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
     }
 
     send({ type: "state", value: "thinking" });
-    const delivered = await sendToSession({
-      pid: record.pid,
-      sessionId: record.sessionId,
-      text: plan.content,
-      priority: plan.priority,
-    });
+    // A slash command never takes the peer channel. Verified live against CLI
+    // 2.1.257: a "/cost" frame written into a counting session's socket
+    // reached its transcript as "Another Claude session sent a message:
+    // /cost ..." -- the CLI wraps every peer frame in a sentence about where it
+    // came from, and the session read the command as prose and answered that
+    // it could not run it. The resume path below (`claude -p --resume ... --
+    // "/cost"`) expands a built-in, a custom command and a skill, all three
+    // verified the same day, and deliverQueued uses that same path, so a
+    // command queued behind a busy session expands when its turn comes too.
+    const delivered = command
+      ? { ok: false, error: "a command does not take the peer channel" }
+      : await sendToSession({
+          pid: record.pid,
+          sessionId: record.sessionId,
+          text: plan.content,
+          priority: plan.priority,
+        });
     if (delivered.ok) {
       log(`${verb} sent to ${record.name} over the peer channel`);
       // "Sent" is as far as this can honestly go: sendToSession resolving ok
@@ -1563,6 +1587,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   try {
     const started = await beginSession({
       workspace, task: session.task, kind: session.kind, taken: live, then: session.then, brief: session.brief,
+      command: session.command,
     });
 
     if (!started.ok) {
@@ -1594,14 +1619,18 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 // socket in sight, and it must be started exactly the way a spoken one is --
 // same naming, same thread. A second implementation would drift on the first
 // change to either.
-async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined }) {
+async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined, command = undefined }) {
   const kind = sessionKinds.get(kindId) ?? null;
   // No per-repository counter reserved here any more: a session's number on
   // screen is its position in orderRoster's own order, decided fresh on every
   // tick, not a value burned into the name at start time. buildName's only
   // guard against a collision is the live names already in `taken`.
+  //
+  // A command session is named for its command ("review", "review-2"): that
+  // is what it will be called out loud, and "run-review-high" is not.
+  const commandName = typeof command === "string" ? command.slice(1).split(" ")[0] : "";
   const name = buildName(
-    { task, hint: kind?.nameHint?.({ task }) },
+    { task, hint: commandName || kind?.nameHint?.({ task }) },
     (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
   const sessionId = newSessionId();
@@ -1612,6 +1641,7 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     cwd: workspace.path,
     task,
     brief,
+    command,
     systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
     effort: kind?.effort,
@@ -2127,6 +2157,43 @@ wss.on("connection", (ws) => {
         // on the session tag it produced -- INTERVIEW_VERBS also covers tell
         // and interrupt, and their own "repo" means "which session," which
         // has nothing to do with where an unrelated start should land.
+        // A slash command is vetted here, once, before it is described,
+        // proposed or dispatched -- so every one of those sees the same
+        // normalised line (lib/commands.js's parseCommand) or none of them
+        // sees a tag at all. A refusal ends the turn out loud: an unknown or
+        // forbidden command is not something to propose and let the yes find
+        // out about. The bare key with nothing in it is treated as no command,
+        // so a model that wrote command="" has written an ordinary tag.
+        if (typeof session.command === "string" && session.command.trim()) {
+          const refusal = refuseCommand(session.command, knownCommands);
+          if (refusal) {
+            log(`command refused: ${JSON.stringify(session.command)} -> ${refusal}`);
+            dropAnswered(conv.unanswered, answering);
+            await say(send, refusal);
+            return;
+          }
+          const parsed = parseCommand(session.command, knownCommands);
+          session.command = parsed.line;
+          // A command cannot cut in: the peer channel that makes an interrupt
+          // an interrupt wraps what it delivers in a sentence about where it
+          // came from, and a slash command inside that sentence is prose to
+          // the session, not a command (verified live against CLI 2.1.257 --
+          // see dispatchTell). So it goes the patient way, and is described
+          // and confirmed as the tell it will actually be.
+          if (session.verb === "interrupt") {
+            log("command interrupt delivered as a tell: a command waits its turn");
+            session.verb = "tell";
+          }
+          // A command start has a label for the roster and the recap even
+          // when the model wrote none: the line itself, which is also what a
+          // read-back of the session would call it.
+          if (session.verb === "start" && !(typeof session.task === "string" && session.task.trim())) {
+            session.task = `run ${parsed.line}`;
+          }
+        } else {
+          delete session.command;
+        }
+
         const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
 
         // Resolved once, here, before this session is ever described back as
@@ -2155,8 +2222,11 @@ wss.on("connection", (ws) => {
         // proposal. It is folded into the interview as a question the machine
         // asked (spokenFor), so the model's next turn knows Krane's yes or no
         // answers that question and not whatever it said last. The escape
-        // phrase is the one way past this, because it is Krane saying so.
-        if (session.verb === "start" && !escaped && !readyToPropose(ownInterview)) {
+        // phrase is one way past this, because it is Krane saying so; a slash
+        // command is the other, because its facets ARE the command line, and
+        // the proposal reads that line back exactly -- a read-back before it
+        // would be the same question asked twice.
+        if (session.verb === "start" && !escaped && !session.command && !readyToPropose(ownInterview)) {
           const facets = unconfirmedFacets(ownInterview);
           const question = readBack(session, facets);
           conv.interview = noteInterview(
