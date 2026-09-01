@@ -1286,7 +1286,7 @@ async function dispatchStop(send, session, preamble, roster) {
         rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
       }
       saveStore(memoryStore);
-      log(`stopped ${record.name}${result.alreadyGone ? " (already gone)" : ""}`);
+      log(`stopped ${record.name} via ${result.via}${result.alreadyGone ? " (already gone)" : ""}`);
     } else if (!result.ok) {
       log(`stop ${record.name} failed: ${result.error}`);
     } else {

@@ -1,5 +1,6 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -219,6 +220,33 @@ before(async () => {
       'const fs = require("node:fs");',
       'fs.writeFileSync(process.env.RECORD_TO, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));',
     ].join("\n"),
+  );
+
+  // The daemon end of a stop. Logs what it was asked, then answers the way the
+  // real CLI does.
+  fake.stops = await writeFake(
+    "claude-stops.cjs",
+    [
+      "const fs = require(\"node:fs\");",
+      "fs.appendFileSync(process.env.STOP_LOG, process.argv.slice(2).join(\" \") + \"\\n\");",
+      "console.log(\"stopped \" + process.argv[3]);",
+    ].join("\n"),
+  );
+
+  // What the real CLI says of an id it has never heard of, verbatim.
+  fake.noJob = await writeFake(
+    "claude-no-job.cjs",
+    [
+      "console.error(\"No job matching 'zzzzzzzz'. Run 'claude agents' to list running sessions.\");",
+      "process.exitCode = 1;",
+    ].join("\n"),
+  );
+
+  // Never answers and ignores the polite ask, so the timeout is the only thing
+  // that can end this call.
+  fake.hangsOnStop = await writeFake(
+    "claude-hangs-on-stop.cjs",
+    ["process.on(\"SIGTERM\", () => {});", "setInterval(() => {}, 1000);"].join("\n"),
   );
 });
 
@@ -550,4 +578,114 @@ test("a real process really does stop", async () => {
       // Already stopped, which is what the assertion above wanted.
     }
   }
+});
+
+// The daemon path. Background sessions belong to the Claude Code daemon, and a
+// worker that is merely signalled comes back ten seconds later -- see the
+// comment on stopSession. These pin the other ask.
+
+// A kill(2) stand-in whose pid is alive until the fake CLI has been asked --
+// which is how a real worker behaves: `claude stop` is what ends it.
+function killUntilAsked(pid, askedLog) {
+  const signals = [];
+  const kill = (target, signal) => {
+    signals.push([target, signal]);
+    if (target === pid && !existsSync(askedLog)) return;
+    const err = new Error("no such process");
+    err.code = "ESRCH";
+    throw err;
+  };
+  kill.signals = signals;
+  return kill;
+}
+
+test("a background session is stopped through the daemon, never by signalling its worker", async () => {
+  const askedLog = join(workspace, "stop-asked.log");
+  process.env.STOP_LOG = askedLog;
+  const kill = killUntilAsked(4242, askedLog);
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background", name: "stop-probe" };
+  const result = await stopSession(record, { kill, bin: fake.stops, pollMs: 20 });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "daemon");
+  assert.equal(readFileSync(askedLog, "utf8").trim(), "stop 3ee7f1c2");
+  // Signal 0 is only a question. Anything else would be the bug this fixes.
+  assert.ok(kill.signals.every(([, signal]) => signal === 0), JSON.stringify(kill.signals));
+});
+
+test("a background session the daemon refuses to stop is reported, not signalled instead", async () => {
+  // Falling back to SIGTERM here would land in the resume-after-ten-seconds
+  // this path exists to avoid, while sounding like a success.
+  const kill = fakeKill([4242]);
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill, bin: fake.noJob });
+  assert.equal(result.ok, false);
+  assert.equal(result.via, "daemon");
+  assert.match(result.error, /No job matching/);
+  assert.ok(!kill.signals.some(([, signal]) => signal === "SIGTERM"), JSON.stringify(kill.signals));
+});
+
+test("a background session listed without a pid can still be stopped through the daemon", async () => {
+  // The listing drops the pid for the ten seconds between a worker dying and
+  // the daemon resuming it -- exactly when a stop is most wanted.
+  process.env.STOP_LOG = join(workspace, "stop-nopid.log");
+  const kill = fakeKill([]);
+  const result = await stopSession({ id: "3ee7f1c2", kind: "background" }, { kill, bin: fake.stops });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "daemon");
+  assert.equal(kill.signals.length, 0);
+});
+
+test("a background session whose worker had already left is reported as already gone", async () => {
+  process.env.STOP_LOG = join(workspace, "stop-gone.log");
+  const result = await stopSession({ pid: 4242, id: "3ee7f1c2", kind: "background" }, { kill: fakeKill([]), bin: fake.stops });
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyGone, true);
+  // Still asked, so the lease is settled and the daemon does not resume it.
+  assert.equal(existsSync(join(workspace, "stop-gone.log")), true);
+});
+
+test("a background session whose worker outlives the daemon's answer is not called stopped", async () => {
+  process.env.STOP_LOG = join(workspace, "stop-lingers.log");
+  const kill = fakeKill([4242], { ignoresTerm: true });
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill, bin: fake.stops, timeoutMs: 120, pollMs: 20 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /still running/);
+});
+
+test("an interactive session has no daemon to ask and is still signalled", async () => {
+  // fake.noJob would fail the stop if it were consulted; the signal path must
+  // not go near the CLI.
+  const kill = fakeKill([4242]);
+  const result = await stopSession({ pid: 4242, id: null, kind: "interactive" }, { kill, bin: fake.noJob });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "signal");
+  assert.deepEqual(kill.signals[0], [4242, "SIGTERM"]);
+});
+
+test("a listed id that could be read as an option never becomes a CLI argument", async () => {
+  const askedLog = join(workspace, "stop-flag.log");
+  process.env.STOP_LOG = askedLog;
+  const kill = fakeKill([4242]);
+  for (const id of ["--all", "-", "", " ", "3ee7 f1c2", null]) {
+    const result = await stopSession({ pid: 4242, id, kind: "background" }, { kill, bin: fake.stops });
+    assert.equal(result.via, "signal", JSON.stringify(id));
+  }
+  assert.equal(existsSync(askedLog), false);
+});
+
+test("a CLI that never answers a stop is abandoned rather than waited on forever", async () => {
+  const kill = fakeKill([4242]);
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill, bin: fake.hangsOnStop, timeoutMs: 150, killGraceMs: 50 });
+  assert.equal(result.ok, false);
+  assert.equal(result.via, "daemon");
+  assert.match(result.error, /did not answer/);
+});
+
+test("a missing CLI is a stop that did not go through, not a crash", async () => {
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill: fakeKill([4242]), bin: join(workspace, "nope") });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /could not be started/);
 });
