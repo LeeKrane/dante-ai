@@ -170,10 +170,12 @@ it sees the ones you started in a terminal too — and you can drive them:
   channel, but it cuts in front of the work in flight. The session drops what
   it was doing, takes the new instruction, and carries on. It is **not** a
   stop: same process, same transcript, same session id.
-- *"Stop session three"* — SIGTERM, never SIGKILL, and confirmed gone from the
-  roster before it says so. A session still listed after the signal is
-  reported as exactly that — *"the stop went to it, but it is still on the
-  roster"* — never as stopped.
+- *"Stop session three"* — asks the Claude Code daemon (`claude stop <id>`), because a
+  background session is the daemon's and a worker that is merely SIGTERMed is resumed ten
+  seconds later under a new pid. Then it confirms the session is gone from the roster before
+  it says so; a session still listed after the stop is reported as exactly that — *"the stop
+  went to it, but it is still on the roster"* — never as stopped. A session in somebody's
+  terminal has no daemon behind it and gets SIGTERM, never SIGKILL.
 - *"Start a session in jarvis to fix the tests, then run the linter"* — records a
   successor and starts it the moment the first session **finishes**, not when it
   succeeds: a Claude Code session exposes no pass/fail verdict, so there is
@@ -405,6 +407,7 @@ where there are no keys, tapping those is how the panels are toggled.
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
 | `lib/spawn-session.js` | starting, telling and stopping a real session. |
+| `lib/run-cli.js` | one child-process runner for every verb that spawns the CLI and waits: deadline, two-step kill, capped pipes. |
 | `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |

@@ -330,7 +330,10 @@ The reply comes back as JSON, is compressed to a sentence or two, and is spoken.
 
 #### Stage 28 — `verb=stop`
 
-`SIGTERM` the `pid` from the roster, then confirm the session left the roster before speaking.
+`claude stop <id>` with the daemon id from the roster, then confirm the worker is gone before
+speaking. Not `SIGTERM` to the pid: a background session belongs to the daemon, which resumes a
+worker that merely died about ten seconds later (found 2026-09-01, session 4). `SIGTERM` stays
+for sessions the daemon does not own.
 Refuse by name, never by index — "stop the third one" is precisely the sentence that gets misheard.
 Never `SIGKILL`: a session mid-write should be allowed to finish the write.
 
