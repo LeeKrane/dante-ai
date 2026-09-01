@@ -254,7 +254,7 @@ test("the persona never proposes a start before a confirmation question, and has
   assert.match(persona, /machine-state lines/);
   // The sentence the whole rule hangs on: a start is read back even when the
   // request looked complete, and the count is scaled, never padded.
-  assert.match(persona, /Never skip that for a start, even when the request already states everything/);
+  assert.match(persona, /Never skip that, for a start, a tell or an interrupt alike, even when the request already states everything/);
   assert.match(persona, /one or two questions, a complex one in three to five/);
   assert.match(persona, /do not pad/);
   assert.doesNotMatch(persona, /Skip the interview when/);
@@ -268,13 +268,14 @@ test("the interview paragraph does not add another ask him", () => {
   assert.equal(persona.match(/ask him\b/g)?.length, 2);
 });
 
-test("the persona lists the slash commands it may send, and says nothing about them when there are none", () => {
-  const commands = new Map([["review", { name: "review" }], ["compact", { name: "compact" }]]);
+test("the persona lists the skills it may send, and says nothing about them when there are none", () => {
+  const commands = new Map([["grilling", { name: "grilling" }], ["blast-radius", { name: "blast-radius" }]]);
   const persona = brain.buildPersona(registry, null, kinds, commands);
-  assert.match(persona, /COMMANDS: /);
-  assert.match(persona, /\/compact, \/review\./);
+  assert.match(persona, /SKILLS: /);
+  assert.match(persona, /\/blast-radius, \/grilling\./);
   assert.match(persona, /command="\/<name> <arguments>"/);
-  assert.doesNotMatch(brain.buildPersona(registry, null, kinds), /COMMANDS: /);
+  assert.match(persona, /never one of Claude's own commands/);
+  assert.doesNotMatch(brain.buildPersona(registry, null, kinds), /SKILLS: /);
   // The command paragraph teaches "say you do not know it" without adding a
   // third "ask him", which the older test pins at two.
   assert.equal(persona.match(/ask him\b/g)?.length, 2);

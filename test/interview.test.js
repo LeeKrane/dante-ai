@@ -336,17 +336,17 @@ test("the block says every facet is covered and, for a start, tells it to read t
   );
 });
 
-test("the block tells a tell or interrupt to propose once every facet is covered, with no read-back required", () => {
-  const state = stateOf({
+test("a tell or interrupt is held to the same read-back rule as a start, and its tail names its own verb", () => {
+  const covered = stateOf({
     verb: "tell", repo: "jarvis", covered: ["goal", "where", "constraints", "done"], asked: 2, at: 2000,
   });
-  assert.equal(
-    interviewBlock(state, 2000),
-    "INTERVIEW in progress: planning a tell in jarvis. 2 questions asked. " +
-      "Covered: goal, where, constraints, done. Still open: nothing. Confirmed: none yet. " +
-      "Every facet is covered: propose now, unless an answer left something genuinely open - " +
-      "then ask about that one thing only.",
-  );
+  assert.match(interviewBlock(covered, 2000), /Every facet is covered but not yet confirmed: read back what you understand of goal, where, constraints, done,/);
+
+  const awaiting = stateOf({
+    verb: "interrupt", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
+    confirming: ["goal", "where", "constraints", "done"], asked: 1, at: 2000,
+  });
+  assert.match(interviewBlock(awaiting, 2000), /propose now with the interrupt tag;/);
 });
 
 test("the block names the facets read back and says the answer to them comes next", () => {
@@ -573,6 +573,26 @@ test("readBack falls back to the task and repo when there is no brief, and asks 
     readBack({ task: "fix the tests" }, ["where"]),
     "Before I propose, sir, nothing was said about where, so I would use the main repository. Have I got that right?",
   );
+});
+
+test("readBack for a tell or interrupt names the session rather than a repository, and says what it would tell it", () => {
+  assert.equal(
+    readBack({ verb: "tell", name: "fix-tests", task: "run the linter as well" }, FACETS),
+    "Before I propose, sir, let me check I have this right: I would tell it to run the linter as well, " +
+      "the session is fix-tests. " +
+      "And nothing was said about constraints, so I would take it there are none, " +
+      "and nothing was said about what done looks like, so I would take the goal itself as the test. " +
+      "Have I got that right?",
+  );
+  assert.equal(
+    readBack({ verb: "interrupt", name: "fix-tests", task: "use the other branch", brief: "Goal: use the other branch\nDone when:\n- the tests run there" }, ["goal", "done"]),
+    "Before I propose, sir, let me check I have this right: I would interrupt it to use the other branch, " +
+      "done when the tests run there. Have I got that right?",
+  );
+  // The session's name outranks the brief's Where line for these two verbs,
+  // and with neither a name nor a repo the facet is asked as its assumption.
+  assert.match(readBack({ verb: "tell", name: "fix-tests", brief: "Where: jarvis, lib/" }, ["where"]), /the session is fix-tests\./);
+  assert.match(readBack({ verb: "tell" }, ["where"]), /nothing was said about which session\. Have I got that right\?$/);
 });
 
 test("readBack strips unprintables and caps each clause, because a model wrote the brief", () => {

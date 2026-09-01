@@ -27,7 +27,7 @@ import {
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
 import {
-  composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
+  INTERVIEW_VERBS, composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
   readyToPropose, unconfirmedFacets, wantsToProceed,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
@@ -1369,8 +1369,9 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
     // /cost ..." -- the CLI wraps every peer frame in a sentence about where it
     // came from, and the session read the command as prose and answered that
     // it could not run it. The resume path below (`claude -p --resume ... --
-    // "/cost"`) expands a built-in, a custom command and a skill, all three
-    // verified the same day, and deliverQueued uses that same path, so a
+    // "/cost"`) expands a built-in, a custom command and a skill (only the
+    // last of which Dante ever sends), all three verified the same day, and
+    // deliverQueued uses that same path, so a
     // command queued behind a busy session expands when its turn comes too.
     const delivered = command
       ? { ok: false, error: "a command does not take the peer channel" }
@@ -2209,29 +2210,46 @@ wss.on("connection", (ws) => {
 
         const ownInterview = isLive(conv.interview) && matchesInterview(conv.interview, session) ? conv.interview : null;
 
-        // A start is never proposed until its facets have been read back and
-        // answered (readyToPropose, and the rule in docs/interview.md). A
-        // proposal's "Shall I, sir?" confirms the act, not the understanding
-        // behind it: a yes to "start a session in jarvis to fix the tests"
-        // says nothing about which tests the model has in mind, and that is
-        // the detail that used to reach a running session unchecked whenever
-        // the model decided the request was clear enough to skip the
-        // interview. So a start that arrives unconfirmed -- no interview at
-        // all, or one whose facets were never read back -- is held here, and
-        // the read-back is spoken from the model's own brief in place of the
-        // proposal. It is folded into the interview as a question the machine
-        // asked (spokenFor), so the model's next turn knows Krane's yes or no
-        // answers that question and not whatever it said last. The escape
-        // phrase is one way past this, because it is Krane saying so; a slash
-        // command is the other, because its facets ARE the command line, and
-        // the proposal reads that line back exactly -- a read-back before it
-        // would be the same question asked twice.
-        if (session.verb === "start" && !escaped && !session.command && !readyToPropose(ownInterview)) {
+        // A start, tell or interrupt is never proposed until its facets have
+        // been read back and answered (readyToPropose, and the rule in
+        // docs/interview.md). A proposal's "Shall I, sir?" confirms the act,
+        // not the understanding behind it: a yes to "start a session in
+        // jarvis to fix the tests" says nothing about which tests the model
+        // has in mind, and that is the detail that used to reach a running
+        // session unchecked whenever the model decided the request was clear
+        // enough to skip the interview. So a tag that arrives unconfirmed --
+        // no interview at all, or one whose facets were never read back -- is
+        // held here, and the read-back is spoken from the model's own brief in
+        // place of the proposal. It is folded into the interview as a question
+        // the machine asked (spokenFor), so the model's next turn knows
+        // Krane's yes or no answers that question and not whatever it said
+        // last. The escape phrase is one way past this, because it is Krane
+        // saying so; a skill is the other, because its facets ARE the command
+        // line, and the proposal reads that line back exactly -- a read-back
+        // before it would be the same question asked twice.
+        if (INTERVIEW_VERBS.has(session.verb) && !escaped && !session.command && !readyToPropose(ownInterview)) {
+          // For a tell or an interrupt the session is resolved first, for the
+          // same reason proposeSession resolves it before proposing: reading
+          // back "I would tell jarvis-1 to ..." and hearing a yes, only to say
+          // "I cannot find jarvis-1" afterwards, is worse than saying so now.
+          // The resolved name is what is read back, since it is the session
+          // the words will actually reach.
+          let name = session.name ?? session.repo;
+          if (session.verb !== "start") {
+            const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
+            if (refusal) {
+              log(`${session.verb} refused before read-back: ${refusal}`);
+              dropAnswered(conv.unanswered, answering);
+              await say(send, refusal);
+              return;
+            }
+            name = record.name;
+          }
           const facets = unconfirmedFacets(ownInterview);
-          const question = readBack(session, facets);
+          const question = readBack({ ...session, name }, facets);
           conv.interview = noteInterview(
             ownInterview,
-            { for: "start", repo: session.repo, confirming: facets.join(","), spokenFor: true },
+            { for: session.verb, repo: session.repo, confirming: facets.join(","), spokenFor: true },
             Date.now(),
             conv.unanswered.slice(0, answering),
           );

@@ -61,10 +61,11 @@ these hold:
    still have a loose thread — an answer that raises a new question ("just the
    builder test — actually, check the other one too if you have time") is not
    fully settled just because the facet was touched.
-3. **For a start, every facet has been read back and confirmed.** Covered is
-   Dante's own opinion that it knows a facet; confirmed is Krane agreeing with
-   what Dante thinks it knows. A tell or an interrupt stops at the first two —
-   the session on the far end already has the context a brief exists to supply.
+3. **Every facet has been read back and confirmed.** Covered is Dante's own
+   opinion that it knows a facet; confirmed is Krane agreeing with what Dante
+   thinks it knows. This holds for a start, a tell and an interrupt alike —
+   a wrong instruction passed into a running session is no cheaper than a
+   wrong brief handed to a new one.
 
 All of them, together — four ticked boxes with an unresolved thread is not
 confidence, neither is an unticked box excused because nothing about it seems
@@ -85,7 +86,7 @@ than becoming a question of its own — "I'll assume you mean the builder test,
 since that's the one that's flaky" — and the read-back is where it gets its yes,
 alongside everything else, rather than costing a turn by itself.
 
-## Never skip it for a start
+## Never skip it
 
 An earlier version of this rule let Dante skip the interview when a request was
 "already specific or small enough to brief in one line". That is exactly when a
@@ -94,9 +95,12 @@ request was clear, proposed, heard a yes to "Shall I, sir?", and nobody ever
 checked whether its reading of the request was the one Krane had in mind. A
 proposal confirms the *act*; it says nothing about the *understanding* behind it.
 
-So a start always gets at least one confirmation question, and it falls out of
-the rule rather than being a minimum imposed on top of it: you cannot confirm a
-facet without reading it back. What a confirmation question is:
+So a start, a tell and an interrupt each get at least one confirmation question,
+and it falls out of the rule rather than being a minimum imposed on top of it:
+you cannot confirm a facet without reading it back. For a tell or an interrupt
+`where` is the session the words are going to rather than a repository, and the
+read-back names it — "I would tell fix-tests to run the linter as well". What a
+confirmation question is:
 
 - **It targets facets by name.** "So: the flaky builder test, in jarvis,
   touching only the test file, done when npm test passes twice — have I got that
@@ -117,14 +121,14 @@ There are two ways past this, and both are deliberate:
 - **Krane saying so.** The escape phrases ("just start it", "stop asking", and
   the rest) still end the interview and propose with what Dante has, confirmed
   or not. That is Krane overriding the rule out loud, which is his to do.
-- **A slash command.** A start whose prompt is a command (`command="/review
-  high"`, see the README) has no facets to read back: the command line is its
-  goal, constraints and acceptance all at once, and the proposal already says
-  that line back exactly — "Start a session in jarvis running /review high.
-  Shall I, sir?" A read-back in front of it would be the same question asked
-  twice, which is the padding this page forbids. If Dante is not sure which
-  command or which arguments, it interviews as usual first; the exemption is
-  only for a tag that arrives with a vetted command on it.
+- **A skill.** A start or tell whose prompt is a skill (`command="/grilling the
+  rollout plan"`, see the README) has no facets to read back: the command line
+  is its goal, constraints and acceptance all at once, and the proposal already
+  says that line back exactly — "Start a session in jarvis running /grilling the
+  rollout plan. Shall I, sir?" A read-back in front of it would be the same
+  question asked twice, which is the padding this page forbids. If Dante is not
+  sure which skill or which arguments, it interviews as usual first; the
+  exemption is only for a tag that arrives with a vetted skill on it.
 
 ## How the machine enforces it
 
@@ -148,19 +152,22 @@ reasoning honest across turns and across a possible restart.
   facets Krane has said yes to; it accumulates like `have` (omitted carries,
   present-but-empty resets). A facet in either list is necessarily covered, so
   both fold into `covered` the way a known repo folds into `where`.
-- **Readiness.** `readyToPropose` is the check a start has to pass: the interview
-  is live, and either Krane said to proceed or every facet is in `confirmed` or
-  `confirming`. A facet still being read back counts, on purpose — the tag after
-  a read-back is where the model reports the yes it just heard, and the natural
-  tag for that is the start tag itself. Making it write an interview tag with
-  `confirmed=` first would cost a turn that asks nothing.
+- **Readiness.** `readyToPropose` is the check a start, tell or interrupt has to
+  pass: the interview is live, and either Krane said to proceed or every facet is
+  in `confirmed` or `confirming`. A facet still being read back counts, on
+  purpose — the tag after a read-back is where the model reports the yes it just
+  heard, and the natural tag for that is the session tag itself. Making it write
+  an interview tag with `confirmed=` first would cost a turn that asks nothing.
 - **The gate, and the machine's own read-back.** `server.js` refuses to propose a
-  start that fails `readyToPropose` — no interview at all, or one whose facets
-  were never read back — unless the utterance was an escape phrase. Instead of
-  the proposal it speaks a read-back that `readBack` composes from the model's
-  own `brief` (falling back to the task and repo), for exactly the unconfirmed
-  facets, and folds a synthetic interview tag into the state (`for=start`,
-  `confirming=<those facets>`, marked `spokenFor`). The next machine-state line
+  start, tell or interrupt that fails `readyToPropose` — no interview at all, or
+  one whose facets were never read back — unless the utterance was an escape
+  phrase. For a tell or interrupt the session is resolved first, so a name
+  nothing answers to is refused before it is ever read back. Instead of the
+  proposal it speaks a read-back that `readBack` composes from the model's own
+  `brief` (falling back to the task, the repo, or the resolved session name), for
+  exactly the unconfirmed facets, and folds a synthetic interview tag into the
+  state (`for=<verb>`, `confirming=<those facets>`, marked `spokenFor`). The
+  next machine-state line
   says the read-back was spoken for the model, so it knows Krane's yes or no
   answers that question and not whatever it said last. The read-back is built
   from the brief rather than composed fresh so that what is checked is the

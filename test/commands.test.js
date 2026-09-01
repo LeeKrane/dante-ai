@@ -4,114 +4,113 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  BUILTIN_COMMANDS,
-  FORBIDDEN_COMMANDS,
   MAX_ARGS_CHARS,
+  NATIVE_COMMANDS,
   commandsBlock,
-  describeCommand,
   loadCommands,
   parseCommand,
   refuseCommand,
 } from "../lib/commands.js";
 import { withTempDir } from "./helpers.js";
 
-const KNOWN = new Map([["review", {}], ["compact", {}], ["cleanup-session-codebase", {}], ["caveman:caveman-commit", {}]]);
+const KNOWN = new Map([["grilling", {}], ["cleanup-session-codebase", {}], ["caveman:caveman-commit", {}]]);
 
 // ---------------------------------------------------------------------------
 // parseCommand
 // ---------------------------------------------------------------------------
 
-test("a known command parses to its name, its arguments, and the one line that will run", () => {
-  assert.deepEqual(parseCommand("/review high", KNOWN), { name: "review", args: "high", line: "/review high" });
-  assert.deepEqual(parseCommand("/compact", KNOWN), { name: "compact", args: "", line: "/compact" });
+test("a known skill parses to its name, its arguments, and the one line that will run", () => {
+  assert.deepEqual(parseCommand("/grilling the rollout plan", KNOWN), {
+    name: "grilling", args: "the rollout plan", line: "/grilling the rollout plan",
+  });
+  assert.deepEqual(parseCommand("/cleanup-session-codebase", KNOWN), {
+    name: "cleanup-session-codebase", args: "", line: "/cleanup-session-codebase",
+  });
   assert.deepEqual(parseCommand("/caveman:caveman-commit", KNOWN), {
     name: "caveman:caveman-commit", args: "", line: "/caveman:caveman-commit",
   });
 });
 
 test("the name is read case-insensitively and the arguments are collapsed to one line", () => {
-  assert.deepEqual(parseCommand("/Review  the\nauth   module ", KNOWN), {
-    name: "review", args: "the auth module", line: "/review the auth module",
+  assert.deepEqual(parseCommand("/Grilling  the\nauth   module ", KNOWN), {
+    name: "grilling", args: "the auth module", line: "/grilling the auth module",
   });
 });
 
-test("a command that is not known is refused, not guessed at", () => {
-  assert.equal(parseCommand("/remove", KNOWN), null);
-  assert.equal(parseCommand("/review", null), null);
-  assert.equal(parseCommand("/review", new Map()), null);
+test("a skill that is not known is refused, not guessed at", () => {
+  assert.equal(parseCommand("/cleanup", KNOWN), null);
+  assert.equal(parseCommand("/grilling", null), null);
+  assert.equal(parseCommand("/grilling", new Map()), null);
 });
 
-test("a forbidden command is refused even when discovery would have listed it", () => {
-  for (const name of FORBIDDEN_COMMANDS) {
+test("one of Claude's own commands is refused even when a skill of that name is on the allow-list", () => {
+  for (const name of NATIVE_COMMANDS) {
     assert.equal(parseCommand(`/${name}`, new Map([[name, {}]])), null, name);
   }
+  assert.ok(NATIVE_COMMANDS.has("compact") && NATIVE_COMMANDS.has("clear") && NATIVE_COMMANDS.has("permissions"));
 });
 
 test("anything that is not a slash command is refused: no slash, a bad name, nothing at all", () => {
-  for (const text of ["review", "run /review", "/", "/re view", "/rev!ew", "", null, undefined, 42]) {
+  for (const text of ["grilling", "run /grilling", "/", "/gril ling", "/gril!ing", "", null, undefined, 42]) {
     assert.equal(parseCommand(text, KNOWN), null, String(text));
   }
 });
 
 test("the allow-list may be a Map, a Set, an array of names, or an array of records", () => {
-  assert.ok(parseCommand("/review", new Set(["review"])));
-  assert.ok(parseCommand("/review", ["review"]));
-  assert.ok(parseCommand("/review", [{ name: "review" }]));
+  assert.ok(parseCommand("/grilling", new Set(["grilling"])));
+  assert.ok(parseCommand("/grilling", ["grilling"]));
+  assert.ok(parseCommand("/grilling", [{ name: "grilling" }]));
 });
 
 test("arguments are capped and stripped of unprintables, because a model wrote them from speech", () => {
   const rlo = String.fromCharCode(0x202e);
-  const parsed = parseCommand(`/review ${rlo}${"x".repeat(MAX_ARGS_CHARS * 2)}`, KNOWN);
+  const parsed = parseCommand(`/grilling ${rlo}${"x".repeat(MAX_ARGS_CHARS * 2)}`, KNOWN);
   assert.equal(parsed.args.includes(rlo), false);
   assert.equal(parsed.args.length, MAX_ARGS_CHARS);
-  assert.equal(parsed.line, `/review ${parsed.args}`);
+  assert.equal(parsed.line, `/grilling ${parsed.args}`);
 });
 
 // ---------------------------------------------------------------------------
-// refuseCommand / describeCommand
+// refuseCommand
 // ---------------------------------------------------------------------------
 
-test("the refusal says which kind it is: unknown invites a correction, forbidden does not", () => {
-  assert.equal(refuseCommand("/remove", KNOWN), "I do not know a /remove command, sir.");
-  assert.equal(refuseCommand("/permissions", KNOWN), "I will not send /permissions by voice, sir.");
-  assert.equal(refuseCommand("/PERMISSIONS high", KNOWN), "I will not send /permissions by voice, sir.");
-  assert.equal(refuseCommand("review", KNOWN), "I did not catch which command that was, sir.");
-  assert.equal(refuseCommand("", KNOWN), "I did not catch which command that was, sir.");
+test("the refusal says which kind it is: unknown invites a correction, native does not", () => {
+  assert.equal(refuseCommand("/cleanup", KNOWN), "I do not know a /cleanup skill, sir.");
+  assert.equal(refuseCommand("/compact", KNOWN), "I will not send /compact by voice, sir. That is a Claude command, not a skill.");
+  assert.equal(refuseCommand("/PERMISSIONS now", KNOWN), "I will not send /permissions by voice, sir. That is a Claude command, not a skill.");
+  assert.equal(refuseCommand("grilling", KNOWN), "I did not catch which skill that was, sir.");
+  assert.equal(refuseCommand("", KNOWN), "I did not catch which skill that was, sir.");
 });
 
-test("a command that is fine is not refused", () => {
-  assert.equal(refuseCommand("/review high", KNOWN), null);
-});
-
-test("the spoken clause is the exact line that will run", () => {
-  assert.equal(describeCommand(parseCommand("/review high", KNOWN)), "running /review high");
-  assert.equal(describeCommand(null), "");
+test("a skill that is fine is not refused", () => {
+  assert.equal(refuseCommand("/grilling the plan", KNOWN), null);
 });
 
 // ---------------------------------------------------------------------------
 // commandsBlock
 // ---------------------------------------------------------------------------
 
-test("the persona block lists every known command, sorted, and teaches the command= key", () => {
+test("the persona block lists every known skill, sorted, and teaches the command= key", () => {
   const block = commandsBlock(KNOWN);
-  assert.match(block, /^COMMANDS: /);
-  assert.match(block, /\/caveman:caveman-commit, \/cleanup-session-codebase, \/compact, \/review\./);
+  assert.match(block, /^SKILLS: /);
+  assert.match(block, /\/caveman:caveman-commit, \/cleanup-session-codebase, \/grilling\./);
   assert.match(block, /command="\/<name> <arguments>"/);
-  assert.match(block, /never send a command to a session unless he asked you to, in this turn/);
+  assert.match(block, /never one of Claude's own commands/);
+  assert.match(block, /never send a skill to a session unless he asked you to, in this turn/);
 });
 
 test("with nothing known there is no block at all, because a list of nothing is worse than no list", () => {
   assert.equal(commandsBlock(null), "");
   assert.equal(commandsBlock(new Map()), "");
-  // A forbidden name that somehow got in is not advertised either.
-  assert.equal(commandsBlock(["permissions"]), "");
+  // A native name that somehow got in is not advertised either.
+  assert.equal(commandsBlock(["compact"]), "");
 });
 
 // ---------------------------------------------------------------------------
 // loadCommands
 // ---------------------------------------------------------------------------
 
-function fakeInstall(dir, { commands = [], skills = [] } = {}) {
+function fakeInstall(dir, { skills = [], commands = [] } = {}) {
   mkdirSync(join(dir, ".claude", "commands"), { recursive: true });
   for (const name of commands) writeFileSync(join(dir, ".claude", "commands", `${name}.md`), `# ${name}\n`);
   for (const name of skills) {
@@ -120,18 +119,19 @@ function fakeInstall(dir, { commands = [], skills = [] } = {}) {
   }
 }
 
-test("discovery finds custom commands and skills under the home directory and under each repository, plus the built-ins", () => {
+test("discovery finds skills under the home directory and under each repository, and nothing else", () => {
   withTempDir("dante-commands-", (root) => {
     const home = join(root, "home");
     const repo = join(root, "repo");
-    fakeInstall(home, { commands: ["deploy"], skills: ["grilling"] });
+    fakeInstall(home, { skills: ["grilling"], commands: ["deploy"] });
     fakeInstall(repo, { skills: ["blast-radius"] });
 
     const known = loadCommands({ home, repos: [repo] });
-    for (const name of BUILTIN_COMMANDS) assert.equal(known.get(name)?.source, "builtin", name);
-    assert.equal(known.get("deploy").source, home);
     assert.equal(known.get("grilling").source, home);
     assert.equal(known.get("blast-radius").source, repo);
+    // The older single-file command form is not a skill and is not sent.
+    assert.equal(known.has("deploy"), false);
+    assert.deepEqual([...known.keys()].sort(), ["blast-radius", "grilling"]);
   });
 });
 
@@ -139,29 +139,28 @@ test("a repository's own skill wins the source for a name it shares with a globa
   withTempDir("dante-commands-", (root) => {
     const home = join(root, "home");
     const repo = join(root, "repo");
-    fakeInstall(home, { skills: ["review"] });
-    fakeInstall(repo, { skills: ["review"] });
-    assert.equal(loadCommands({ home, repos: [repo] }).get("review").source, repo);
+    fakeInstall(home, { skills: ["grilling"] });
+    fakeInstall(repo, { skills: ["grilling"] });
+    assert.equal(loadCommands({ home, repos: [repo] }).get("grilling").source, repo);
   });
 });
 
-test("discovery skips a skill directory with no SKILL.md, a non-markdown file, a forbidden name, and a directory that does not exist", () => {
+test("discovery skips a skill directory with no SKILL.md, a skill named like a native command, and a directory that does not exist", () => {
   withTempDir("dante-commands-", (root) => {
     const home = join(root, "home");
-    fakeInstall(home, { commands: ["permissions"], skills: ["mcp"] });
+    fakeInstall(home, { skills: ["compact", "review"] });
     mkdirSync(join(home, ".claude", "skills", "half-made"));
-    writeFileSync(join(home, ".claude", "commands", "notes.txt"), "not a command");
 
     const known = loadCommands({ home, repos: [join(root, "missing")] });
-    assert.equal(known.has("permissions"), false);
-    assert.equal(known.has("mcp"), false);
+    assert.equal(known.has("compact"), false);
+    assert.equal(known.has("review"), false);
     assert.equal(known.has("half-made"), false);
-    assert.equal(known.has("notes"), false);
-    assert.deepEqual([...known.keys()].sort(), [...BUILTIN_COMMANDS].sort());
+    assert.equal(known.size, 0);
   });
 });
 
-test("with no home at all and no repositories, the built-ins are still known", () => {
+test("with no home at all and no repositories, nothing is known and nothing is sendable", () => {
   const known = loadCommands({ home: "", repos: null });
-  assert.deepEqual([...known.keys()].sort(), [...BUILTIN_COMMANDS].sort());
+  assert.equal(known.size, 0);
+  assert.equal(parseCommand("/grilling", known), null);
 });
