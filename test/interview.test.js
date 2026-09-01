@@ -11,6 +11,7 @@ import {
   composeBrief,
   interviewBlock,
   isLive,
+  holdForReadBack,
   markProceed,
   matches,
   noteInterview,
@@ -19,6 +20,7 @@ import {
   readyToPropose,
   unconfirmedFacets,
   wantsToProceed,
+  withdrawConfirming,
 } from "../lib/interview.js";
 import { parseAction } from "../lib/action.js";
 
@@ -36,6 +38,7 @@ test("a first interview tag starts a state that counts one question, keeps the n
   assert.deepEqual(state, {
     verb: "start",
     repo: "jarvis",
+    name: "",
     notes: ["wants the tests fixed"],
     said: ["fix the failing tests in jarvis"],
     covered: ["goal", "where"],
@@ -67,6 +70,7 @@ test("a note and a said line are both appended and the count goes up, and the in
   assert.deepEqual(second, {
     verb: "start",
     repo: "jarvis",
+    name: "",
     notes: ["first note", "second note"],
     said: ["first thing said", "second thing said"],
     covered: ["goal", "where", "constraints"],
@@ -99,6 +103,7 @@ test("an interview that has expired starts over rather than continuing", () => {
   assert.deepEqual(restarted, {
     verb: "tell",
     repo: "fitness",
+    name: "",
     notes: ["new note"],
     said: ["new ask"],
     covered: ["where"],
@@ -225,6 +230,43 @@ test("a tag for the same verb matches an interview, and the repo must match when
   assert.equal(matches(null, { verb: "start" }), false);
 });
 
+test("an interview about one session does not match a tag about another, and the name carries forward like the repo", () => {
+  const state = noteInterview(null, { verb: "interview", for: "tell", name: "fix-tests" }, 1000);
+  assert.equal(state.name, "fix-tests");
+  assert.equal(matches(state, { verb: "tell", name: "fix-tests" }), true);
+  assert.equal(matches(state, { verb: "tell", name: "build-ui" }), false);
+  // A tag with no name, or an interview that never learned one, still matches.
+  assert.equal(matches(state, { verb: "tell" }), true);
+  assert.equal(matches(noteInterview(null, { verb: "interview", for: "tell" }, 1000), { verb: "tell", name: "build-ui" }), true);
+  assert.equal(noteInterview(state, { verb: "interview" }, 2000).name, "fix-tests");
+});
+
+test("a start, tell or interrupt is held for a read-back until it is ready, and a skill never is", () => {
+  assert.equal(holdForReadBack({ verb: "start" }, null), true);
+  assert.equal(holdForReadBack({ verb: "tell", name: "fix-tests" }, null), true);
+  assert.equal(holdForReadBack({ verb: "INTERRUPT" }, null), true);
+  assert.equal(holdForReadBack({ verb: "stop" }, null), false);
+  assert.equal(holdForReadBack({ verb: "read" }, null), false);
+  assert.equal(holdForReadBack({ verb: "start", command: "/grilling" }, null), false);
+  assert.equal(holdForReadBack({ verb: "start", command: "   " }, null), true);
+
+  const ready = noteInterview(null, { verb: "interview", for: "start", confirming: "goal,where,constraints,done" }, 1000);
+  assert.equal(holdForReadBack({ verb: "start" }, ready, 1000), false);
+  // Krane's escape phrase reaches this through markProceed, nothing else.
+  const partial = noteInterview(null, { verb: "interview", for: "start", confirming: "goal" }, 1000);
+  assert.equal(holdForReadBack({ verb: "start" }, partial, 1000), true);
+  assert.equal(holdForReadBack({ verb: "start" }, markProceed(partial), 1000), false);
+});
+
+test("withdrawing the read-back puts its facets back to unconfirmed and leaves the rest alone", () => {
+  const state = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", confirmed: "goal", confirming: "where,constraints,done" }, 1000);
+  const withdrawn = withdrawConfirming(state);
+  assert.deepEqual(withdrawn, { ...state, confirming: [] });
+  assert.deepEqual(unconfirmedFacets(withdrawn), ["where", "constraints", "done"]);
+  assert.equal(readyToPropose(withdrawn, 1000), false);
+  assert.equal(withdrawConfirming(null), null);
+});
+
 test("no live interview means no block", () => {
   assert.equal(interviewBlock(null), "");
   assert.equal(interviewBlock(undefined), "");
@@ -304,7 +346,7 @@ test("stop alone is a negation rather than the stop-asking escape, and a refusal
 // A hand-built state for the block tests, with the confirmation lists defaulting
 // to empty so a test about coverage does not have to spell them out.
 function stateOf(fields) {
-  return { notes: [], said: [], confirming: [], confirmed: [], proceed: false, spokenFor: false, ...fields };
+  return { name: "", notes: [], said: [], confirming: [], confirmed: [], proceed: false, spokenFor: false, ...fields };
 }
 
 const ASK_FOR_GAP =
@@ -529,6 +571,14 @@ test("parseBrief reads the documented shape back into its sections", () => {
     done: ["npm test passes twice in a row"],
     also: ["Krane wants to know which assertion was racing, in the summary"],
   });
+});
+
+test("parseBrief reads a label the model dressed up as markdown, because the read-back must not deny what the brief said", () => {
+  const brief = "## Goal\nfix login\n**Where:** jarvis\n__Constraints__:\n- only touch auth.js\n* Done when: tests pass";
+  assert.deepEqual(parseBrief(brief), {
+    goal: "fix login", where: "jarvis", constraints: ["only touch auth.js"], done: ["tests pass"], also: [],
+  });
+  assert.match(readBack({ verb: "start", task: "fix login", brief }, FACETS), /constraints: only touch auth.js, done when tests pass\./);
 });
 
 test("parseBrief tolerates a missing section, text on the label's own line, and no brief at all", () => {

@@ -166,8 +166,15 @@ reasoning honest across turns and across a possible restart.
   proposal it speaks a read-back that `readBack` composes from the model's own
   `brief` (falling back to the task, the repo, or the resolved session name), for
   exactly the unconfirmed facets, and folds a synthetic interview tag into the
-  state (`for=<verb>`, `confirming=<those facets>`, marked `spokenFor`). The
-  next machine-state line
+  state (`for=<verb>`, `confirming=<those facets>`, marked `spokenFor`), and
+  keeps the held tag itself. The answer to that read-back is read by the
+  machine, the way a proposal's answer is (`readAnswer` in `lib/confirm.js`): a
+  yes hands exactly the held tag on to the ordinary "Shall I, sir?" proposal,
+  with the interview folded into its brief; a bare no puts the facets back to
+  unconfirmed (`withdrawConfirming`) and asks what Dante got wrong; anything
+  longer is the correction itself, handled the same way and then passed to the
+  model as an ordinary turn so it can fold the correction in and read that facet
+  back again. The next machine-state line
   says the read-back was spoken for the model, so it knows Krane's yes or no
   answers that question and not whatever it said last. The read-back is built
   from the brief rather than composed fresh so that what is checked is the
@@ -190,6 +197,12 @@ reasoning honest across turns and across a possible restart.
   except that "stop" immediately followed by "asking," "the questions" or "with
   the questions" is read as the escape phrase it's part of, not as its own
   refusal.
+- **Which session an interview is about.** An interview for a tell or an
+  interrupt records the session's name (`name=` on the tag, or the name the
+  machine resolved before its read-back), and a tag naming a different session
+  does not match it — so a read-back about `fix-tests`, still waiting on its
+  yes, cannot make an unrelated "tell build-ui to redeploy" ready to propose.
+  The same rule already held for the repository on a start.
 - **The ten-minute TTL.** An interview nobody has touched in ten minutes is
   stale — the person likely moved on — and is dropped rather than resumed, the
   same way a two-minute-old proposal in `lib/confirm.js` is.

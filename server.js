@@ -27,8 +27,8 @@ import {
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
 import {
-  INTERVIEW_VERBS, composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
-  readyToPropose, unconfirmedFacets, wantsToProceed,
+  composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
+  unconfirmedFacets, wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
@@ -46,7 +46,7 @@ import {
   MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession, createInFlight,
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
-import { loadCommands, parseCommand, refuseCommand } from "./lib/commands.js";
+import { loadCommands, vetCommand } from "./lib/commands.js";
 import { describeFailure } from "./lib/outcome.js";
 import { isListed, startVerdict, stopVerdict, tellVerdict } from "./lib/verdict.js";
 import { run as runBuild } from "./lib/builder.js";
@@ -777,6 +777,56 @@ async function answerProposal(send, conv, text) {
     }
     throw e;
   }
+  return true;
+}
+
+// The answer to a read-back the machine spoke (the hold in the say handler,
+// below), if that is what this was. Returns true when the words were spent
+// on it.
+//
+// The proposal path has answerProposal and readAnswer so that a yes is read
+// by code rather than by the model, and the machine's own read-back gets the
+// same treatment for the same reason: a yes to "have I got that right?" has
+// to lift the hold on exactly the tag that was read back, not on whatever
+// the model recomposes from memory a turn later -- which, after a cold
+// restart of the warm CLI, is all it would have. A yes runs nothing here: it
+// consumes the interview into the held tag's brief and hands the tag to
+// proposeSession, whose "Shall I, sir?" follows as it would have without the
+// hold. A no is not a refusal to act, it is "you got it wrong", so the
+// facets go back to unconfirmed and the model is asked what it got wrong. A
+// longer answer is the correction itself: the hold is dropped the same way
+// and the sentence goes on to be an ordinary turn, so the model folds it in
+// and reads that facet back again.
+async function answerHeld(send, conv, text) {
+  const held = conv.held;
+  if (!held) return false;
+  // The hold lives exactly as long as the interview it was folded into.
+  if (!isLive(conv.interview)) {
+    conv.held = null;
+    log("held read-back expired");
+    return false;
+  }
+
+  const answer = readAnswer(text);
+  conv.held = null;
+  if (answer !== "yes") {
+    conv.interview = withdrawConfirming(conv.interview);
+    log(`read-back ${answer === "no" ? "denied" : "corrected"}: ${JSON.stringify(text)}`);
+    if (answer !== "no") return false;
+    await say(send, "What did I get wrong, sir?");
+    return true;
+  }
+
+  log(`read-back confirmed: ${held.spoken}`);
+  const session = {
+    ...held.session,
+    brief: composeBrief({
+      task: held.session.task, brief: held.session.brief,
+      notes: conv.interview.notes, said: conv.interview.said, repo: conv.interview.repo,
+    }),
+  };
+  conv.interview = null;
+  await proposeSession(send, conv, session, await rosterPoller.read({ maxAgeMs: 0 }));
   return true;
 }
 
@@ -1907,7 +1957,7 @@ wss.on("connection", (ws) => {
   // the call in flight, and `settled` is how the next one waits for the abandoned
   // child to finish dying -- two of them resuming one session id at the same
   // time is the race this whole arrangement exists to avoid.
-  const conv = { pending: null, proposal: null, interview: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
+  const conv = { pending: null, proposal: null, interview: null, held: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
   const gate = createTurnGate();
 
   // Read fresh from the store rather than from a boot-time snapshot: a second
@@ -1961,6 +2011,11 @@ wss.on("connection", (ws) => {
       // question is part of a build already agreed to; this is the agreement.
       if (await answerProposal(send, conv, msg.text)) return;
 
+      // Then a read-back the machine spoke, waiting on its yes. Below the
+      // proposal for the same reason the proposal is below an approval: it is
+      // the earlier step of the same exchange.
+      if (await answerHeld(send, conv, msg.text)) return;
+
       // An outstanding question owns the next thing said: it is an answer, not a
       // new turn, so it goes to the build rather than to the chat model.
       if (conv.pending) {
@@ -2008,6 +2063,7 @@ wss.on("connection", (ws) => {
       // nothing about it, so this only makes the page agree with the model.
       if (conv.interview && !isLive(conv.interview)) {
         conv.interview = null;
+        conv.held = null;
         activity(send, null);
         log("interview expired");
       }
@@ -2016,11 +2072,7 @@ wss.on("connection", (ws) => {
       // below carries the decision even if the model asks another question
       // anyway -- interviewBlock's tail then tells it to stop regardless of
       // what it was about to do.
-      // Kept for the start gate below as well: "just start it" with no
-      // interview live at all is still Krane overriding the read-back rule
-      // out loud, and it must not be answered with a read-back.
-      const escaped = wantsToProceed(msg.text);
-      if (isLive(conv.interview) && escaped) conv.interview = markProceed(conv.interview);
+      if (isLive(conv.interview) && wantsToProceed(msg.text)) conv.interview = markProceed(conv.interview);
 
       // Read in the same tick as the list itself, so it counts exactly the
       // sentences this call was asked about and nothing that arrives behind it.
@@ -2058,7 +2110,9 @@ wss.on("connection", (ws) => {
       // The model may append machine-readable tags: one asking for a build, one
       // recording a standing preference. Split them off first -- a tag is for
       // dispatch, never for the voice.
-      const { reply, action, memory, session } = parseAction(spoken);
+      const parsed = parseAction(spoken);
+      const { reply, action, memory } = parsed;
+      let session = parsed.session;
 
       // Applied before dispatch, with nothing awaited in between: "make it dark
       // from now on and build me a landing page" has to have the preference on
@@ -2160,41 +2214,20 @@ wss.on("connection", (ws) => {
         // on the session tag it produced -- INTERVIEW_VERBS also covers tell
         // and interrupt, and their own "repo" means "which session," which
         // has nothing to do with where an unrelated start should land.
-        // A slash command is vetted here, once, before it is described,
+        // A skill on the tag is vetted here, once, before it is described,
         // proposed or dispatched -- so every one of those sees the same
-        // normalised line (lib/commands.js's parseCommand) or none of them
-        // sees a tag at all. A refusal ends the turn out loud: an unknown or
-        // forbidden command is not something to propose and let the yes find
-        // out about. The bare key with nothing in it is treated as no command,
-        // so a model that wrote command="" has written an ordinary tag.
-        if (typeof session.command === "string" && session.command.trim()) {
-          const refusal = refuseCommand(session.command, knownCommands);
-          if (refusal) {
-            log(`command refused: ${JSON.stringify(session.command)} -> ${refusal}`);
+        // normalised line or none of them sees a tag at all. The rules are
+        // lib/commands.js's (vetCommand); this only speaks the refusal.
+        {
+          const vetted = vetCommand(session, knownCommands);
+          if (vetted.refusal) {
+            log(`command refused: ${JSON.stringify(session.command)} -> ${vetted.refusal}`);
             dropAnswered(conv.unanswered, answering);
-            await say(send, refusal);
+            await say(send, vetted.refusal);
             return;
           }
-          const parsed = parseCommand(session.command, knownCommands);
-          session.command = parsed.line;
-          // A command cannot cut in: the peer channel that makes an interrupt
-          // an interrupt wraps what it delivers in a sentence about where it
-          // came from, and a slash command inside that sentence is prose to
-          // the session, not a command (verified live against CLI 2.1.257 --
-          // see dispatchTell). So it goes the patient way, and is described
-          // and confirmed as the tell it will actually be.
-          if (session.verb === "interrupt") {
-            log("command interrupt delivered as a tell: a command waits its turn");
-            session.verb = "tell";
-          }
-          // A command start has a label for the roster and the recap even
-          // when the model wrote none: the line itself, which is also what a
-          // read-back of the session would call it.
-          if (session.verb === "start" && !(typeof session.task === "string" && session.task.trim())) {
-            session.task = `run ${parsed.line}`;
-          }
-        } else {
-          delete session.command;
+          if (vetted.session.verb !== session.verb) log(`command ${vetted.session.command} delivered as a ${vetted.session.verb}: a skill waits its turn`);
+          session = vetted.session;
         }
 
         const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
@@ -2225,11 +2258,15 @@ wss.on("connection", (ws) => {
         // place of the proposal. It is folded into the interview as a question
         // the machine asked (spokenFor), so the model's next turn knows
         // Krane's yes or no answers that question and not whatever it said
-        // last. The escape phrase is one way past this, because it is Krane
-        // saying so; a skill is the other, because its facets ARE the command
-        // line, and the proposal reads that line back exactly -- a read-back
-        // before it would be the same question asked twice.
-        if (INTERVIEW_VERBS.has(session.verb) && !escaped && !session.command && !readyToPropose(ownInterview)) {
+        // last, and the tag itself is kept (conv.held) so that a yes lifts
+        // the hold on exactly what was read back rather than on whatever the
+        // model recomposes a turn later -- see answerHeld. The escape phrase
+        // is one way past this, because it is Krane saying so; a skill is the
+        // other, because its facets ARE the command line, and the proposal
+        // reads that line back exactly -- a read-back before it would be the
+        // same question asked twice. holdForReadBack is the rule; this is the
+        // wiring.
+        if (holdForReadBack(session, ownInterview)) {
           // For a tell or an interrupt the session is resolved first, for the
           // same reason proposeSession resolves it before proposing: reading
           // back "I would tell jarvis-1 to ..." and hearing a yes, only to say
@@ -2251,10 +2288,11 @@ wss.on("connection", (ws) => {
           const question = readBack({ ...session, name }, facets);
           conv.interview = noteInterview(
             ownInterview,
-            { for: session.verb, repo: session.repo, confirming: facets.join(","), spokenFor: true },
+            { for: session.verb, repo: session.repo, name, confirming: facets.join(","), spokenFor: true },
             Date.now(),
             conv.unanswered.slice(0, answering),
           );
+          conv.held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
           activity(send, "interviewing", { subject: conv.interview.repo || undefined });
           log(`start held for confirmation (facets=${facets.join(",")}, asked=${conv.interview.asked}): ${JSON.stringify(question)}`);
           if (await say(send, question, undefined, () => gate.isCurrent(token))) {
@@ -2273,6 +2311,7 @@ wss.on("connection", (ws) => {
             notes: ownInterview.notes, said: ownInterview.said, repo: ownInterview.repo,
           });
           conv.interview = null;
+          conv.held = null;
         }
 
         // The request is settled either way: it is now a proposal waiting on a
@@ -2328,6 +2367,7 @@ wss.on("connection", (ws) => {
     conv.pending = null;
     conv.proposal = null;
     conv.interview = null;
+    conv.held = null;
     // A question already asked is left to time out rather than answered by a
     // closing tab. Nothing is decided by a page going away.
     if (voice === send) voice = null;

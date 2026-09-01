@@ -10,8 +10,10 @@ import {
   loadCommands,
   parseCommand,
   refuseCommand,
+  vetCommand,
 } from "../lib/commands.js";
 import { withTempDir } from "./helpers.js";
+import { MAX_TASK_CHARS } from "../lib/confirm.js";
 
 const KNOWN = new Map([["grilling", {}], ["cleanup-session-codebase", {}], ["caveman:caveman-commit", {}]]);
 
@@ -68,6 +70,53 @@ test("arguments are capped and stripped of unprintables, because a model wrote t
   assert.equal(parsed.args.includes(rlo), false);
   assert.equal(parsed.args.length, MAX_ARGS_CHARS);
   assert.equal(parsed.line, `/grilling ${parsed.args}`);
+});
+
+test("a skill keeps its directory's own casing on the line that is sent, however it was spoken", () => {
+  const known = new Map([["cleanup-session", { name: "Cleanup-Session", source: "/repo" }]]);
+  assert.deepEqual(parseCommand("/cleanup-session now", known), {
+    name: "Cleanup-Session", args: "now", line: "/Cleanup-Session now",
+  });
+  assert.equal(parseCommand("/CLEANUP-SESSION", known).line, "/Cleanup-Session");
+  assert.match(commandsBlock(known), /\/Cleanup-Session\./);
+});
+
+test("the argument cap is the same cap the proposal puts on a spoken task, and the test is what pins it", () => {
+  // lib/commands.js cannot import lib/confirm.js (confirm.js imports it), so
+  // the equality the comment on MAX_ARGS_CHARS promises is enforced here.
+  assert.equal(MAX_ARGS_CHARS, MAX_TASK_CHARS);
+});
+
+// ---------------------------------------------------------------------------
+// vetCommand
+// ---------------------------------------------------------------------------
+
+test("a tag with no skill on it is untouched except for the empty key, which is dropped", () => {
+  assert.deepEqual(vetCommand({ verb: "start", task: "fix it" }, KNOWN), { session: { verb: "start", task: "fix it" }, refusal: null });
+  assert.deepEqual(vetCommand({ verb: "start", task: "fix it", command: "  " }, KNOWN), { session: { verb: "start", task: "fix it" }, refusal: null });
+});
+
+test("a skill the tag cannot send is a refusal, and the tag is returned untouched for the log", () => {
+  const session = { verb: "tell", name: "fix-tests", command: "/compact" };
+  const vetted = vetCommand(session, KNOWN);
+  assert.equal(vetted.refusal, "I will not send /compact by voice, sir. That is a Claude command, not a skill.");
+  assert.equal(vetted.session, session);
+  assert.equal(vetCommand({ verb: "tell", command: "/nope" }, KNOWN).refusal, "I do not know a /nope skill, sir.");
+});
+
+test("a vetted skill is normalised, an interrupt becomes a tell, and a start with no task is labelled by its line", () => {
+  assert.deepEqual(vetCommand({ verb: "INTERRUPT", name: "fix-tests", command: "/Grilling  the plan" }, KNOWN), {
+    session: { verb: "tell", name: "fix-tests", command: "/grilling the plan" }, refusal: null,
+  });
+  assert.deepEqual(vetCommand({ verb: "start", repo: "jarvis", command: "/grilling" }, KNOWN), {
+    session: { verb: "start", repo: "jarvis", command: "/grilling", task: "run /grilling" }, refusal: null,
+  });
+  // A start that already has a task keeps it as the label.
+  assert.equal(vetCommand({ verb: "start", task: "grill the plan", command: "/grilling" }, KNOWN).session.task, "grill the plan");
+  // The input is never mutated.
+  const input = { verb: "interrupt", command: "/grilling" };
+  vetCommand(input, KNOWN);
+  assert.equal(input.verb, "interrupt");
 });
 
 // ---------------------------------------------------------------------------
