@@ -193,13 +193,16 @@ the daemon path.
   stop X". Left as is: a pid that is gone is exactly the evidence this fix
   stopped trusting, and "could not" is the honest answer when the daemon has
   not said yes.
-- **`stopViaDaemon` is a third copy of the spawn-with-deadline runner** in
-  `tellSession` and `listAgents`, with its own grace period. True, and a shared
-  `runCli` would be the right cleanup, but it touches the tell and list verbs
-  and so is left for a change of its own.
+- **`stopViaDaemon` was a third copy of the spawn-with-deadline runner** in
+  `tellSession` and `listAgents`, with its own grace period. Folded: all three
+  now call `runCli` in `lib/run-cli.js`, which owns the one grace period
+  (`KILL_GRACE_MS`, 250 ms) and the stdout and stderr caps. `lib/builder.js`
+  keeps its own runner: a build streams progress and writes a log while it
+  runs, which is a different shape of waiting. `test/run-cli.test.js` pins the
+  runner itself; the callers' existing tests pin what each makes of it.
 - **`daemonId` lives beside impure code** rather than in `lib/agents.js` with
-  the other roster predicates. Left where it is for now; moving it is part of
-  the same cleanup as above.
+  the other roster predicates. Left where it is: it is only ever read by
+  `stopSession`, and the tests that pin it are the stop tests.
 
 ## Not changed, but found on the way
 

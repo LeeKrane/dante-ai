@@ -405,6 +405,7 @@ where there are no keys, tapping those is how the panels are toggled.
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
 | `lib/spawn-session.js` | starting, telling and stopping a real session. |
+| `lib/run-cli.js` | one child-process runner for every verb that spawns the CLI and waits: deadline, two-step kill, capped pipes. |
 | `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
