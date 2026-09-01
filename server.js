@@ -2,8 +2,15 @@ import dotenv from "dotenv";
 // dotenv never overrides a variable already present in the real environment,
 // so systemd `Environment=` lines and shell exports keep priority over `.env`
 // -- this only fills in what the process wasn't already given. Called before
-// any loader below reads process.env.
-dotenv.config({ quiet: true }); // quiet suppresses dotenv v17's startup banner
+// any loader below reads process.env. The path is anchored to this file, not
+// the working directory: the server can be started from anywhere, and the
+// `.env` dotenv loads must be the same one lib/builder.js's deny rules keep
+// builds away from. (fileURLToPath is usable here because ESM evaluates every
+// import before this statement runs, wherever it sits in the file.)
+dotenv.config({
+  path: fileURLToPath(new URL(".env", import.meta.url)),
+  quiet: true, // suppresses dotenv v17's startup banner
+});
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
