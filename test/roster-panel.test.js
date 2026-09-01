@@ -23,7 +23,7 @@ test("a row says which session, where, how it is and how long", () => {
     where: "jarvis",
     number: 1,
     condition: "working",
-    elapsed: "1m",
+    elapsed: "1m 5s",
   }]);
 });
 
@@ -81,7 +81,8 @@ test("a roster Dante could not read paints nothing", () => {
 
 test("an elapsed time is read the way someone would say it", () => {
   assert.equal(elapsedLabel(45_000), "45s");
-  assert.equal(elapsedLabel(65_000), "1m");
+  assert.equal(elapsedLabel(65_000), "1m 5s");
+  assert.equal(elapsedLabel(120_000), "2m");
   assert.equal(elapsedLabel(3_600_000), "1h");
   assert.equal(elapsedLabel(3_900_000), "1h 5m");
 });

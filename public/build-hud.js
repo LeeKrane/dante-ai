@@ -27,8 +27,9 @@
 // visible, accumulating quiet.
 //
 // The module owns nothing outside #build-hud. It starts a rAF loop on start(),
-// and stop() cancels it and drops every listener, so repeated builds never
-// accumulate loops.
+// and stop() is its own internal teardown — not part of the object this
+// returns — cancelling the loop and dropping every listener so repeated
+// builds never accumulate them.
 
 import { stepPosition } from "./progress-policy.js";
 
@@ -110,7 +111,7 @@ const bipolar = (x) => fbm(x) * 2 - 1;
 // no-op so app.js never needs a null check around it.
 function inertHud() {
   const noop = () => {};
-  return { start: noop, event: noop, step: noop, succeeded: noop, failed: noop, finish: noop, setChromeHidden: noop, isActive: () => false };
+  return { start: noop, event: noop, step: noop, succeeded: noop, failed: noop, finish: noop, setChromeHidden: noop };
 }
 
 export function createBuildHud(options = {}) {
@@ -848,7 +849,6 @@ export function createBuildHud(options = {}) {
   // ---- lifecycle ----
   function applyReduce(value) {
     reduce = !!value;
-    root.classList.toggle("bh-reduced", reduce);
   }
 
   function start(request = {}) {
@@ -1018,6 +1018,5 @@ export function createBuildHud(options = {}) {
     failed,
     finish,
     setChromeHidden(hidden) { chromeHidden = !!hidden; },
-    isActive() { return phase !== "gone"; },
   };
 }

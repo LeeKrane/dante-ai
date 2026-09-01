@@ -31,7 +31,8 @@ export function elapsedLabel(ms) {
   const total = Math.floor(ms / 1000);
   if (total < 60) return `${total}s`;
   const minutes = Math.floor(total / 60);
-  if (minutes < 60) return `${minutes}m`;
+  const seconds = total % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest ? `${hours}h ${rest}m` : `${hours}h`;

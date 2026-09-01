@@ -1,10 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { progressLine, progressLines, createProgressStream } from "../lib/progress.js";
+import { progressLines } from "../lib/progress.js";
 
 const toolEvent = (...blocks) =>
   JSON.stringify({ type: "assistant", message: { content: blocks } });
 const toolUse = (name, input) => ({ type: "tool_use", name, input });
+
+// A chunk carrying exactly one event line, the shape every test below feeds
+// progressLines to check what one event turns into.
+const line = (raw) => progressLines(raw + "\n");
 
 // Fixtures are real lines observed from `claude -p --output-format stream-json --verbose`.
 const WRITE = JSON.stringify({
@@ -69,26 +73,27 @@ const TEXT_ONLY = JSON.stringify({
 });
 
 test("a tool_use with a file path becomes a short line naming the file", () => {
-  assert.equal(progressLine(WRITE), "Writing index.html");
-  assert.equal(progressLine(READ), "Reading config.json");
-  assert.equal(progressLine(EDIT), "Editing index.html");
+  assert.deepEqual(line(WRITE), ["Writing index.html"]);
+  assert.deepEqual(line(READ), ["Reading config.json"]);
+  assert.deepEqual(line(EDIT), ["Editing index.html"]);
 });
 
 test("a tool_use without a file path falls back to a verb plus the tool name", () => {
-  assert.equal(progressLine(BASH), "Running Bash");
-  assert.equal(progressLine(MYSTERY), "Using Sparkle");
+  assert.deepEqual(line(BASH), ["Running Bash"]);
+  assert.deepEqual(line(MYSTERY), ["Using Sparkle"]);
 });
 
-test("events with nothing worth showing return null", () => {
-  for (const line of [RESULT, INIT, HOOK_STARTED, HOOK_RESPONSE, USER, RATE_LIMIT, TEXT_ONLY]) {
-    assert.equal(progressLine(line), null);
+test("events with nothing worth showing yield no lines", () => {
+  for (const raw of [RESULT, INIT, HOOK_STARTED, HOOK_RESPONSE, USER, RATE_LIMIT, TEXT_ONLY]) {
+    assert.deepEqual(line(raw), []);
   }
 });
 
-test("empty, blank, and malformed lines return null instead of throwing", () => {
-  for (const line of ["", "   ", "not json at all", "{", "[]", "null", "3", undefined, null]) {
-    assert.equal(progressLine(line), null);
+test("empty, blank, and malformed lines yield no lines instead of throwing", () => {
+  for (const raw of ["", "   ", "not json at all", "{", "[]", "null", "3"]) {
+    assert.deepEqual(line(raw), []);
   }
+  assert.deepEqual(progressLines(undefined), []);
 });
 
 test("a chunk with several events yields only the readable lines, in order", () => {
@@ -114,15 +119,15 @@ test("garbage and empty chunks yield no lines", () => {
 // bare object key: VERBS["toString"] used to leak the function's source.
 test("a tool named after an Object.prototype member gets the default verb", () => {
   for (const name of ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"]) {
-    assert.equal(progressLine(toolEvent(toolUse(name, { file_path: "/b/index.html" }))), `Using index.html`);
-    assert.equal(progressLine(toolEvent(toolUse(name, {}))), `Using ${name}`);
+    assert.deepEqual(line(toolEvent(toolUse(name, { file_path: "/b/index.html" }))), ["Using index.html"]);
+    assert.deepEqual(line(toolEvent(toolUse(name, {}))), [`Using ${name}`]);
   }
 });
 
 test("a tool_use with a missing or empty name is not a progress line", () => {
-  assert.equal(progressLine(toolEvent(toolUse("", { file_path: "/b/index.html" }))), null);
-  assert.equal(progressLine(toolEvent(toolUse(7, { file_path: "/b/index.html" }))), null);
-  assert.equal(progressLine(toolEvent({ type: "tool_use", input: {} })), null);
+  assert.deepEqual(line(toolEvent(toolUse("", { file_path: "/b/index.html" }))), []);
+  assert.deepEqual(line(toolEvent(toolUse(7, { file_path: "/b/index.html" }))), []);
+  assert.deepEqual(line(toolEvent({ type: "tool_use", input: {} })), []);
 });
 
 // Claude batches parallel calls into one assistant message; showing only the
@@ -134,79 +139,38 @@ test("every tool_use in one message becomes its own line", () => {
     toolUse("Bash", { command: "ls" }),
   );
   assert.deepEqual(progressLines(parallel), ["Reading one.js", "Reading two.js", "Running Bash"]);
-  // progressLine stays single-valued, and reports the first of the batch.
-  assert.equal(progressLine(parallel), "Reading one.js");
 });
 
 test("NotebookEdit names the notebook instead of repeating the tool name", () => {
-  assert.equal(progressLine(toolEvent(toolUse("NotebookEdit", { notebook_path: "/b/run.ipynb" }))), "Editing run.ipynb");
+  assert.deepEqual(line(toolEvent(toolUse("NotebookEdit", { notebook_path: "/b/run.ipynb" }))), ["Editing run.ipynb"]);
 });
 
 // The path comes from the model and lands in a terminal and the HUD, so control
 // characters (a forged second line, cursor moves) must not survive.
 test("control characters and bidi overrides are stripped from the file name", () => {
-  assert.equal(
-    progressLine(toolEvent(toolUse("Write", { file_path: "/b/evil\nRunning rm -rf /" }))),
-    "Writing evilRunning rm -rf ",
+  assert.deepEqual(
+    line(toolEvent(toolUse("Write", { file_path: "/b/evil\nRunning rm -rf /" }))),
+    ["Writing evilRunning rm -rf "],
   );
   // \u001b = ESC (an ANSI colour sequence), \u202e = right-to-left override.
-  assert.equal(progressLine(toolEvent(toolUse("Write", { file_path: "/b/\u001b[31mred.html" }))), "Writing [31mred.html");
-  assert.equal(progressLine(toolEvent(toolUse("Write", { file_path: "/b/\u202egnp.exe" }))), "Writing gnp.exe");
+  assert.deepEqual(line(toolEvent(toolUse("Write", { file_path: "/b/\u001b[31mred.html" }))), ["Writing [31mred.html"]);
+  assert.deepEqual(line(toolEvent(toolUse("Write", { file_path: "/b/\u202egnp.exe" }))), ["Writing gnp.exe"]);
 });
 
 test("an absurdly long file name is truncated without splitting a character", () => {
-  const line = progressLine(toolEvent(toolUse("Write", { file_path: "/b/" + "\u{1F600}".repeat(500) + ".html" })));
-  assert.equal([...line].length, "Writing ".length + 61); // 60 code points + the ellipsis
-  assert.ok(line.endsWith("…"));
+  const [text] = line(toolEvent(toolUse("Write", { file_path: "/b/" + "\u{1F600}".repeat(500) + ".html" })));
+  assert.equal([...text].length, "Writing ".length + 61); // 60 code points + the ellipsis
+  assert.ok(text.endsWith("…"));
   // Every unit is a whole code point: a mid-surrogate slice would leave a lone half.
-  assert.ok([...line].every((c) => c.codePointAt(0) < 0xd800 || c.codePointAt(0) > 0xdfff));
+  assert.ok([...text].every((c) => c.codePointAt(0) < 0xd800 || c.codePointAt(0) > 0xdfff));
 });
 
 test("unicode file names survive intact", () => {
-  assert.equal(progressLine(toolEvent(toolUse("Write", { file_path: "/b/café-日本語.html" }))), "Writing café-日本語.html");
+  assert.deepEqual(line(toolEvent(toolUse("Write", { file_path: "/b/café-日本語.html" }))), ["Writing café-日本語.html"]);
 });
 
 test("odd tool_use payloads never throw", () => {
   for (const input of [undefined, null, "nope", ["a"], 42, { file_path: 42 }, { file_path: "" }, { file_path: "/" }]) {
-    assert.equal(progressLine(toolEvent(toolUse("Write", input))), "Writing Write");
+    assert.deepEqual(line(toolEvent(toolUse("Write", input))), ["Writing Write"]);
   }
-});
-
-// stdout arrives in arbitrary chunks and a `Write` of a whole HTML file is far
-// bigger than one pipe chunk, so the split line is the one that matters most.
-test("a line split across chunks is recovered, not lost", () => {
-  const write = toolEvent(toolUse("Write", { file_path: "/b/index.html", content: "y".repeat(80000) }));
-  const stream = createProgressStream();
-  assert.deepEqual(stream.push(write.slice(0, 65536)), []);
-  assert.deepEqual(stream.push(write.slice(65536) + "\n"), ["Writing index.html"]);
-});
-
-test("the stream carries a partial line across many chunks and flushes the last one", () => {
-  const read = toolEvent(toolUse("Read", { file_path: "/b/config.json" }));
-  const stream = createProgressStream();
-  const out = [];
-  for (const ch of read + "\n" + toolEvent(toolUse("Edit", { file_path: "/b/index.html" }))) {
-    out.push(...stream.push(ch)); // one character at a time: worst-case chunking
-  }
-  assert.deepEqual(out, ["Reading config.json"]); // the second line has no newline yet
-  assert.deepEqual(stream.flush(), ["Editing index.html"]);
-  assert.deepEqual(stream.flush(), []); // flushing twice must not repeat the line
-});
-
-// stdout hands over Buffers, and a multi-byte character can straddle two of them.
-test("a utf-8 character split across two buffers is not mangled", () => {
-  const full = Buffer.from(toolEvent(toolUse("Write", { file_path: "/b/café-日本語.html" })) + "\n");
-  const cut = full.indexOf(Buffer.from("日")) + 1; // mid-character
-  const stream = createProgressStream();
-  assert.deepEqual(stream.push(full.subarray(0, cut)), []);
-  assert.deepEqual(stream.push(full.subarray(cut)), ["Writing café-日本語.html"]);
-});
-
-test("the stream ignores junk and non-string chunks without throwing", () => {
-  const stream = createProgressStream();
-  assert.deepEqual(stream.push("garbage\n\n>>>\n"), []);
-  assert.deepEqual(stream.push(null), []);
-  assert.deepEqual(stream.push(undefined), []);
-  assert.deepEqual(stream.push(Buffer.from(toolEvent(toolUse("Read", { file_path: "/b/a.js" })) + "\n")), ["Reading a.js"]);
-  assert.deepEqual(stream.flush(), []);
 });

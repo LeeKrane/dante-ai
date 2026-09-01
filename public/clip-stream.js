@@ -4,8 +4,7 @@
 // roster-panel.js): browser-safe, no DOM, imported by app.js and the tests.
 // app.js owns the MediaSource, the media element and the audio graph, none of
 // which exist outside a browser; the part with the actual rule in it lives
-// here and is
-// tested against a fake sink.
+// here and is tested against a fake sink.
 //
 // The rule: SourceBuffer.appendBuffer throws InvalidStateError if it is called
 // while a previous append is still in flight, and `updateend` is the only signal
