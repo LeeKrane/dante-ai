@@ -135,6 +135,13 @@ test("the persona explains that a session with no repo named starts in the main 
   assert.match(persona, /\[MEMORY:SET main=/);
 });
 
+test("the persona explains the note-memory limit keys, or the model never knows they exist", () => {
+  const persona = brain.buildPersona();
+  assert.match(persona, /memory-max-mb=<n>/);
+  assert.match(persona, /memory-max-files=<n>/);
+  assert.match(persona, /\[MEMORY:SET memory-max-mb=/);
+});
+
 // ---------------------------------------------------------------------------
 // Proposing rather than assuming
 // ---------------------------------------------------------------------------

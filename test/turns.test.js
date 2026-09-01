@@ -276,3 +276,43 @@ test("a blank interview line adds nothing", () => {
     mergeTurns(["x"], { roster: ROSTER, now: NOW, interview: "   " }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// opts.notes
+// ---------------------------------------------------------------------------
+
+test("a notes block rides between the roster and what was said", () => {
+  const merged = mergeTurns(["what's running?"], {
+    roster: ROSTER,
+    now: NOW,
+    notes: "NOTE jarvis-3 (updated today): building the notes feature",
+  });
+  const rosterIndex = merged.indexOf("1: jarvis-1-builder-test-fix in jarvis, working");
+  const notesIndex = merged.indexOf("NOTE jarvis-3");
+  const saidIndex = merged.indexOf("what's running?");
+  assert.ok(rosterIndex < notesIndex && notesIndex < saidIndex, merged);
+});
+
+test("a notes block with no roster still lands before what was said", () => {
+  const merged = mergeTurns(["what's running?"], {
+    notes: "NOTE jarvis-3 (updated today): building the notes feature",
+  });
+  assert.ok(merged.startsWith("NOTE jarvis-3"), merged);
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("an absent notes block leaves the roster turn exactly as it already was", () => {
+  const withoutOpt = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW });
+  const withEmptyNotes = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW, notes: "" });
+  assert.equal(withEmptyNotes, withoutOpt);
+
+  const plainTurn = mergeTurns(["what's running?"]);
+  assert.equal(mergeTurns(["what's running?"], { notes: "" }), plainTurn);
+});
+
+test("a non-string notes value is ignored rather than stringified into the turn", () => {
+  const baseline = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW });
+  for (const bad of [42, {}, [], true, null]) {
+    assert.equal(mergeTurns(["what's running?"], { roster: ROSTER, now: NOW, notes: bad }), baseline);
+  }
+});

@@ -31,6 +31,9 @@ import {
   sanitizeAlias,
   workspacePaths,
   MAIN_KEY,
+  NOTE_LIMIT_KEYS,
+  applyNoteLimitsTag,
+  getNoteLimits,
   setMainRepo,
   getMainRepo,
   resolveRepoAlias,
@@ -62,6 +65,7 @@ import {
   clearEvents,
 } from "../lib/memory.js";
 import { MAX_BRIEF_CHARS } from "../lib/interview.js";
+import { DEFAULT_MAX_BYTES as NOTES_DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES as NOTES_DEFAULT_MAX_FILES } from "../lib/notes.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
 // tested as plain data in/data out, the same way test/builder.test.js tests
@@ -373,6 +377,63 @@ test("applyMemoryTag saves the keys that fit and drops only the ones past the ca
   assert.equal(Object.keys(getProject(store, "/p").preferences).length, MAX_PREFERENCE_KEYS);
   assert.equal(getProject(store, "/p").preferences.k0, "updated");
   assert.deepEqual(result, { k0: "updated", newa: "a" });
+});
+
+// ---------------------------------------------------------------------------
+// Note-memory limits (lib/notes.js's directory, sized through a preference tag)
+// ---------------------------------------------------------------------------
+
+test(`a "${NOTE_LIMIT_KEYS.maxBytes}=" tag sets the note byte limit and is not kept as a preference`, () => {
+  const store = emptyStore();
+  const result = applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxBytes]: "100" });
+  assert.deepEqual(result, { maxBytes: 100 * 1024 * 1024 });
+  assert.deepEqual(store.noteLimits, { maxBytes: 100 * 1024 * 1024 });
+
+  const saved = applyMemoryTag(store, "/cwd", { [NOTE_LIMIT_KEYS.maxBytes]: "100", palette: "dark" });
+  assert.deepEqual(saved, { palette: "dark" });
+});
+
+test(`a "${NOTE_LIMIT_KEYS.maxFiles}=" tag sets the note file-count limit and is not kept as a preference`, () => {
+  const store = emptyStore();
+  const result = applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxFiles]: "250" });
+  assert.deepEqual(result, { maxFiles: 250 });
+  assert.deepEqual(store.noteLimits, { maxFiles: 250 });
+
+  const saved = applyMemoryTag(store, "/cwd", { [NOTE_LIMIT_KEYS.maxFiles]: "250", palette: "dark" });
+  assert.deepEqual(saved, { palette: "dark" });
+});
+
+test("setting one note limit key does not clobber the other already stored", () => {
+  const store = emptyStore();
+  applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxBytes]: "10" });
+  applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxFiles]: "5" });
+  assert.deepEqual(store.noteLimits, { maxBytes: 10 * 1024 * 1024, maxFiles: 5 });
+});
+
+test("applyNoteLimitsTag ignores out-of-range or unparsable values and returns null when nothing survives", () => {
+  const store = emptyStore();
+  for (const bad of ["0", "-5", "abc", "2049", "", "  "]) {
+    assert.equal(applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxBytes]: bad }), null);
+  }
+  assert.equal(store.noteLimits, undefined);
+
+  assert.equal(applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxFiles]: "100001" }), null);
+  assert.equal(applyNoteLimitsTag(store, {}), null);
+  assert.equal(applyNoteLimitsTag(store, null), null);
+});
+
+test("getNoteLimits falls back to lib/notes.js's own defaults when noteLimits is absent", () => {
+  assert.deepEqual(getNoteLimits(emptyStore()), { maxBytes: NOTES_DEFAULT_MAX_BYTES, maxFiles: NOTES_DEFAULT_MAX_FILES });
+});
+
+test("getNoteLimits falls back to defaults when noteLimits is a string from a hand-edited file", () => {
+  const store = { ...emptyStore(), noteLimits: "not an object" };
+  assert.deepEqual(getNoteLimits(store), { maxBytes: NOTES_DEFAULT_MAX_BYTES, maxFiles: NOTES_DEFAULT_MAX_FILES });
+});
+
+test("getNoteLimits returns whatever was actually stored", () => {
+  const store = { ...emptyStore(), noteLimits: { maxBytes: 5 * 1024 * 1024, maxFiles: 12 } };
+  assert.deepEqual(getNoteLimits(store), { maxBytes: 5 * 1024 * 1024, maxFiles: 12 });
 });
 
 // ---------------------------------------------------------------------------
