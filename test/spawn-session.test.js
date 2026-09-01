@@ -242,6 +242,9 @@ before(async () => {
     ].join("\n"),
   );
 
+  // Dies by signal with nothing said: the shape of an OOM-killed client.
+  fake.diesOnStop = await writeFake("claude-dies-on-stop.cjs", 'process.kill(process.pid, "SIGKILL");');
+
   // Never answers and ignores the polite ask, so the timeout is the only thing
   // that can end this call.
   fake.hangsOnStop = await writeFake(
@@ -621,6 +624,8 @@ test("a background session the daemon refuses to stop is reported, not signalled
   assert.equal(result.ok, false);
   assert.equal(result.via, "daemon");
   assert.match(result.error, /No job matching/);
+  // The CLI's own full stop is dropped: the sentence it is spoken in adds one.
+  assert.doesNotMatch(result.error, /[.!?]$/);
   assert.ok(!kill.signals.some(([, signal]) => signal === "SIGTERM"), JSON.stringify(kill.signals));
 });
 
@@ -648,9 +653,10 @@ test("a background session whose worker outlives the daemon's answer is not call
   process.env.STOP_LOG = join(workspace, "stop-lingers.log");
   const kill = fakeKill([4242], { ignoresTerm: true });
   const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
-  // The budget covers the CLI spawn as well as the poll, so it is wide enough
-  // for a cold node start under a loaded test runner and still short.
-  const result = await stopSession(record, { kill, bin: fake.stops, timeoutMs: 600, pollMs: 20 });
+  // The budget covers the CLI spawn as well as the poll. A cold node start
+  // under a loaded test runner has been measured near a second, so the budget
+  // is wide enough that the CLI always answers and the poll is what runs out.
+  const result = await stopSession(record, { kill, bin: fake.stops, timeoutMs: 2500, pollMs: 20 });
   assert.equal(result.ok, false);
   assert.match(result.error, /still running/);
 });
@@ -688,6 +694,14 @@ test("a CLI that never answers a stop is abandoned rather than waited on forever
   assert.equal(result.ok, false);
   assert.equal(result.via, "daemon");
   assert.match(result.error, /did not answer/);
+});
+
+test("a CLI killed before it answers is said so, not read out as an exit code of null", async () => {
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill: fakeKill([4242]), bin: fake.diesOnStop });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /killed before it answered/);
+  assert.doesNotMatch(result.error, /null/);
 });
 
 test("a missing CLI is a stop that did not go through, not a crash", async () => {
