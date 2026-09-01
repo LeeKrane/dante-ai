@@ -1,3 +1,9 @@
+import dotenv from "dotenv";
+// dotenv never overrides a variable already present in the real environment,
+// so systemd `Environment=` lines and shell exports keep priority over `.env`
+// -- this only fills in what the process wasn't already given. Called before
+// any loader below reads process.env.
+dotenv.config({ quiet: true }); // quiet suppresses dotenv v17's startup banner
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";

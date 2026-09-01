@@ -233,8 +233,8 @@ let incoming = null;
 
 // ---- Volume (a GainNode shared by both playback paths) ----
 //
-// Local to this browser and this machine, and separate from the `volume` a
-// person can set in ~/.config/fish-audio/speak.json: that one asks Fish to
+// Local to this browser and this machine, and separate from the `FISH_VOLUME`
+// environment variable a person can set on the server: that one asks Fish to
 // synthesize a louder clip, once, for everyone who ever hears it; this one
 // turns a knob on the way from the speakers on this one machine, and it is the
 // only way to go louder than the clip Fish actually sent. Wrapped in try/catch

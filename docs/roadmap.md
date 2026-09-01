@@ -344,9 +344,9 @@ Threading needs a message timestamp back from Slack, and an incoming webhook ret
 this uses a **bot token and `chat.postMessage`** — still strictly outbound, no Socket Mode, no
 inbound surface of any kind.
 
-Config at `~/.config/dante/slack.json` (`{ botToken, channel }`), mirroring `lib/config.js`, with
-`DANTE_SLACK_TOKEN` overriding. Unlike `loadFishConfig`, a missing config **does not throw at
-startup** — Slack is an enhancement, and a user without it should still get a working assistant.
+Config from `DANTE_SLACK_TOKEN` and `DANTE_SLACK_CHANNEL`, mirroring `lib/config.js`'s
+env-only loaders. Unlike `loadFishConfig`, missing variables **do not throw at startup** —
+Slack is an enhancement, and a user without it should still get a working assistant.
 
 ```
 postParent(text)             -> Promise<ts | null>   // one per session, at start

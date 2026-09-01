@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import {
   COOKIE,
   clearCookie,
@@ -254,30 +253,24 @@ test("the verified-token cache evicts rather than growing without bound", async 
 // Config
 // ---------------------------------------------------------------------------
 
-test("supabase config reads url and anon key from a file", () => {
-  const path = fileURLToPath(new URL("./fixtures/supabase.json", import.meta.url));
-  const cfg = loadSupabaseConfig(path, {});
-  assert.deepEqual(cfg, { url: "https://test.supabase.co", anonKey: "test-anon-key", secure: false });
-});
-
-test("the environment wins over the file", () => {
-  const path = fileURLToPath(new URL("./fixtures/supabase.json", import.meta.url));
-  const cfg = loadSupabaseConfig(path, { SUPABASE_URL: "https://env.supabase.co", SECURE_COOKIE: "1" });
-  assert.deepEqual(cfg, { url: "https://env.supabase.co", anonKey: "test-anon-key", secure: true });
-});
-
-test("the file is optional when both values are in the environment", () => {
-  const cfg = loadSupabaseConfig("/nonexistent/supabase.json", {
-    SUPABASE_URL: "https://env.supabase.co",
-    SUPABASE_ANON_KEY: "env-key",
-  });
+test("supabase config reads url and anon key from the environment", () => {
+  const cfg = loadSupabaseConfig({ SUPABASE_URL: "https://env.supabase.co", SUPABASE_ANON_KEY: "env-key" });
   assert.deepEqual(cfg, { url: "https://env.supabase.co", anonKey: "env-key", secure: false });
 });
 
-test("a missing url or anon key is a startup error naming what is missing", () => {
-  assert.throws(() => loadSupabaseConfig("/nonexistent/supabase.json", {}), /SUPABASE_URL/);
-  assert.throws(
-    () => loadSupabaseConfig("/nonexistent/supabase.json", { SUPABASE_URL: "https://x.co" }),
-    /SUPABASE_ANON_KEY/,
-  );
+test("SECURE_COOKIE=1 turns on the secure flag", () => {
+  const cfg = loadSupabaseConfig({
+    SUPABASE_URL: "https://env.supabase.co",
+    SUPABASE_ANON_KEY: "env-key",
+    SECURE_COOKIE: "1",
+  });
+  assert.equal(cfg.secure, true);
+});
+
+test("a missing url is a startup error naming what is missing", () => {
+  assert.throws(() => loadSupabaseConfig({}), /SUPABASE_URL/);
+});
+
+test("a missing anon key is a startup error naming what is missing", () => {
+  assert.throws(() => loadSupabaseConfig({ SUPABASE_URL: "https://x.co" }), /SUPABASE_ANON_KEY/);
 });

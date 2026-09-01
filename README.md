@@ -18,8 +18,9 @@ Chrome mic → Web Speech API (free STT) → WebSocket → node server
   → canvas orb + build HUD
 ```
 
-Two npm dependencies (`ws`, `@supabase/supabase-js`). No frameworks, no build
-step, no Anthropic API key — it runs on the Claude subscription you already have.
+Three npm dependencies (`ws`, `@supabase/supabase-js`, `dotenv`), all server-side
+only. No frameworks, no build step, no Anthropic API key — it runs on the Claude
+subscription you already have.
 
 ## What you need
 
@@ -34,43 +35,48 @@ macOS and Linux. On Windows use WSL.
 
 ## Setup
 
-**1. Fish Audio.** Sign up at [fish.audio](https://fish.audio), open the **API
-Keys** page, generate a key. The voice ID below is a library voice — swap in any
-other one later.
+**1. Copy the env file and fill it in.**
 
 ```bash
-mkdir -p ~/.config/fish-audio && cat > ~/.config/fish-audio/speak.json <<'EOF'
-{
-  "apiKey": "YOUR-FISH-KEY-HERE",
-  "voiceId": "e13fa398a7f445a685316a3de6089ce7",
-  "model": "s2.1-pro-free",
-  "format": "mp3",
-  "speed": 1.1,
-  "volume": 5.0,
-  "pitch": 0
-}
-EOF
+cp .env.example .env
 ```
 
-**2. Supabase.** Create a project at [supabase.com](https://supabase.com), then
-copy the **Project URL** and the **anon / public** key from *Project Settings →
-API*. `SUPABASE_URL` and `SUPABASE_ANON_KEY` in the environment work too, and win
-over the file.
+All configuration — Fish Audio, Supabase, Slack, the port — is environment
+variables, loaded from `.env` at startup via `dotenv`. `.env` is gitignored;
+never commit it. `dotenv` never overrides a variable already present in the
+real environment, so a systemd `Environment=` line or a shell export still
+wins over `.env`.
 
-```bash
-mkdir -p ~/.config/dante && cat > ~/.config/dante/supabase.json <<'EOF'
-{
-  "url": "https://YOUR-PROJECT.supabase.co",
-  "anonKey": "YOUR-ANON-KEY-HERE"
-}
-EOF
-```
+- **Fish Audio** — sign up at [fish.audio](https://fish.audio), open the **API
+  Keys** page, generate a key, and set `FISH_API_KEY` in `.env` (required). The
+  library voice id in `.env.example` is one example voice — swap in any other
+  one later via `FISH_VOICE_ID`.
+- **Supabase** — create a project at [supabase.com](https://supabase.com), then
+  copy the **Project URL** and the **anon / public** key from *Project Settings
+  → API* into `SUPABASE_URL` and `SUPABASE_ANON_KEY` (both required).
 
 **There is no sign-up page, on purpose.** Create the one account you want by hand:
 *Authentication → Users → Add user*, with **Auto Confirm User** ticked. Anyone who
 can sign in can spawn a Claude Code session with file tools on.
 
-**3. Check Claude works headless** — thirty seconds, saves an hour:
+**Migrating from an older `~/.config` setup?** Those JSON files are no longer
+read at all — map their keys onto the env vars above and delete them:
+
+| Old file | Old key | Env var |
+|---|---|---|
+| `~/.config/fish-audio/speak.json` | `apiKey` | `FISH_API_KEY` |
+| | `voiceId` | `FISH_VOICE_ID` |
+| | `model` | `FISH_MODEL` |
+| | `format` | `FISH_FORMAT` |
+| | `speed` | `FISH_SPEED` |
+| | `pitch` | `FISH_PITCH` |
+| | `volume` | `FISH_VOLUME` |
+| `~/.config/dante/supabase.json` | `url` | `SUPABASE_URL` |
+| | `anonKey` | `SUPABASE_ANON_KEY` |
+| `~/.config/dante/slack.json` | `botToken` | `DANTE_SLACK_TOKEN` |
+| | `channel` | `DANTE_SLACK_CHANNEL` |
+
+**2. Check Claude works headless** — thirty seconds, saves an hour:
 
 ```bash
 claude -p "say hi"
@@ -79,7 +85,7 @@ claude -p "say hi"
 `command not found` means Claude Code isn't on this shell's PATH. An auth error
 means you have never logged in — run `claude` once interactively.
 
-**4. Run it.**
+**3. Run it.**
 
 ```bash
 npm install
@@ -114,10 +120,9 @@ icon, the fader and what you actually hear can never disagree. The label reads 0
 sent it; the actual `GainNode` ceiling behind that "200%" is a 4x boost, not
 2x — the label names what "as loud as this goes" means rather than the raw
 multiplier, so it can be raised for more headroom later without the number on
-screen changing what it promises. Separate from the `volume` set in
-`speak.json` — that one asks Fish to synthesize a louder clip once for
-everyone; this one is local, and it is the only way to go louder than the clip
-Fish actually sent.
+screen changing what it promises. Separate from `FISH_VOLUME` in `.env` — that
+one asks Fish to synthesize a louder clip once for everyone; this one is
+local, and it is the only way to go louder than the clip Fish actually sent.
 
 **Memory** — `~/.config/dante/memory.json`, keyed by the directory the server was
 started in. It keeps the resumable session id, a rolling summary written when you
@@ -261,17 +266,12 @@ Each report carries a one-sentence summary generated from the session's own
 transcript, because "done" on its own is not news.
 
 ```bash
-mkdir -p ~/.config/dante && cat > ~/.config/dante/slack.json <<'EOF'
-{
-  "botToken": "xoxb-YOUR-BOT-TOKEN",
-  "channel": "C0123456789"
-}
-EOF
+DANTE_SLACK_TOKEN=xoxb-YOUR-BOT-TOKEN
+DANTE_SLACK_CHANNEL=C0123456789
 ```
 
-A Slack app with the `chat:write` scope, invited to that channel.
-`DANTE_SLACK_TOKEN` and `DANTE_SLACK_CHANNEL` work too and win over the file.
-Skip this entirely and everything else still works — Slack is an enhancement,
+Set both in `.env`. A Slack app with the `chat:write` scope, invited to that
+channel. Skip this entirely and everything else still works — Slack is an enhancement,
 not a dependency, and an outage costs a notification rather than a turn. It is
 **outbound only**: no Socket Mode, no Events API, nothing anyone types in Slack
 reaches this machine.
@@ -339,9 +339,10 @@ prompt-injected tool description argue for its own approval.
   as a "DANTE" character and calls you *sir*. It is the only half of the system
   prompt written by hand; what it can build is generated from `primitives/`
   underneath, so rewriting the voice never breaks the builds.
-- **`~/.config/fish-audio/speak.json`** — any Fish library voice, any speed,
-  `volume` (-20 to 20, omit for Fish's default), and `pitch` (-12 to 12
-  semitones, 0 for the voice as Fish recorded it). Pitch is the odd one out:
+- **`FISH_VOICE_ID`, `FISH_SPEED`, `FISH_VOLUME`, `FISH_PITCH` in `.env`** — any
+  Fish library voice, any speed, `FISH_VOLUME` (-20 to 20, omit for Fish's
+  default), and `FISH_PITCH` (-12 to 12 semitones, 0 for the voice as Fish
+  recorded it). Pitch is the odd one out:
   Fish's API has no pitch parameter at all, so the server forwards the number to
   the browser and the clip is resampled there. Resampling moves tempo with
   pitch — a deeper voice also reads slower, a higher one faster. That is the
@@ -506,8 +507,8 @@ is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
 | `spawn claude ENOENT` | node can't see `claude` → start the server from a shell where `which claude` works |
 | `claude exited 1: …auth…` | never logged in → run `claude` interactively once |
 | An error naming the model | your plan or CLI doesn't have the pinned model → in `lib/brain.js` change `MODEL` to `["--model", "haiku"]` |
-| `Cannot read Fish config at …` | no speak.json → redo setup step 1 |
-| `Fish TTS 402` / `403` | out of credits, or your key's tier doesn't cover the `model` in speak.json |
+| `No Fish API key (set FISH_API_KEY)` | `FISH_API_KEY` missing from `.env` → redo setup step 1 |
+| `Fish TTS 402` / `403` | out of credits, or your key's tier doesn't cover `FISH_MODEL` |
 | `stt error: network` (press **d**) | Web Speech needs internet |
 | No mic prompt on macOS | Chrome lacks *system* mic permission → System Settings → Privacy & Security → Microphone |
 | Mic blocked once, never asks again | lock icon in the address bar → allow Microphone → reload |

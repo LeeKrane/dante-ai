@@ -9,12 +9,12 @@ on, in its own throwaway directory.
 
 These are enforced by the existing code but written down nowhere else:
 
-- **No new dependencies.** There are exactly two — `ws`, and `@supabase/supabase-js` for the
-  sign-in gate — and the README advertises both. Everything else is a `node:` builtin. No
-  frameworks, no build step, no bundler, no TypeScript. The Supabase SDK is server-side only for
-  that last reason: `public/` is served straight off disk, so nothing there can `import` from
-  `node_modules`. A browser-side dependency would mean a bundler, which is the rule this one is
-  not allowed to break.
+- **No new dependencies.** There are exactly three — `ws`, `@supabase/supabase-js` for the
+  sign-in gate, and `dotenv` for loading `.env` — and the README advertises all three. Everything
+  else is a `node:` builtin. No frameworks, no build step, no bundler, no TypeScript. All three are
+  server-side only for that last reason: `public/` is served straight off disk, so nothing there
+  can `import` from `node_modules`. A browser-side dependency would mean a bundler, which is the
+  rule this one is not allowed to break.
 - **Tests are `node:test` + `node:assert/strict`**, run by `npm test` (`node --test test/*.test.js`).
   No test framework, no mocking library. Impure code is tested against real temp directories and
   real fake CLIs written to disk and passed as `opts.bin` — see `writeFakeCli`, `withTempDir`, and

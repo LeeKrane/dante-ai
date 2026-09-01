@@ -1,8 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import {
   MAX_TEXT_CHARS,
@@ -30,63 +27,27 @@ function fakeFetch(replies) {
   return fn;
 }
 
-function withTempConfig(contents, fn) {
-  const dir = mkdtempSync(join(tmpdir(), "dante-slack-"));
-  const path = join(dir, "slack.json");
-  try {
-    if (contents !== null) writeFileSync(path, contents);
-    return fn(path);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // loadSlackConfig
 // ---------------------------------------------------------------------------
 
-test("a missing Slack config is a working install, not a startup error", () => {
-  withTempConfig(null, (path) => {
-    const cfg = loadSlackConfig(path, {});
-    assert.equal(cfg.enabled, false);
-    assert.equal(cfg.botToken, "");
-    assert.equal(cfg.channel, "");
-  });
+test("no Slack environment variables is a working install, not a startup error", () => {
+  const cfg = loadSlackConfig({});
+  assert.equal(cfg.enabled, false);
+  assert.equal(cfg.botToken, "");
+  assert.equal(cfg.channel, "");
 });
 
-test("a config file with both halves enables Slack", () => {
-  withTempConfig(JSON.stringify(CFG), (path) => {
-    const cfg = loadSlackConfig(path, {});
-    assert.deepEqual(cfg, { botToken: CFG.botToken, channel: CFG.channel, enabled: true });
-  });
-});
-
-test("the environment beats the file, so a token need never be written to disk", () => {
-  withTempConfig(JSON.stringify(CFG), (path) => {
-    const cfg = loadSlackConfig(path, { DANTE_SLACK_TOKEN: "xoxb-env", DANTE_SLACK_CHANNEL: "C999" });
-    assert.equal(cfg.botToken, "xoxb-env");
-    assert.equal(cfg.channel, "C999");
-  });
+test("both environment variables set enables Slack", () => {
+  const cfg = loadSlackConfig({ DANTE_SLACK_TOKEN: CFG.botToken, DANTE_SLACK_CHANNEL: CFG.channel });
+  assert.deepEqual(cfg, { botToken: CFG.botToken, channel: CFG.channel, enabled: true });
 });
 
 test("half a configuration is not a configuration", () => {
   // A token with nowhere to post and a channel with no way to post both look
   // enabled and then fail on every single event for the life of the process.
-  withTempConfig(JSON.stringify({ botToken: "xoxb-only" }), (path) => {
-    assert.equal(loadSlackConfig(path, {}).enabled, false);
-  });
-  withTempConfig(JSON.stringify({ channel: "C123" }), (path) => {
-    assert.equal(loadSlackConfig(path, {}).enabled, false);
-  });
-});
-
-test("a config file that is not an object is ignored rather than trusted", () => {
-  withTempConfig("[1, 2, 3]", (path) => {
-    assert.equal(loadSlackConfig(path, {}).enabled, false);
-  });
-  withTempConfig("{ this is not json", (path) => {
-    assert.equal(loadSlackConfig(path, {}).enabled, false);
-  });
+  assert.equal(loadSlackConfig({ DANTE_SLACK_TOKEN: "xoxb-only" }).enabled, false);
+  assert.equal(loadSlackConfig({ DANTE_SLACK_CHANNEL: "C123" }).enabled, false);
 });
 
 // ---------------------------------------------------------------------------
