@@ -243,13 +243,21 @@ test("the persona teaches the brief, and the two characters it may not contain",
   assert.match(persona, /square brackets/);
 });
 
-test("the persona skips the interview when the request is already clear, and has no question cap", () => {
+test("the persona never proposes a start before a confirmation question, and has no question cap", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /have=/);
+  assert.match(persona, /confirming=/);
+  assert.match(persona, /confirmed=/);
   assert.match(persona, /no question limit/i);
   assert.match(persona, /confident/i);
   assert.match(persona, /Done when:/);
   assert.match(persona, /machine-state lines/);
+  // The sentence the whole rule hangs on: a start is read back even when the
+  // request looked complete, and the count is scaled, never padded.
+  assert.match(persona, /Never skip that for a start, even when the request already states everything/);
+  assert.match(persona, /one or two questions, a complex one in three to five/);
+  assert.match(persona, /do not pad/);
+  assert.doesNotMatch(persona, /Skip the interview when/);
 });
 
 test("the interview paragraph does not add another ask him", () => {

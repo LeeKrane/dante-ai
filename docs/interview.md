@@ -1,11 +1,12 @@
-# The interview: when Dante stops asking
+# The interview: when Dante stops asking, and why it always asks at least once
 
 A one-line spoken request is rarely a brief a session can work from. Before Dante
 starts, tells or interrupts a session, it checks the request against four things a
-good brief needs, and asks about whichever of them the request leaves open. This
-document is the rule for when that stops. `lib/interview.js`, the INTERVIEW
-paragraph in `lib/brain.js`'s persona, and this page all describe the same rule;
-change one, change all three.
+good brief needs, and asks about whichever of them the request leaves open. Before
+it starts one, it also reads back what it understood of all four and waits for a
+yes — even when the request left nothing open. This document is the rule for when
+the asking stops. `lib/interview.js`, the INTERVIEW paragraph in `lib/brain.js`'s
+persona, and this page all describe the same rule; change one, change all three.
 
 ## Why there is no question count
 
@@ -18,7 +19,7 @@ questions too few, for one with real constraints Dante has no way to guess.
 
 What actually needs bounding is the runaway case — a broken turn that keeps
 asking forever — and that is bounded some other way now: a ten-minute TTL ends a
-stale interview outright, and a handful of escape phrases (below) let Jesse end
+stale interview outright, and a handful of escape phrases (below) let Krane end
 one early regardless of how much is still open. Once those are in place, the
 count itself has no job left to do. It is still tracked (`asked`, logged and
 reported in the machine-state line) because a number is useful context, but
@@ -31,7 +32,7 @@ is this list, verbatim and in this order:
 
 | Facet | What it means | A typical question | Counts as covered when |
 |---|---|---|---|
-| `goal` | What the session should actually do | "What do you want it to do, exactly?" | The request states it, or Jesse's answer does |
+| `goal` | What the session should actually do | "What do you want it to do, exactly?" | The request states it, or Krane's answer does |
 | `where` | Which repository, and where within it | "Which repo — jarvis?" | A repo alias is known, always — see below |
 | `constraints` | What must not be touched or changed, any approach rules | "Anything that shouldn't be touched?" | Answered, implied by the request, or reasonably assumed and stated as an assumption |
 | `done` | How anyone would check the work is finished | "What does done look like here?" | Answered, implied, or assumed and stated |
@@ -49,7 +50,7 @@ covered/open bookkeeping.
 
 ## The confidence test
 
-An interview is done — Dante should stop asking and propose — when both of
+An interview is done — Dante should stop asking and propose — when all of
 these hold:
 
 1. **Every one of the four facets is settled.** Settled means covered by an
@@ -60,23 +61,61 @@ these hold:
    still have a loose thread — an answer that raises a new question ("just the
    builder test — actually, check the other one too if you have time") is not
    fully settled just because the facet was touched.
+3. **For a start, every facet has been read back and confirmed.** Covered is
+   Dante's own opinion that it knows a facet; confirmed is Krane agreeing with
+   what Dante thinks it knows. A tell or an interrupt stops at the first two —
+   the session on the far end already has the context a brief exists to supply.
 
-Both, together — four ticked boxes with an unresolved thread is not confidence, and neither is an unticked box excused because nothing about it seems urgent.
+All of them, together — four ticked boxes with an unresolved thread is not
+confidence, neither is an unticked box excused because nothing about it seems
+urgent, and neither is a complete picture nobody has checked.
 
 **Never ask:**
-- What the request already told you.
+- What the request already told you, as a question. Reading it back for a yes is
+  not asking it again — see below.
 - What the session can find out for itself once it starts — file names, which
   test is currently failing, what a directory contains. Interviewing is for
-  what only Jesse knows; the rest is the session's own job.
-- For confirmation of something you could just state as an assumption in the
-  brief instead. "I'll assume you mean the builder test, since that's the one
-  that's flaky" costs nothing and can be corrected after the fact; a question
-  costs a whole turn.
+  what only Krane knows; the rest is the session's own job.
+- A generic "did you mean what you said?". A confirmation question names a facet
+  and states what Dante understood of it; a re-ask makes Krane say the same
+  thing twice.
 
-**Skip the interview entirely** when the request is already specific or small
-enough to brief in one line ("run npm test in jarvis" needs no interview — goal,
-where and done are all stated, and there's nothing to constrain), or the moment
-Jesse says to just go, or to stop asking.
+An assumption Dante can state still goes in the brief as an assumption rather
+than becoming a question of its own — "I'll assume you mean the builder test,
+since that's the one that's flaky" — and the read-back is where it gets its yes,
+alongside everything else, rather than costing a turn by itself.
+
+## Never skip it for a start
+
+An earlier version of this rule let Dante skip the interview when a request was
+"already specific or small enough to brief in one line". That is exactly when a
+misheard detail went straight into a running session: the model decided the
+request was clear, proposed, heard a yes to "Shall I, sir?", and nobody ever
+checked whether its reading of the request was the one Krane had in mind. A
+proposal confirms the *act*; it says nothing about the *understanding* behind it.
+
+So a start always gets at least one confirmation question, and it falls out of
+the rule rather than being a minimum imposed on top of it: you cannot confirm a
+facet without reading it back. What a confirmation question is:
+
+- **It targets facets by name.** "So: the flaky builder test, in jarvis,
+  touching only the test file, done when npm test passes twice — have I got that
+  right?" reads back goal, where, constraints and done in one breath. It is not
+  "so you want me to fix the tests?", which is the request said back at Krane.
+- **It scales with the task, and is never padded.** A request that arrives
+  complete gets one read-back covering all four facets. One that needed answers
+  gets its facets read back as they settle, grouped so a single yes answers
+  several — a simple task is confirmed in one or two questions, a complex one in
+  three to five, and never one more than that takes. Splitting a read-back four
+  ways to look thorough is the inflation the "no question count" section above
+  exists to prevent.
+- **A correction re-opens only what it corrected.** "No, the other test" puts
+  `goal` back on the table; the read-back that follows covers `goal` alone.
+
+The only way past this is Krane saying so: the escape phrases ("just start it",
+"stop asking", and the rest) still end the interview and propose with what Dante
+has, confirmed or not. That is Krane overriding the rule out loud, which is his
+to do.
 
 ## How the machine enforces it
 
@@ -93,10 +132,37 @@ reasoning honest across turns and across a possible restart.
   `have` continues the previous turn's coverage (silence means "nothing changed,"
   not "start over"); a tag with `have=` present but empty resets it to nothing
   covered (bar `where`, when a repo is known).
+- **`confirming=` and `confirmed=`.** Two more facet lists on the same tag, parsed
+  with the same tolerance. `confirming` names the facets *this* question reads
+  back for a yes; it describes one question, so it never carries forward — a tag
+  that omits it is a question that reads nothing back. `confirmed` names the
+  facets Krane has said yes to; it accumulates like `have` (omitted carries,
+  present-but-empty resets). A facet in either list is necessarily covered, so
+  both fold into `covered` the way a known repo folds into `where`.
+- **Readiness.** `readyToPropose` is the check a start has to pass: the interview
+  is live, and either Krane said to proceed or every facet is in `confirmed` or
+  `confirming`. A facet still being read back counts, on purpose — the tag after
+  a read-back is where the model reports the yes it just heard, and the natural
+  tag for that is the start tag itself. Making it write an interview tag with
+  `confirmed=` first would cost a turn that asks nothing.
+- **The gate, and the machine's own read-back.** `server.js` refuses to propose a
+  start that fails `readyToPropose` — no interview at all, or one whose facets
+  were never read back — unless the utterance was an escape phrase. Instead of
+  the proposal it speaks a read-back that `readBack` composes from the model's
+  own `brief` (falling back to the task and repo), for exactly the unconfirmed
+  facets, and folds a synthetic interview tag into the state (`for=start`,
+  `confirming=<those facets>`, marked `spokenFor`). The next machine-state line
+  says the read-back was spoken for the model, so it knows Krane's yes or no
+  answers that question and not whatever it said last. The read-back is built
+  from the brief rather than composed fresh so that what is checked is the
+  reading the session would actually have received. A facet the brief says
+  nothing about is asked as the assumption the silence amounts to ("nothing was
+  said about constraints, so I would take it there are none") — still a question
+  about that facet, never a generic re-ask.
 - **The INTERVIEW machine-state line.** `interviewBlock` folds the state into
   one line at the top of Dante's next turn — what's being planned, how many
   questions have been asked, which facets are covered, which are still open, the
-  notes learned so far, and (see below) what Jesse actually said. This is the
+  notes learned so far, and (see below) what Krane actually said. This is the
   thing the model reads instead of trusting its own memory of the conversation,
   because the model's context can be lost and this state survives that.
 - **The escape phrases.** `wantsToProceed` recognises a short vocabulary — "just
@@ -115,7 +181,7 @@ reasoning honest across turns and across a possible restart.
   that holds an interview's back-and-forth can be restarted from cold mid-way
   through (`askResilient` in `lib/brain.js`), and its own memory of the
   conversation goes with it. The interview state does not: `notes` (the model's
-  own summaries) and `said` (what Jesse said, verbatim, on every turn) both live
+  own summaries) and `said` (what Krane said, verbatim, on every turn) both live
   outside that session, so a restart loses nothing. `said` exists specifically
   because a note is a summary and can drop a detail without meaning to — `said`
   is the one copy that can't.
@@ -153,10 +219,10 @@ Constraints:
 Done when:
 - npm test passes twice in a row
 Also:
-- Jesse wants to know which assertion was racing, in the summary
+- Krane wants to know which assertion was racing, in the summary
 ```
 
-**Zero-loss.** The brief carries every detail from the interview, in Jesse's own
+**Zero-loss.** The brief carries every detail from the interview, in Krane's own
 words, nothing summarised away and nothing invented. An assumption Dante made
 gets stated as an assumption rather than folded in silently. Longer interviews
 produce longer briefs; the target is completeness, not brevity — though a brief
@@ -173,11 +239,11 @@ carries it, so neither is ever allowed to appear.
 **On screen.** While the yes is awaited the brief is shown centred over the orb, above the sessions and diagnostics panels if they overlap it, and never over the hold-to-talk button — the button is how the yes gets said, so nothing is allowed in front of it.
 
 **The fallback.** If an interview proceeds without the model ever writing a
-`brief="..."` — Jesse said "just start it" before a brief was ever drafted, say
+`brief="..."` — Krane said "just start it" before a brief was ever drafted, say
 — `composeBrief` in `lib/interview.js` builds one instead, out of the raw state:
 a `Goal:` line from the task, a `Where:` line from the repo, the interview's
-notes as dash bullets under "What the interview established:", and what Jesse
-said, verbatim, as dash bullets under "Jesse said, in order:". It can't tell a
+notes as dash bullets under "What the interview established:", and what Krane
+said, verbatim, as dash bullets under "Krane said, in order:". It can't tell a
 constraint from an acceptance criterion — it has no idea which note was which —
 so rather than guess at sections it can't support, it keeps everything instead.
 The one place it can still lose something is the 6000-character cap, and no real interview gets near it — a runaway that does is cut, not padded.
@@ -193,9 +259,11 @@ Three places have to agree, and none of them import from another:
   prose, for the model reading it every turn.
 
 Change one, change all three. `test/brain.test.js` pins phrases from the persona
-paragraph (`have=`, "no question limit," "confident," "Done when:," "machine-state
-lines"); `test/interview.test.js` pins the pure functions' exact behaviour
-(`noteInterview`, `interviewBlock`, `wantsToProceed`, `cleanBrief`,
+paragraph (`have=`, `confirming=`, `confirmed=`, "no question limit," "confident,"
+"Done when:," "machine-state lines," "Never skip that for a start," "one or two
+questions, a complex one in three to five," "do not pad"); `test/interview.test.js`
+pins the pure functions' exact behaviour (`noteInterview`, `interviewBlock`,
+`readyToPropose`, `readBack`, `parseBrief`, `wantsToProceed`, `cleanBrief`,
 `composeBrief`). A change that drifts from this document without updating those
 two files is a change `npm test` will not catch — read this page again before
 touching any of the three.

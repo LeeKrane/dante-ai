@@ -27,7 +27,8 @@ import {
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
 import {
-  composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, wantsToProceed,
+  composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
+  readyToPropose, unconfirmedFacets, wantsToProceed,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
@@ -1982,7 +1983,11 @@ wss.on("connection", (ws) => {
       // below carries the decision even if the model asks another question
       // anyway -- interviewBlock's tail then tells it to stop regardless of
       // what it was about to do.
-      if (isLive(conv.interview) && wantsToProceed(msg.text)) conv.interview = markProceed(conv.interview);
+      // Kept for the start gate below as well: "just start it" with no
+      // interview live at all is still Krane overriding the read-back rule
+      // out loud, and it must not be answered with a read-back.
+      const escaped = wantsToProceed(msg.text);
+      if (isLive(conv.interview) && escaped) conv.interview = markProceed(conv.interview);
 
       // Read in the same tick as the list itself, so it counts exactly the
       // sentences this call was asked about and nothing that arrives behind it.
@@ -2124,18 +2129,6 @@ wss.on("connection", (ws) => {
         // has nothing to do with where an unrelated start should land.
         const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
 
-        // The interview is spent the moment its command is proposed: its
-        // notes become the brief when the model did not write one itself, and
-        // the state is cleared here so a later, unrelated session tag never
-        // folds stale notes into a brief that has nothing to do with them.
-        if (isLive(conv.interview) && matchesInterview(conv.interview, session)) {
-          session.brief = composeBrief({
-            task: session.task, brief: session.brief,
-            notes: conv.interview.notes, said: conv.interview.said, repo: conv.interview.repo,
-          });
-          conv.interview = null;
-        }
-
         // Resolved once, here, before this session is ever described back as
         // a confirmation sentence or an activity line -- both of those and the
         // eventual dispatch must all name the same repository, and reading
@@ -2145,6 +2138,51 @@ wss.on("connection", (ws) => {
         // named repo is untouched either way.
         if (session.verb === "start") {
           session.repo = session.repo?.trim() ? session.repo : (fromInterview || resolveRepoAlias(memoryStore, "") || session.repo);
+        }
+
+        const ownInterview = isLive(conv.interview) && matchesInterview(conv.interview, session) ? conv.interview : null;
+
+        // A start is never proposed until its facets have been read back and
+        // answered (readyToPropose, and the rule in docs/interview.md). A
+        // proposal's "Shall I, sir?" confirms the act, not the understanding
+        // behind it: a yes to "start a session in jarvis to fix the tests"
+        // says nothing about which tests the model has in mind, and that is
+        // the detail that used to reach a running session unchecked whenever
+        // the model decided the request was clear enough to skip the
+        // interview. So a start that arrives unconfirmed -- no interview at
+        // all, or one whose facets were never read back -- is held here, and
+        // the read-back is spoken from the model's own brief in place of the
+        // proposal. It is folded into the interview as a question the machine
+        // asked (spokenFor), so the model's next turn knows Krane's yes or no
+        // answers that question and not whatever it said last. The escape
+        // phrase is the one way past this, because it is Krane saying so.
+        if (session.verb === "start" && !escaped && !readyToPropose(ownInterview)) {
+          const facets = unconfirmedFacets(ownInterview);
+          const question = readBack(session, facets);
+          conv.interview = noteInterview(
+            ownInterview,
+            { for: "start", repo: session.repo, confirming: facets.join(","), spokenFor: true },
+            Date.now(),
+            conv.unanswered.slice(0, answering),
+          );
+          activity(send, "interviewing", { subject: conv.interview.repo || undefined });
+          log(`start held for confirmation (facets=${facets.join(",")}, asked=${conv.interview.asked}): ${JSON.stringify(question)}`);
+          if (await say(send, question, undefined, () => gate.isCurrent(token))) {
+            dropAnswered(conv.unanswered, answering);
+          }
+          return;
+        }
+
+        // The interview is spent the moment its command is proposed: its
+        // notes become the brief when the model did not write one itself, and
+        // the state is cleared here so a later, unrelated session tag never
+        // folds stale notes into a brief that has nothing to do with them.
+        if (ownInterview) {
+          session.brief = composeBrief({
+            task: session.task, brief: session.brief,
+            notes: ownInterview.notes, said: ownInterview.said, repo: ownInterview.repo,
+          });
+          conv.interview = null;
         }
 
         // The request is settled either way: it is now a proposal waiting on a
