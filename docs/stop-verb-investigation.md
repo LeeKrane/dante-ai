@@ -139,6 +139,13 @@ The daemon ask and the wait for the worker to leave share one budget
 slow exit cannot add up to twice what the caller allowed. On expiry only the
 `claude stop` client is killed; nothing ever escalates on the session.
 
+`dispatchStop` in `server.js` re-reads the roster after the stop and only says
+"stopped" of a session that has left it (that check landed on main separately,
+as `stopVerdict` in `lib/verdict.js`). The two fit: a third probe showed a
+daemon-stopped session leaves `claude agents --json` immediately (the stop took
+579 ms, the next listing no longer had it), so the re-read confirms the stop
+rather than reporting "still on the roster".
+
 The result gains a `via: "daemon" | "signal"` field, which `dispatchStop` in
 `server.js` writes into its `stopped <name> via <via>` log line, so the next
 midnight reading of this log can tell which path a stop took without a process
