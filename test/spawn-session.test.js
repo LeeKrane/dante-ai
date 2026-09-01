@@ -648,7 +648,9 @@ test("a background session whose worker outlives the daemon's answer is not call
   process.env.STOP_LOG = join(workspace, "stop-lingers.log");
   const kill = fakeKill([4242], { ignoresTerm: true });
   const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
-  const result = await stopSession(record, { kill, bin: fake.stops, timeoutMs: 120, pollMs: 20 });
+  // The budget covers the CLI spawn as well as the poll, so it is wide enough
+  // for a cold node start under a loaded test runner and still short.
+  const result = await stopSession(record, { kill, bin: fake.stops, timeoutMs: 600, pollMs: 20 });
   assert.equal(result.ok, false);
   assert.match(result.error, /still running/);
 });
@@ -663,14 +665,19 @@ test("an interactive session has no daemon to ask and is still signalled", async
   assert.deepEqual(kill.signals[0], [4242, "SIGTERM"]);
 });
 
-test("a listed id that could be read as an option never becomes a CLI argument", async () => {
-  const askedLog = join(workspace, "stop-flag.log");
+test("a background session without a usable id is refused, not signalled and not handed to the CLI", async () => {
+  // Signalling it would be the original bug again: the lease is there whether
+  // or not the id came through the listing intact.
+  const askedLog = join(workspace, "stop-no-id.log");
   process.env.STOP_LOG = askedLog;
   const kill = fakeKill([4242]);
-  for (const id of ["--all", "-", "", " ", "3ee7 f1c2", null]) {
+  for (const id of ["--all", "-", "", " ", "3ee7 f1c2", null, undefined]) {
     const result = await stopSession({ pid: 4242, id, kind: "background" }, { kill, bin: fake.stops });
-    assert.equal(result.via, "signal", JSON.stringify(id));
+    assert.equal(result.ok, false, JSON.stringify(id));
+    assert.equal(result.via, "daemon", JSON.stringify(id));
+    assert.match(result.error, /id/, JSON.stringify(id));
   }
+  assert.equal(kill.signals.length, 0, JSON.stringify(kill.signals));
   assert.equal(existsSync(askedLog), false);
 });
 

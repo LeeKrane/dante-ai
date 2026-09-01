@@ -128,9 +128,16 @@ record:
   path. A refusal from the daemon is reported, never followed by a `SIGTERM`
   fallback: falling through would reproduce the bug while sounding like a
   success.
-- Anything else (an interactive session in someone's terminal, or a background
-  record listed without a usable id): `SIGTERM`, never `SIGKILL`, confirmed gone
-  before reporting. Unchanged.
+- `kind: "background"` without a usable `id`: refused ("I do not have an id to
+  stop that session by"). The lease is there whether or not the id came through
+  the listing intact, so signalling would be the original bug again.
+- Anything else (an interactive session in someone's terminal): `SIGTERM`,
+  never `SIGKILL`, confirmed gone before reporting. Unchanged.
+
+The daemon ask and the wait for the worker to leave share one budget
+(`opts.timeoutMs`, default `STOP_TIMEOUT_MS`), so a slow answer followed by a
+slow exit cannot add up to twice what the caller allowed. On expiry only the
+`claude stop` client is killed; nothing ever escalates on the session.
 
 The result gains a `via: "daemon" | "signal"` field, which `dispatchStop` in
 `server.js` writes into its `stopped <name> via <via>` log line, so the next
@@ -153,6 +160,39 @@ missing.
 
 `README.md` ("Stop session three") and `docs/roadmap.md` (Stage 28) now describe
 the daemon path.
+
+## Review
+
+`/code-review high` ran on the diff. What it found and what was done:
+
+- **Background record without a usable id fell back to `SIGTERM`** (confirmed).
+  That was the bug again by another door. Now refused; test added.
+- **Two deadlines in series** (the CLI ask, then the poll, each on
+  `STOP_TIMEOUT_MS`) could hold a voice reply for sixteen seconds. Now one
+  budget across both.
+- **The 120 ms test budget** for "worker outlives the daemon's answer" also had
+  to cover a cold node start of the fake CLI and would flake under a loaded
+  runner. Widened to 600 ms.
+- **Comments that had drifted**: `STOP_TIMEOUT_MS` said nothing escalates, which
+  is true of the session and not of the CLI client; the stderr cap said
+  "first line" and did not do that. Both reworded.
+- **A daemon-stopped session lingers on the roster as `stopped`**, so the
+  "gone" event and the chain never fire (unverified by the reviewer). Checked
+  against the live listing: `claude agents --json` without `--all` does not
+  list stopped sessions, so they do leave the roster and "gone" fires as before.
+  Not a bug.
+- **A `claude stop` that times out is reported as a failure without polling
+  the pid**, so a stop the daemon did carry out could be spoken as "I could not
+  stop X". Left as is: a pid that is gone is exactly the evidence this fix
+  stopped trusting, and "could not" is the honest answer when the daemon has
+  not said yes.
+- **`stopViaDaemon` is a third copy of the spawn-with-deadline runner** in
+  `tellSession` and `listAgents`, with its own grace period. True, and a shared
+  `runCli` would be the right cleanup, but it touches the tell and list verbs
+  and so is left for a change of its own.
+- **`daemonId` lives beside impure code** rather than in `lib/agents.js` with
+  the other roster predicates. Left where it is for now; moving it is part of
+  the same cleanup as above.
 
 ## Not changed, but found on the way
 
