@@ -243,13 +243,21 @@ test("the persona teaches the brief, and the two characters it may not contain",
   assert.match(persona, /square brackets/);
 });
 
-test("the persona skips the interview when the request is already clear, and has no question cap", () => {
+test("the persona never proposes a start before a confirmation question, and has no question cap", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /have=/);
+  assert.match(persona, /confirming=/);
+  assert.match(persona, /confirmed=/);
   assert.match(persona, /no question limit/i);
   assert.match(persona, /confident/i);
   assert.match(persona, /Done when:/);
   assert.match(persona, /machine-state lines/);
+  // The sentence the whole rule hangs on: a start is read back even when the
+  // request looked complete, and the count is scaled, never padded.
+  assert.match(persona, /Never skip that, for a start, a tell or an interrupt alike, even when the request already states everything/);
+  assert.match(persona, /one or two questions, a complex one in three to five/);
+  assert.match(persona, /do not pad/);
+  assert.doesNotMatch(persona, /Skip the interview when/);
 });
 
 test("the interview paragraph does not add another ask him", () => {
@@ -257,5 +265,18 @@ test("the interview paragraph does not add another ask him", () => {
   // rule it sits beside, so it would be easy to reuse the same two words by
   // accident and break the count the older test pins.
   const persona = brain.buildPersona(registry, null, kinds);
+  assert.equal(persona.match(/ask him\b/g)?.length, 2);
+});
+
+test("the persona lists the skills it may send, and says nothing about them when there are none", () => {
+  const commands = new Map([["grilling", { name: "grilling" }], ["blast-radius", { name: "blast-radius" }]]);
+  const persona = brain.buildPersona(registry, null, kinds, commands);
+  assert.match(persona, /SKILLS: /);
+  assert.match(persona, /\/blast-radius, \/grilling\./);
+  assert.match(persona, /command="\/<name> <arguments>"/);
+  assert.match(persona, /never one of Claude's own commands/);
+  assert.doesNotMatch(brain.buildPersona(registry, null, kinds), /SKILLS: /);
+  // The command paragraph teaches "say you do not know it" without adding a
+  // third "ask him", which the older test pins at two.
   assert.equal(persona.match(/ask him\b/g)?.length, 2);
 });

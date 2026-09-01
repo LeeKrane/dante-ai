@@ -27,7 +27,8 @@ import {
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
 import {
-  composeBrief, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, wantsToProceed,
+  composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
+  unconfirmedFacets, wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
@@ -45,6 +46,7 @@ import {
   MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession, createInFlight,
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
+import { loadCommands, vetCommand } from "./lib/commands.js";
 import { describeFailure } from "./lib/outcome.js";
 import { isListed, startVerdict, stopVerdict, tellVerdict } from "./lib/verdict.js";
 import { run as runBuild } from "./lib/builder.js";
@@ -97,6 +99,11 @@ const registry = await loadRegistry();
 // must not break a live conversation. An empty map is a working install --
 // free-form (a task and no kind) is the ordinary path.
 const sessionKinds = await loadSessionKinds();
+
+// The slash commands the persona may send, discovered once here like the
+// session kinds are, and again whenever the persona is rebuilt below -- a repo
+// named mid-conversation brings its own .claude/skills with it.
+let knownCommands = loadCommands({ repos: [] });
 
 // One place that knows what Claude Code sessions are running. A turn reads it
 // (usually from cache, so an ordinary turn costs no child process at all), and
@@ -773,6 +780,56 @@ async function answerProposal(send, conv, text) {
   return true;
 }
 
+// The answer to a read-back the machine spoke (the hold in the say handler,
+// below), if that is what this was. Returns true when the words were spent
+// on it.
+//
+// The proposal path has answerProposal and readAnswer so that a yes is read
+// by code rather than by the model, and the machine's own read-back gets the
+// same treatment for the same reason: a yes to "have I got that right?" has
+// to lift the hold on exactly the tag that was read back, not on whatever
+// the model recomposes from memory a turn later -- which, after a cold
+// restart of the warm CLI, is all it would have. A yes runs nothing here: it
+// consumes the interview into the held tag's brief and hands the tag to
+// proposeSession, whose "Shall I, sir?" follows as it would have without the
+// hold. A no is not a refusal to act, it is "you got it wrong", so the
+// facets go back to unconfirmed and the model is asked what it got wrong. A
+// longer answer is the correction itself: the hold is dropped the same way
+// and the sentence goes on to be an ordinary turn, so the model folds it in
+// and reads that facet back again.
+async function answerHeld(send, conv, text) {
+  const held = conv.held;
+  if (!held) return false;
+  // The hold lives exactly as long as the interview it was folded into.
+  if (!isLive(conv.interview)) {
+    conv.held = null;
+    log("held read-back expired");
+    return false;
+  }
+
+  const answer = readAnswer(text);
+  conv.held = null;
+  if (answer !== "yes") {
+    conv.interview = withdrawConfirming(conv.interview);
+    log(`read-back ${answer === "no" ? "denied" : "corrected"}: ${JSON.stringify(text)}`);
+    if (answer !== "no") return false;
+    await say(send, "What did I get wrong, sir?");
+    return true;
+  }
+
+  log(`read-back confirmed: ${held.spoken}`);
+  const session = {
+    ...held.session,
+    brief: composeBrief({
+      task: held.session.task, brief: held.session.brief,
+      notes: conv.interview.notes, said: conv.interview.said, repo: conv.interview.repo,
+    }),
+  };
+  conv.interview = null;
+  await proposeSession(send, conv, session, await rosterPoller.read({ maxAgeMs: 0 }));
+  return true;
+}
+
 // What earlier runs left behind. One server serves one project, so the whole
 // store is keyed by the directory it was started in. Read once here; every
 // write below goes through saveStore, which is atomic.
@@ -809,10 +866,12 @@ if (memoryChanged) saveStore(memoryStore);
 // restart, with nothing anywhere reporting why. Caveat: a --resume'd CLI session
 // keeps the system prompt it started with, so a refreshed persona is guaranteed
 // to reach the model on the next cold start rather than on the next turn.
-let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds);
+knownCommands = loadCommands({ repos: Object.values(workspacePaths(memoryStore)) });
+let persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds, knownCommands);
 
 function refreshPersona() {
-  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds);
+  knownCommands = loadCommands({ repos: Object.values(workspacePaths(memoryStore)) });
+  persona = buildPersona(registry, getProject(memoryStore, PROJECT_KEY), sessionKinds, knownCommands);
 }
 
 // One CLI for the whole server rather than a fresh one per sentence. Two thirds
@@ -1330,7 +1389,12 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
     // the task is only its label. Written as `||` over `(task ?? text ??
     // message)` rather than a chain of `??`, so an empty-string brief (never
     // written) does not win over a real task the way `??` alone would let it.
-    const text = session.brief || (session.task ?? session.text ?? session.message);
+    // A slash command outranks all of them: it was vetted and normalised
+    // where the tag was read, and the line is the whole message -- a brief
+    // after it would become the command's arguments, not the session's
+    // instructions.
+    const command = typeof session.command === "string" && session.command.startsWith("/") ? session.command : "";
+    const text = command || session.brief || (session.task ?? session.text ?? session.message);
     // Checked before the busy branch: without this, a tag with no message at all
     // reports a full queue, which is a different problem with a different fix.
     if (typeof text !== "string" || text.trim() === "") {
@@ -1349,24 +1413,38 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
     }
 
     send({ type: "state", value: "thinking" });
-    const delivered = await sendToSession({
-      pid: record.pid,
-      sessionId: record.sessionId,
-      text: plan.content,
-      priority: plan.priority,
-    });
-    if (delivered.ok) {
-      log(`${verb} sent to ${record.name} over the peer channel`);
-      // "Sent" is as far as this can honestly go: sendToSession resolving ok
-      // means the frame reached the session's socket, not that the model has
-      // read it, acted on it, or replied -- the CLI sends no acknowledgement for
-      // a user frame at all. This used to say "has it", which is already a
-      // claim about the far end; tellVerdict says what was done and that the
-      // rest cannot be checked.
-      await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "peer" })));
-      return;
+    // A slash command never takes the peer channel. Verified live against CLI
+    // 2.1.257: a "/cost" frame written into a counting session's socket
+    // reached its transcript as "Another Claude session sent a message:
+    // /cost ..." -- the CLI wraps every peer frame in a sentence about where it
+    // came from, and the session read the command as prose and answered that
+    // it could not run it. The resume path below (`claude -p --resume ... --
+    // "/cost"`) expands a built-in, a custom command and a skill (only the
+    // last of which Dante ever sends), all three verified the same day, and
+    // deliverQueued uses that same path, so a command queued behind a busy
+    // session expands when its turn comes too.
+    if (command) {
+      log(`${verb} of ${command} to ${record.name} takes the resume path, not the peer channel`);
+    } else {
+      const delivered = await sendToSession({
+        pid: record.pid,
+        sessionId: record.sessionId,
+        text: plan.content,
+        priority: plan.priority,
+      });
+      if (delivered.ok) {
+        log(`${verb} sent to ${record.name} over the peer channel`);
+        // "Sent" is as far as this can honestly go: sendToSession resolving ok
+        // means the frame reached the session's socket, not that the model has
+        // read it, acted on it, or replied -- the CLI sends no acknowledgement
+        // for a user frame at all. This used to say "has it", which is already
+        // a claim about the far end; tellVerdict says what was done and that
+        // the rest cannot be checked.
+        await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "peer" })));
+        return;
+      }
+      log(`peer send to ${record.name} failed: ${delivered.error}`);
     }
-    log(`peer send to ${record.name} failed: ${delivered.error}`);
 
     // Fallback: no peer address for this session (older CLI, or the state file
     // this reads did not exist). The gate below is the whole reason this path
@@ -1562,6 +1640,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
   try {
     const started = await beginSession({
       workspace, task: session.task, kind: session.kind, taken: live, then: session.then, brief: session.brief,
+      command: session.command,
     });
 
     if (!started.ok) {
@@ -1593,14 +1672,18 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 // socket in sight, and it must be started exactly the way a spoken one is --
 // same naming, same thread. A second implementation would drift on the first
 // change to either.
-async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined }) {
+async function beginSession({ workspace, task, kind: kindId, taken = [], then = null, depth = 0, brief = undefined, command = undefined }) {
   const kind = sessionKinds.get(kindId) ?? null;
   // No per-repository counter reserved here any more: a session's number on
   // screen is its position in orderRoster's own order, decided fresh on every
   // tick, not a value burned into the name at start time. buildName's only
   // guard against a collision is the live names already in `taken`.
+  //
+  // A command session is named for its command ("review", "review-2"): that
+  // is what it will be called out loud, and "run-review-high" is not.
+  const commandName = typeof command === "string" ? command.slice(1).split(" ")[0] : "";
   const name = buildName(
-    { task, hint: kind?.nameHint?.({ task }) },
+    { task, hint: commandName || kind?.nameHint?.({ task }) },
     (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
   const sessionId = newSessionId();
@@ -1611,6 +1694,7 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     cwd: workspace.path,
     task,
     brief,
+    command,
     systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
     effort: kind?.effort,
@@ -1873,7 +1957,7 @@ wss.on("connection", (ws) => {
   // the call in flight, and `settled` is how the next one waits for the abandoned
   // child to finish dying -- two of them resuming one session id at the same
   // time is the race this whole arrangement exists to avoid.
-  const conv = { pending: null, proposal: null, interview: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
+  const conv = { pending: null, proposal: null, interview: null, held: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve() };
   const gate = createTurnGate();
 
   // Read fresh from the store rather than from a boot-time snapshot: a second
@@ -1927,6 +2011,11 @@ wss.on("connection", (ws) => {
       // question is part of a build already agreed to; this is the agreement.
       if (await answerProposal(send, conv, msg.text)) return;
 
+      // Then a read-back the machine spoke, waiting on its yes. Below the
+      // proposal for the same reason the proposal is below an approval: it is
+      // the earlier step of the same exchange.
+      if (await answerHeld(send, conv, msg.text)) return;
+
       // An outstanding question owns the next thing said: it is an answer, not a
       // new turn, so it goes to the build rather than to the chat model.
       if (conv.pending) {
@@ -1974,6 +2063,7 @@ wss.on("connection", (ws) => {
       // nothing about it, so this only makes the page agree with the model.
       if (conv.interview && !isLive(conv.interview)) {
         conv.interview = null;
+        conv.held = null;
         activity(send, null);
         log("interview expired");
       }
@@ -2020,7 +2110,9 @@ wss.on("connection", (ws) => {
       // The model may append machine-readable tags: one asking for a build, one
       // recording a standing preference. Split them off first -- a tag is for
       // dispatch, never for the voice.
-      const { reply, action, memory, session } = parseAction(spoken);
+      const parsed = parseAction(spoken);
+      const { reply, action, memory } = parsed;
+      let session = parsed.session;
 
       // Applied before dispatch, with nothing awaited in between: "make it dark
       // from now on and build me a landing page" has to have the preference on
@@ -2122,19 +2214,23 @@ wss.on("connection", (ws) => {
         // on the session tag it produced -- INTERVIEW_VERBS also covers tell
         // and interrupt, and their own "repo" means "which session," which
         // has nothing to do with where an unrelated start should land.
-        const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
-
-        // The interview is spent the moment its command is proposed: its
-        // notes become the brief when the model did not write one itself, and
-        // the state is cleared here so a later, unrelated session tag never
-        // folds stale notes into a brief that has nothing to do with them.
-        if (isLive(conv.interview) && matchesInterview(conv.interview, session)) {
-          session.brief = composeBrief({
-            task: session.task, brief: session.brief,
-            notes: conv.interview.notes, said: conv.interview.said, repo: conv.interview.repo,
-          });
-          conv.interview = null;
+        // A skill on the tag is vetted here, once, before it is described,
+        // proposed or dispatched -- so every one of those sees the same
+        // normalised line or none of them sees a tag at all. The rules are
+        // lib/commands.js's (vetCommand); this only speaks the refusal.
+        {
+          const vetted = vetCommand(session, knownCommands);
+          if (vetted.refusal) {
+            log(`command refused: ${JSON.stringify(session.command)} -> ${vetted.refusal}`);
+            dropAnswered(conv.unanswered, answering);
+            await say(send, vetted.refusal);
+            return;
+          }
+          if (vetted.session.verb !== session.verb) log(`command ${vetted.session.command} delivered as a ${vetted.session.verb}: a skill waits its turn`);
+          session = vetted.session;
         }
+
+        const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
 
         // Resolved once, here, before this session is ever described back as
         // a confirmation sentence or an activity line -- both of those and the
@@ -2145,6 +2241,77 @@ wss.on("connection", (ws) => {
         // named repo is untouched either way.
         if (session.verb === "start") {
           session.repo = session.repo?.trim() ? session.repo : (fromInterview || resolveRepoAlias(memoryStore, "") || session.repo);
+        }
+
+        const ownInterview = isLive(conv.interview) && matchesInterview(conv.interview, session) ? conv.interview : null;
+
+        // A start, tell or interrupt is never proposed until its facets have
+        // been read back and answered (readyToPropose, and the rule in
+        // docs/interview.md). A proposal's "Shall I, sir?" confirms the act,
+        // not the understanding behind it: a yes to "start a session in
+        // jarvis to fix the tests" says nothing about which tests the model
+        // has in mind, and that is the detail that used to reach a running
+        // session unchecked whenever the model decided the request was clear
+        // enough to skip the interview. So a tag that arrives unconfirmed --
+        // no interview at all, or one whose facets were never read back -- is
+        // held here, and the read-back is spoken from the model's own brief in
+        // place of the proposal. It is folded into the interview as a question
+        // the machine asked (spokenFor), so the model's next turn knows
+        // Krane's yes or no answers that question and not whatever it said
+        // last, and the tag itself is kept (conv.held) so that a yes lifts
+        // the hold on exactly what was read back rather than on whatever the
+        // model recomposes a turn later -- see answerHeld. The escape phrase
+        // is one way past this, because it is Krane saying so; a skill is the
+        // other, because its facets ARE the command line, and the proposal
+        // reads that line back exactly -- a read-back before it would be the
+        // same question asked twice. holdForReadBack is the rule; this is the
+        // wiring.
+        if (holdForReadBack(session, ownInterview)) {
+          // For a tell or an interrupt the session is resolved first, for the
+          // same reason proposeSession resolves it before proposing: reading
+          // back "I would tell jarvis-1 to ..." and hearing a yes, only to say
+          // "I cannot find jarvis-1" afterwards, is worse than saying so now.
+          // The resolved name is what is read back, since it is the session
+          // the words will actually reach.
+          let name = "";
+          if (session.verb !== "start") {
+            const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
+            if (refusal) {
+              log(`${session.verb} refused before read-back: ${refusal}`);
+              dropAnswered(conv.unanswered, answering);
+              await say(send, refusal);
+              return;
+            }
+            name = record.name;
+          }
+          const facets = unconfirmedFacets(ownInterview);
+          const question = readBack({ ...session, name }, facets);
+          conv.interview = noteInterview(
+            ownInterview,
+            { for: session.verb, repo: session.repo, name, confirming: facets.join(","), spokenFor: true },
+            Date.now(),
+            conv.unanswered.slice(0, answering),
+          );
+          conv.held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
+          activity(send, "interviewing", { subject: conv.interview.repo || undefined });
+          log(`start held for confirmation (facets=${facets.join(",")}, asked=${conv.interview.asked}): ${JSON.stringify(question)}`);
+          if (await say(send, question, undefined, () => gate.isCurrent(token))) {
+            dropAnswered(conv.unanswered, answering);
+          }
+          return;
+        }
+
+        // The interview is spent the moment its command is proposed: its
+        // notes become the brief when the model did not write one itself, and
+        // the state is cleared here so a later, unrelated session tag never
+        // folds stale notes into a brief that has nothing to do with them.
+        if (ownInterview) {
+          session.brief = composeBrief({
+            task: session.task, brief: session.brief,
+            notes: ownInterview.notes, said: ownInterview.said, repo: ownInterview.repo,
+          });
+          conv.interview = null;
+          conv.held = null;
         }
 
         // The request is settled either way: it is now a proposal waiting on a
@@ -2200,6 +2367,7 @@ wss.on("connection", (ws) => {
     conv.pending = null;
     conv.proposal = null;
     conv.interview = null;
+    conv.held = null;
     // A question already asked is left to time out rather than answered by a
     // closing tab. Nothing is decided by a page going away.
     if (voice === send) voice = null;

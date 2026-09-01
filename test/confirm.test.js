@@ -616,3 +616,33 @@ test("a proposal with no timestamp is not answerable", () => {
   assert.equal(isAnswerable(null, 1000), false);
   assert.equal(isAnswerable("1000", 1000), false);
 });
+
+test("a slash command is said back exactly, for a start and a tell", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "start", repo: "jarvis", command: "/review high", task: "run /review high" } }),
+    "Start a session in jarvis running /review high. Shall I, sir?",
+  );
+  assert.equal(
+    describeIntent({ session: { verb: "tell", name: "fix-tests", command: "/compact" } }),
+    "Send /compact to fix-tests. Shall I, sir?",
+  );
+  // An interrupt never carries a command by the time it is described (server.js
+  // turns one into a tell), so the interrupt sentence ignores the key.
+  assert.equal(
+    describeIntent({ session: { verb: "interrupt", name: "fix-tests", command: "/compact", task: "tidy up" } }),
+    "Interrupt fix-tests and tell it to tidy up. Shall I, sir?",
+  );
+  // The command outranks a task and a brief on the same tag: what is said is
+  // what runs, and the brief is not part of what runs.
+  assert.equal(
+    describeIntent({ session: { verb: "tell", name: "fix-tests", command: "/compact", task: "tidy up", brief: "Goal: tidy" } }),
+    "Send /compact to fix-tests. Shall I, sir?",
+  );
+});
+
+test("a command without its slash is not a command, and the sentence falls back to the task", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "tell", name: "fix-tests", command: "compact", task: "tidy up" } }),
+    "Tell fix-tests to tidy up. Shall I, sir?",
+  );
+});
