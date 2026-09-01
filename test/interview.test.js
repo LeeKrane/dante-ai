@@ -338,12 +338,12 @@ test("a proceed beats the facet coverage no matter how much is still open", () =
     interviewBlock(proceeding, 1000),
     "INTERVIEW in progress: planning a start in jarvis. 3 questions asked. " +
       "Covered: goal. Still open: where, constraints, done. " +
-      "Jesse asked you to proceed: ask nothing more, propose now with what you have.",
+      "Krane asked you to proceed: ask nothing more, propose now with what you have.",
   );
   assert.equal(markProceed(null), null);
 });
 
-test("what Jesse said is read back in order, numbered", () => {
+test("what Krane said is read back in order, numbered", () => {
   const state = {
     verb: "start", repo: "jarvis", notes: [], said: ["fix the tests", "in jarvis"],
     covered: [], asked: 2, at: 1000, proceed: false,
@@ -352,7 +352,7 @@ test("what Jesse said is read back in order, numbered", () => {
     interviewBlock(state, 1000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
       "Covered: none reported yet. Still open: goal, where, constraints, done. " +
-      "Jesse said, in order: (1) fix the tests (2) in jarvis. " +
+      "Krane said, in order: (1) fix the tests (2) in jarvis. " +
       "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
       "request itself already settles what is open.",
   );
@@ -418,7 +418,7 @@ test("with no brief, the task, repo, notes and what was said become a structured
       "What the interview established:",
       "- it's the builder test.",
       "- only that one file.",
-      "Jesse said, in order:",
+      "Krane said, in order:",
       "- fix the failing tests",
       "- in jarvis, the builder test only",
     ].join("\n"),
@@ -468,5 +468,5 @@ test("a note handed straight to composeBrief is cleaned like everything else", (
 
 test("what was said is cleaned the same way, and an empty one is dropped", () => {
   const result = composeBrief({ task: "build something", said: ["  spaced out  ", ""] });
-  assert.equal(result, "Goal: build something\nJesse said, in order:\n- spaced out");
+  assert.equal(result, "Goal: build something\nKrane said, in order:\n- spaced out");
 });

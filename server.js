@@ -1767,7 +1767,7 @@ async function build(send, primitive, params, preamble = "") {
 // ---------------------------------------------------------------------------
 
 // Its own bookkeeping voice, deliberately not the DANTE persona: the spoken
-// rules -- forty words, no lists, address Jesse as sir -- would shape a note
+// rules -- forty words, no lists, address Krane as sir -- would shape a note
 // nobody is ever going to hear into something shorter and vaguer than the next
 // session needs.
 const SUMMARY_PERSONA =
