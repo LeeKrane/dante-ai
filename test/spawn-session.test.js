@@ -123,7 +123,7 @@ test("a request with nothing to do, or nothing to call it, is not startable", ()
 
 test("a session id that is not a session id is refused", () => {
   // --session-id wants a uuid. Anything else starts a session that nothing can
-  // resume, queue against, or thread a Slack conversation by.
+  // resume or queue against.
   for (const bad of ["", "abcd1234", "not-a-uuid", ID.slice(0, -1), 42, null]) {
     assert.equal(buildStartArgs(spec({ sessionId: bad })), null, String(bad));
   }

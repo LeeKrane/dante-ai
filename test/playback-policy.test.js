@@ -159,8 +159,8 @@ test("with the floor held nothing is spoken and nothing is lost", () => {
 });
 
 test("an announcement older than a couple of minutes is dropped rather than spoken stale", () => {
-  // It already went to Slack, which is the durable channel. "jarvis-1 has
-  // finished" two minutes late is not news.
+  // It already landed in the recap log, which is the durable record. "jarvis-1
+  // has finished" two minutes late is not news.
   const queue = [announcement("old", NOW - ANNOUNCEMENT_TTL_MS), announcement("new")];
   const result = takeAnnouncement(queue, { state: "idle" }, NOW);
   assert.equal(result.speak.id, "new");

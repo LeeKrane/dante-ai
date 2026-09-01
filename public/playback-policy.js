@@ -81,14 +81,15 @@ export function shouldShowCancel(playing, chromeHidden) {
 // ---------------------------------------------------------------------------
 //
 // A session finishing while nobody asked anything is the first thing Dante has
-// to say that nobody is waiting for. Slack always gets it, durably; speaking it
-// is the convenience, and a convenience does not get to interrupt.
+// to say that nobody is waiting for. The recap log always gets it, durably;
+// speaking it is the convenience, and a convenience does not get to interrupt.
 //
 // So an announcement never barges in. It waits for the floor to be genuinely
 // free and is dropped rather than spoken stale -- two minutes later "jarvis-1
-// has finished" is not news, and it is already in Slack for whenever anyone
-// looks. Approval requests are the exception and do not come through here at
-// all: something is blocked on those, so they are spoken the moment they arrive.
+// has finished" is not news, and it is already in the recap log for whenever
+// anyone asks. Approval requests are the exception and do not come through
+// here at all: something is blocked on those, so they are spoken the moment
+// they arrive.
 
 // How long an announcement is worth saying. Long enough to survive one reply
 // and a follow-up question, short enough that nothing is ever announced about a
@@ -96,7 +97,7 @@ export function shouldShowCancel(playing, chromeHidden) {
 export const ANNOUNCEMENT_TTL_MS = 120_000;
 
 // A backlog this deep means a long walk away, and the tail of it is history
-// rather than news. Slack has all of it in order.
+// rather than news. The recap log has all of it in order.
 export const MAX_QUEUED_ANNOUNCEMENTS = 5;
 
 // The three states that mean someone is mid-exchange. "working" is deliberately
@@ -116,7 +117,7 @@ export function floorIsFree(floor = {}) {
 // queueAnnouncement(queue, item) -> the queue with it on the end, capped.
 //
 // Oldest out first: with a backlog, the recent endings are the ones worth
-// hearing and the old ones are already in Slack.
+// hearing and the old ones are already in the recap log.
 export function queueAnnouncement(queue, item, max = MAX_QUEUED_ANNOUNCEMENTS) {
   const list = Array.isArray(queue) ? queue.slice() : [];
   if (!item || typeof item.id !== "string" || !item.id) return list;

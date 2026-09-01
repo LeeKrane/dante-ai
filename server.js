@@ -17,7 +17,6 @@ import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { allowedHosts, allowedOrigins, bracketHost, loadFishConfig, loadSupabaseConfig, serverIdentity } from "./lib/config.js";
-import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
@@ -146,7 +145,7 @@ const rosterPoller = createRosterPoller({
     for (const { kind, session } of events) {
       log(`session ${kind}: ${session.name ?? session.sessionId}`);
       // The report someone walked away for. Not awaited: a poller tick must
-      // not be held open by a Slack round trip and a summary behind it.
+      // not be held open by a summarize call and the announcement behind it.
       if (kind === "gone") {
         reportComplete(session.sessionId, {
           cwd: session.cwd, name: session.name, startedAt: session.startedAt, roster,
@@ -207,19 +206,9 @@ async function deliverQueued(record) {
 // lines in the thread.
 const reported = createDeduper();
 
-// Where a session's events go. Its own thread if it has one; the channel if
-// Slack was down or unconfigured when it started, because an event with
-// nowhere to thread is still worth more than nothing.
-async function postForSession(sessionId, line) {
-  if (!line) return;
-  const remembered = getSessionRecord(memoryStore, sessionId);
-  if (remembered?.slackTs) await slack.postReply(remembered.slackTs, line);
-  else await slack.postParent(line);
-}
-
 // Only sessions Dante started are reported. The roster sees every terminal on
-// this machine, and posting to Slack every time somebody closes one would make
-// the channel worthless within a day.
+// this machine, and recording every time somebody closes one would make the
+// recap worthless within a day.
 async function reportComplete(sessionId, context = {}) {
   const remembered = getSessionRecord(memoryStore, sessionId);
   if (!remembered) return;
@@ -250,9 +239,9 @@ async function reportComplete(sessionId, context = {}) {
     detail: remembered.stoppedAt ? "stopped from here" : "",
   });
 
-  // Recorded with the same words Slack gets -- whichever of summary or the
-  // "stopped from here" note formatEvent actually chose to say -- so a recap
-  // and the Slack thread can never disagree about what happened here.
+  // Recorded with the same words the log line above got -- whichever of summary
+  // or the "stopped from here" note formatEvent actually chose to say -- so the
+  // console line and the recap can never disagree about what happened here.
   recordEvent(memoryStore, {
     kind: "complete",
     name: remembered.name ?? context.name,
@@ -261,9 +250,9 @@ async function reportComplete(sessionId, context = {}) {
   saveStore(memoryStore);
 
   log(`session complete: ${line}`);
-  // Slack first, unconditionally. The spoken form is shorter and only reaches
-  // anyone if a page is open and the floor comes free before it goes stale.
-  await postForSession(sessionId, line);
+  // The spoken form is shorter and only reaches anyone if a page is open and
+  // the floor comes free before it goes stale; the recap above already has the
+  // full detail regardless.
   announce(formatSpoken({
     kind: "complete",
     name: remembered.name ?? context.name,
@@ -298,10 +287,16 @@ async function dispatchChain(sessionId, remembered, chain, roster) {
   const workspace = getWorkspace(memoryStore, chain.alias);
   if (!workspace) {
     log(`chain dropped: workspace ${JSON.stringify(chain.alias)} is no longer known`);
-    await postForSession(
-      sessionId,
-      `I could not start the next session, sir -- I no longer know a workspace called ${chain.alias}.`,
-    );
+    // takeChain already consumed the record, so this branch is the chain's last
+    // trace: without a recap entry the drop would be entirely silent, and the
+    // "complete" announcement for the session that just ended would leave the
+    // impression the successor started.
+    recordEvent(memoryStore, {
+      kind: "failed",
+      name: chain.alias,
+      detail: "could not start the next session: the workspace is no longer known",
+    });
+    saveStore(memoryStore);
     return;
   }
 
@@ -321,7 +316,15 @@ async function dispatchChain(sessionId, remembered, chain, roster) {
   );
   if (refusal) {
     log(`chain refused: ${refusal}`);
-    await postForSession(sessionId, `I could not start the next session, sir. ${refusal}`);
+    // Same reasoning as the missing-workspace branch above: the chain record
+    // is already gone, so the recap entry is the only place the refusal can
+    // still reach the person who asked for the chain.
+    recordEvent(memoryStore, {
+      kind: "failed",
+      name: chain.alias,
+      detail: `could not start the next session: ${refusal}`,
+    });
+    saveStore(memoryStore);
     return;
   }
 
@@ -329,17 +332,15 @@ async function dispatchChain(sessionId, remembered, chain, roster) {
     workspace, task: chain.task, kind: null, taken: live, then: null, depth: chain.depth + 1,
   });
   if (!started.ok) {
-    // beginSession has already posted its own "failed" parent to Slack -- there
-    // is no thread yet to reply into, the same reason a failed spoken start
-    // gets one there and not a reply here.
+    // beginSession has already recorded its own "failed" event to the recap
+    // log -- nothing further to report here.
     log(`chained session start failed name=${started.name} ${started.error}`);
     return;
   }
 
   log(`chain started: ${sessionId} -> ${started.name}`);
-  // beginSession already opened the session's own Slack thread with a
-  // "started" parent; this is the voice half of the same announcement, for
-  // whoever still has a page open.
+  // beginSession already recorded the session's own "started" event; this is
+  // the voice half of the same announcement, for whoever still has a page open.
   announce(formatSpoken({ kind: "started", name: started.name }));
 }
 
@@ -354,7 +355,6 @@ async function reportAttention(event) {
   recordEvent(memoryStore, { kind: "needs-attention", name: remembered.name, detail: event.detail });
   saveStore(memoryStore);
   log(`session needs attention: ${line}`);
-  await postForSession(event.sessionId, line);
   announce(formatSpoken({ kind: "needs-attention", name: remembered.name, detail: event.detail }));
 }
 
@@ -404,8 +404,9 @@ async function requestApproval(payload = {}) {
 
   const name = remembered.name ?? "A session";
 
-  // Nobody to ask, or somebody already being asked. Slack still hears about it,
-  // because a session waiting on a person is the thing you most want to know.
+  // Nobody to ask, or somebody already being asked. The recap log still hears
+  // about it, because a session waiting on a person is the thing you most want
+  // to know.
   if (!voice || pendingApproval) {
     log(`approval unanswerable: ${name} ${scope.spoken}`);
     reportAttention({ sessionId: payload.session_id, detail: scope.spoken })
@@ -424,7 +425,7 @@ async function requestApproval(payload = {}) {
     timer = setTimeout(() => {
       log(`approval timed out: ${name}`);
       // Reported rather than dropped: it went unanswered, which is exactly the
-      // sort of thing to find in Slack afterwards.
+      // sort of thing to find in the recap afterwards.
       reportAttention({ sessionId: payload.session_id, detail: scope.spoken })
         .catch((e) => log("attention report failed:", e.message || e));
       finish({});
@@ -547,8 +548,9 @@ function renumberNow() {
 // Announcements
 // ---------------------------------------------------------------------------
 
-// Lines nobody asked for. Slack always gets them and is the durable channel;
-// speaking one is the convenience, and a convenience does not get to interrupt.
+// Lines nobody asked for. The recap log always gets them and is the durable
+// record; speaking one is the convenience, and a convenience does not get to
+// interrupt.
 //
 // The timing decision is the browser's, because the floor is a client fact --
 // only the page knows whether the mic is open or a clip is audible. So this
@@ -561,8 +563,8 @@ const pendingAnnouncements = new Map();
 
 function announce(text) {
   const line = typeof text === "string" ? text.trim() : "";
-  // No page open is not a failure. It already went to Slack, which is the whole
-  // reason Slack is unconditional.
+  // No page open is not a failure. It already landed in the recap log, which
+  // is why nothing here needs to retry.
   if (!line || !voice) return false;
 
   const now = Date.now();
@@ -838,13 +840,6 @@ const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
-// The durable channel. Unconfigured it is a working object whose posts return
-// null, so nothing below has to ask whether Slack exists -- and a missing
-// config file is not a startup error, because an assistant without Slack is
-// still an assistant.
-const slackCfg = loadSlackConfig();
-const slack = createSlack(slackCfg, { log });
-
 // ---------------------------------------------------------------------------
 // Static files
 // ---------------------------------------------------------------------------
@@ -934,9 +929,9 @@ const server = createServer(async (req, res) => {
   // spawned by Claude Code, which has no browser session to present.
   //
   // Any local process can reach it, so nothing it carries may become an
-  // instruction. A payload reaches lib/notify.js and Slack, and never a model
-  // prompt. Anything unexpected is dropped in silence rather than answered
-  // with a complaint, because a complaint is a channel too.
+  // instruction. A payload reaches lib/notify.js and the recap log, and never
+  // a model prompt. Anything unexpected is dropped in silence rather than
+  // answered with a complaint, because a complaint is a channel too.
   if (urlPath === "/hook") {
     if (!isLoopback(req.socket?.remoteAddress)) {
       log(`hook refused from ${req.socket?.remoteAddress ?? "unknown"}`);
@@ -1276,8 +1271,8 @@ async function dispatchStop(send, session, preamble, roster) {
     // Noted so the report when it leaves the roster says it was stopped rather
     // than that it finished -- which are different things to read at midnight.
     // Only for sessions Dante started: writing a record here for a terminal
-    // somebody was sitting at would turn "Dante stopped it" into a Slack post
-    // about a session Slack has never heard of.
+    // somebody was sitting at would turn "Dante stopped it" into a recap entry
+    // about a session the recap log has never heard of.
     if (getSessionRecord(memoryStore, record.sessionId)) {
       rememberSession(memoryStore, record.sessionId, { stoppedAt: Date.now() });
     }
@@ -1422,8 +1417,8 @@ function recallable(roster) {
 // It reads the session's own transcript, live or finished -- the same thing
 // anyone would see by opening that session in a terminal and scrolling back.
 // That transcript is the only source. The one-line summary reportComplete
-// produces goes to Slack and into the recap log (recordEvent, a short list that
-// a recap reads once and clears), and this never consults it: a deleted session
+// produces goes into the recap log (recordEvent, a short list that a recap
+// reads once and clears), and this never consults it: a deleted session
 // is simply not readable, with no cached answer standing in for it.
 async function dispatchRead(send, session, preamble, roster) {
   const candidates = recallable(roster);
@@ -1576,7 +1571,7 @@ async function dispatchSession(send, session, preamble = "", roster = null) {
 }
 
 // Everything about starting a session that has nothing to do with a browser:
-// naming it, spawning it, remembering it, opening its Slack thread.
+// naming it, spawning it, remembering it.
 //
 // Split out because a chained session is started by a poller tick with no
 // socket in sight, and it must be started exactly the way a spoken one is --
@@ -1608,9 +1603,6 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   if (!started.ok) {
     recordEvent(memoryStore, { kind: "failed", name, detail: started.error });
     saveStore(memoryStore);
-    // Its own parent message, not a reply: there is no thread, because there
-    // was never a session to start one.
-    slack.postParent(formatEvent({ kind: "failed", name, detail: started.error }));
     return { ok: false, name, error: started.error };
   }
 
@@ -1625,17 +1617,6 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   recordEvent(memoryStore, { kind: "started", name, detail: task });
   saveStore(memoryStore);
   log(`session started name=${name} id=${sessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
-
-  // Not awaited. A Slack round trip is up to five seconds and the confirmation
-  // is the answer to something someone just said out loud; making them wait on
-  // a notification would be exactly backwards. The thread id lands in memory
-  // whenever it arrives, and every later event for this session looks it up
-  // there.
-  slack.postParent(formatEvent({ kind: "started", name, task })).then((ts) => {
-    if (!ts) return;
-    rememberSession(memoryStore, sessionId, { slackTs: ts });
-    saveStore(memoryStore);
-  });
 
   return { ok: true, name, sessionId };
 }
@@ -2249,7 +2230,6 @@ server.listen(PORT, HOST, () => {
   console.log(`Dante on http://${bracketHost(HOST)}:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
-  console.log(`slack: ${slack.enabled ? `on (${slackCfg.channel})` : "off"}`);
   // Started once the server is actually up: a poller ticking behind a failed
   // listen() would be a child process every five seconds with nobody to tell.
   rosterPoller.start();

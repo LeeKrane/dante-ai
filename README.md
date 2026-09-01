@@ -41,7 +41,7 @@ macOS and Linux. On Windows use WSL.
 cp .env.example .env
 ```
 
-All configuration — Fish Audio, Supabase, Slack, the port — is environment
+All configuration — Fish Audio, Supabase, the port — is environment
 variables, loaded from `.env` at startup via `dotenv`. `.env` is gitignored;
 never commit it. `dotenv` never overrides a variable already present in the
 real environment, so a systemd `Environment=` line or a shell export still
@@ -73,8 +73,6 @@ read at all — map their keys onto the env vars above and delete them:
 | | `volume` | `FISH_VOLUME` |
 | `~/.config/dante/supabase.json` | `url` | `SUPABASE_URL` |
 | | `anonKey` | `SUPABASE_ANON_KEY` |
-| `~/.config/dante/slack.json` | `botToken` | `DANTE_SLACK_TOKEN` |
-| | `channel` | `DANTE_SLACK_CHANNEL` |
 
 **2. Check Claude works headless** — thirty seconds, saves an hour:
 
@@ -196,7 +194,7 @@ question about your own work would be a spoken round trip for nothing.
 Code itself keeps — the same thing you would see by opening that session in a
 terminal and scrolling back. Nothing is summarized ahead of time and nothing is
 cached: delete a session and it stops being readable that instant, with nothing
-left behind to answer in its place. The one-line summary posted to Slack when a
+left behind to answer in its place. The one-line summary recorded when a
 session ends is kept only in the short recap log — cleared the first time you
 ask what you missed — and reading a session never consults it.
 
@@ -251,30 +249,16 @@ prompt and model only, no tool scope. Ships `review` and `tests`; copy
 
 ### It reports back
 
-Start something, walk away, read what came of it on your phone. Slack is the
-durable channel; voice only works when the page is open.
+Started, finished, and needs-attention events are spoken when the page is open,
+and every event — failures included — lands in the session recap, which you can
+ask Dante for.
 
-*"Catch me up"* is the voice half of walking away. It comes back as one spoken
-paragraph rather than a list — anything still needing you leads, and is never
-crowded out. It's built from an event log that survives a server restart, so
-it can still tell you what happened even if you closed the lid in between.
-Speaking it clears the log and any queued announcements, so nothing gets said
-twice.
-
-One thread per session: a parent when it starts, replies for everything after.
-Each report carries a one-sentence summary generated from the session's own
-transcript, because "done" on its own is not news.
-
-```bash
-DANTE_SLACK_TOKEN=xoxb-YOUR-BOT-TOKEN
-DANTE_SLACK_CHANNEL=C0123456789
-```
-
-Set both in `.env`. A Slack app with the `chat:write` scope, invited to that
-channel. Skip this entirely and everything else still works — Slack is an enhancement,
-not a dependency, and an outage costs a notification rather than a turn. It is
-**outbound only**: no Socket Mode, no Events API, nothing anyone types in Slack
-reaches this machine.
+*"Catch me up"* is how you read the recap after walking away. It comes back as
+one spoken paragraph rather than a list — anything still needing you leads, and
+is never crowded out. It's built from an event log that survives a server
+restart, so it can still tell you what happened even if you closed the lid in
+between. Speaking it clears the log and any queued announcements, so nothing
+gets said twice.
 
 The roster poller notices a session ending within five seconds on its own. For
 the fast path — and for a session *blocked on you*, which polling can never see
@@ -295,7 +279,7 @@ session, so paste it yourself:
 It posts to `127.0.0.1:3210/hook` (`DANTE_PORT` to change it), always exits 0,
 prints nothing and gives up after a second — a Dante that is down must cost a
 session nothing. Both mechanisms report the same exit; Dante dedupes so the
-thread gets one line, not three.
+recap gets one line, not three.
 
 The hooks always post to `127.0.0.1`, never wherever `DANTE_HOST` points, so
 if you set `DANTE_HOST` to a specific non-loopback address they can no longer
@@ -330,8 +314,8 @@ trade for a channel that interrupts you.
 ```
 
 **No browser open, or no clear answer, means no decision** — never a denial. The
-session falls back to its normal behaviour and Slack gets a "waiting on you".
-Denying by silence would break every session started while you are away, which
+session falls back to its normal behaviour and the recap records a "waiting on
+you". Denying by silence would break every session started while you are away, which
 is exactly when you need them working. The answer is read by a strict word list
 and **never goes through the model**: routing it through one would let a
 prompt-injected tool description argue for its own approval.
@@ -413,14 +397,8 @@ where there are no keys, tapping those is how the panels are toggled.
 **`POST /hook` and `POST /approve` are loopback only.** That is its entire security model, and it does
 not change because the rest of the server is reachable over the VPN. Any local
 process can post to it, so nothing a payload carries ever reaches a model
-prompt — it reaches the event formatter and Slack, capped and stripped, or it is
-dropped in silence.
-
-**The Slack bot token is a credential.** It rides in one Authorization header and
-appears in no log line, no debug message, and nothing crossing the WebSocket.
-Message text is escaped for the three characters that open Slack's control
-sequences, so a summary a model wrote saying `<!channel>` cannot notify a
-workspace.
+prompt — it reaches the event formatter and the voice, capped and stripped, or
+it is dropped in silence.
 
 **An approval answer never reaches a model.** `parseYesNo` is a strict
 vocabulary, and an unclear answer re-asks once and then decides nothing. No
@@ -443,9 +421,9 @@ and an unvetted path would point the write at any socket on the machine, so
 only the CLI's own naming shape (`cc-socks/<pid>.sock`) is accepted. The
 roster's pid and the state file's session id must **agree** before anything is
 written, because pids are recycled and the cost of being wrong is a stranger's
-session taking dictation. And the peer token is a **credential**: it takes the
-posture the Slack bot token takes — never logged, never across the WebSocket,
-never in an error string, and never in a prompt.
+session taking dictation. And the peer token is a **credential**: never
+logged, never across the WebSocket, never in an error string, and never in a
+prompt.
 
 Dante still writes nothing under `~/.claude/`. It reads two files there that
 describe sessions it can already see in the roster, and that roster is already

@@ -173,7 +173,7 @@ test("entries that are not objects are skipped rather than parsed", () => {
 
 test("control characters and bidi overrides never survive into a session name", () => {
   // A session name is chosen by whoever started the session, is spoken aloud,
-  // and in Phase C is posted to Slack. It is not trusted text.
+  // and in Phase C is recorded in the recap log. It is not trusted text.
   const [record] = rosterOf(
     session({ name: "safe\u0000\u001bname\u202e reversed", cwd: "/home/krane/dev\u0007/x" }),
   );

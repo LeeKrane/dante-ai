@@ -945,14 +945,14 @@ test("a started session is remembered by what it was asked to do", () => {
 });
 
 test("a later patch adds to a session record rather than replacing it", () => {
-  // Phase C writes a Slack thread id here afterwards, and it must not wipe what
-  // the start recorded.
+  // A later stage writes a field like this one afterwards, and it must not
+  // wipe what the start recorded.
   const store = emptyStore();
   rememberSession(store, SESSION_ID, { name: "jarvis-1-review", task: "look at the diff" });
-  rememberSession(store, SESSION_ID, { slackTs: "1700000000.1" });
+  rememberSession(store, SESSION_ID, { stoppedAt: 1700000000000 });
   const record = getSessionRecord(store, SESSION_ID);
   assert.equal(record.name, "jarvis-1-review");
-  assert.equal(record.slackTs, "1700000000.1");
+  assert.equal(record.stoppedAt, 1700000000000);
 });
 
 test("sessions do not crowd out what was built, because they are kept apart from it", () => {

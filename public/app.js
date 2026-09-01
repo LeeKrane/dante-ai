@@ -712,11 +712,11 @@ renderKeys();
 
 // ---- Announcements ----
 //
-// Lines nobody asked for: a session finished, a session wants something. Slack
-// always has them, durably, so speaking one is a convenience and a convenience
-// does not get to interrupt. They queue here and are spoken only when the floor
-// is genuinely free -- the policy is in playback-policy.js, where it can be
-// tested.
+// Lines nobody asked for: a session finished, a session wants something. The
+// recap log always has them, durably, so speaking one is a convenience and a
+// convenience does not get to interrupt. They queue here and are spoken only
+// when the floor is genuinely free -- the policy is in playback-policy.js,
+// where it can be tested.
 //
 // The text is the server's; the timing is ours, because the floor is a client
 // fact. The mic being open, a clip being audible and a question waiting on an
