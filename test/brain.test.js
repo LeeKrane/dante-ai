@@ -79,9 +79,9 @@ test("omitting the project argument is the same as passing none", () => {
 });
 
 test("a remembered summary is folded into the prompt", () => {
-  const persona = brain.buildPersona(registry, { summary: "Jesse is building a coffee shop site." });
+  const persona = brain.buildPersona(registry, { summary: "Krane is building a coffee shop site." });
   assert.ok(persona.includes("earlier sessions on this project"));
-  assert.ok(persona.includes("Jesse is building a coffee shop site."));
+  assert.ok(persona.includes("Krane is building a coffee shop site."));
 });
 
 test("standing preferences are rendered as key: value pairs", () => {
@@ -146,14 +146,14 @@ const kinds = new Map([["review", { id: "review", triggers: ["review"] }]]);
 test("a build tag is taught as a proposal, not as something already done", () => {
   const persona = brain.buildPersona(registry);
   assert.match(persona, /A tag is a PROPOSAL, not an act/);
-  assert.match(persona, /Jesse is asked to confirm it before anything runs/);
+  assert.match(persona, /Krane is asked to confirm it before anything runs/);
 });
 
 test("the persona forbids stopping or telling a session nobody asked about", () => {
   // The rule that exists because a request to START one ended with a
   // different, working session STOPPED.
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /NEVER emit verb=tell or verb=stop unless Jesse asked you, in this turn/);
+  assert.match(persona, /NEVER emit verb=tell or verb=stop unless Krane asked you, in this turn/);
   assert.match(persona, /machine-state lines is something\s+you were told about/);
 });
 
@@ -213,7 +213,7 @@ test("the guardrail against acting on an unmentioned session also covers interru
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(
     persona,
-    /the same guardrail covers verb=interrupt: never emit it unless\s+Jesse asked you, in this turn, to interrupt that session/,
+    /the same guardrail covers verb=interrupt: never emit it unless\s+Krane asked you, in this turn, to interrupt that session/,
   );
 });
 
