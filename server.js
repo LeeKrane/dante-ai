@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { loadFishConfig, loadSupabaseConfig } from "./lib/config.js";
+import { allowedHosts, allowedOrigins, bracketHost, loadFishConfig, loadSupabaseConfig, serverIdentity } from "./lib/config.js";
 import { createSlack, loadSlackConfig } from "./lib/slack.js";
 import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
@@ -61,24 +61,21 @@ const PUBLIC = join(HERE, "public");
 const BUILDS = join(HERE, "builds"); // one folder per build, created by lib/builder.js
 const BUILDS_URL = "/builds/";
 const PORT = Number(process.env.PORT) || 3210;
-const WG_IP = "192.168.82.1";
 
-// Only these two spellings of "this machine" are served, and only these two are
-// allowed to open the socket. Both lists are built from PORT so moving the
-// server does not quietly disable the checks below.
-const ALLOWED_HOSTS = new Set([
-  `localhost:${PORT}`,
-  `127.0.0.1:${PORT}`, // the hook bridge posts here, and it is the same machine
-  `0.0.0.0:${PORT}`,
-  `[::1]:${PORT}`,
-  `${WG_IP}:${PORT}`
-]);
+// The bind address and the WireGuard IP are both env-driven (DANTE_HOST,
+// DANTE_WG_IP -- see serverIdentity in lib/config.js), so the same code runs
+// unmodified on a laptop, a machine meant to be reachable from the LAN, or a
+// WireGuard node. HOST defaults to loopback; WG_IP defaults to "" (no
+// WireGuard entries at all).
+const { host: HOST, wgIp: WG_IP } = serverIdentity();
 
-const ALLOWED_ORIGINS = new Set([
-  `http://localhost:${PORT}`,
-  `http://0.0.0.0:${PORT}`,
-  `http://${WG_IP}:${PORT}`
-]);
+// Only these spellings of "this machine" are served, and only these are
+// allowed to open the socket -- derived from HOST, WG_IP and PORT so moving
+// the server, or turning WireGuard access on or off, does not quietly
+// disable the checks below. See allowedHosts/allowedOrigins in
+// lib/config.js for exactly what is and is not included and why.
+const ALLOWED_HOSTS = allowedHosts({ host: HOST, wgIp: WG_IP, port: PORT });
+const ALLOWED_ORIGINS = allowedOrigins({ host: HOST, wgIp: WG_IP, port: PORT });
 
 const cfg = loadFishConfig(); // throws early if Fish key missing
 
@@ -2242,12 +2239,14 @@ server.on("error", (err) => {
   process.exit(1);
 });
 
-// Loopback only. This process runs a model with file-writing tools on and then
-// serves what it wrote, which is not something to expose to the local network.
-server.listen(PORT, "0.0.0.0", () => {
+// Loopback by default (DANTE_HOST unset or empty). This process runs a model
+// with file-writing tools on and then serves what it wrote, which is not
+// something to expose to the local network without deciding to -- set
+// DANTE_HOST to opt in.
+server.listen(PORT, HOST, () => {
   const ids = [...registry.keys()];
   const kinds = [...sessionKinds.keys()];
-  console.log(`Dante on http://0.0.0.0:${PORT}`);
+  console.log(`Dante on http://${bracketHost(HOST)}:${PORT}`);
   console.log(`primitives: ${ids.length ? ids.join(", ") : "none"}`);
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
   console.log(`slack: ${slack.enabled ? `on (${slackCfg.channel})` : "off"}`);

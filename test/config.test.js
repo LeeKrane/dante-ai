@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadFishConfig } from "../lib/config.js";
+import { allowedHosts, allowedOrigins, loadFishConfig, serverIdentity } from "../lib/config.js";
 
 test("loads fish config fields from the environment", () => {
   const cfg = loadFishConfig({
@@ -85,4 +85,94 @@ test("environment values win over the defaults", () => {
     pitch: 3,
     volume: 10,
   });
+});
+
+test("serverIdentity defaults to a loopback host and no WireGuard IP when both are unset", () => {
+  assert.deepEqual(serverIdentity({}), { host: "127.0.0.1", wgIp: "" });
+});
+
+test("serverIdentity treats an empty-string DANTE_HOST or DANTE_WG_IP the same as unset", () => {
+  assert.deepEqual(serverIdentity({ DANTE_HOST: "", DANTE_WG_IP: "" }), { host: "127.0.0.1", wgIp: "" });
+});
+
+test("serverIdentity carries through an explicit DANTE_HOST and DANTE_WG_IP", () => {
+  assert.deepEqual(serverIdentity({ DANTE_HOST: "0.0.0.0", DANTE_WG_IP: "192.168.82.1" }), {
+    host: "0.0.0.0",
+    wgIp: "192.168.82.1",
+  });
+});
+
+test("allowedHosts on the default identity is just the localhost family, with no duplicate for the loopback host", () => {
+  assert.deepEqual(
+    allowedHosts({ host: "127.0.0.1", wgIp: "", port: 3210 }),
+    new Set(["localhost:3210", "127.0.0.1:3210", "[::1]:3210"]),
+  );
+});
+
+test("allowedHosts adds no entry for a wildcard bind address, since 0.0.0.0 is not a name a Host header would send", () => {
+  assert.deepEqual(
+    allowedHosts({ host: "0.0.0.0", wgIp: "", port: 3210 }),
+    new Set(["localhost:3210", "127.0.0.1:3210", "[::1]:3210"]),
+  );
+});
+
+test("allowedHosts adds an entry for a specific configured host", () => {
+  assert.deepEqual(
+    allowedHosts({ host: "192.168.1.50", wgIp: "", port: 3210 }),
+    new Set(["localhost:3210", "127.0.0.1:3210", "[::1]:3210", "192.168.1.50:3210"]),
+  );
+});
+
+test("allowedHosts adds an entry for the WireGuard IP when one is configured", () => {
+  assert.deepEqual(
+    allowedHosts({ host: "127.0.0.1", wgIp: "192.168.82.1", port: 3210 }),
+    new Set(["localhost:3210", "127.0.0.1:3210", "[::1]:3210", "192.168.82.1:3210"]),
+  );
+});
+
+test("allowedHosts brackets an IPv6 host or WireGuard address", () => {
+  assert.deepEqual(
+    allowedHosts({ host: "fd00::1", wgIp: "fd00::2", port: 3210 }),
+    new Set(["localhost:3210", "127.0.0.1:3210", "[::1]:3210", "[fd00::1]:3210", "[fd00::2]:3210"]),
+  );
+});
+
+test("allowedOrigins on the default identity is just the localhost family", () => {
+  assert.deepEqual(
+    allowedOrigins({ host: "127.0.0.1", wgIp: "", port: 3210 }),
+    new Set(["http://localhost:3210", "http://127.0.0.1:3210"]),
+  );
+});
+
+test("allowedOrigins adds no entry for a wildcard bind address", () => {
+  assert.deepEqual(
+    allowedOrigins({ host: "0.0.0.0", wgIp: "", port: 3210 }),
+    new Set(["http://localhost:3210", "http://127.0.0.1:3210"]),
+  );
+});
+
+test("allowedOrigins adds an entry for a specific configured host", () => {
+  assert.deepEqual(
+    allowedOrigins({ host: "192.168.1.50", wgIp: "", port: 3210 }),
+    new Set(["http://localhost:3210", "http://127.0.0.1:3210", "http://192.168.1.50:3210"]),
+  );
+});
+
+test("allowedOrigins adds an entry for the WireGuard IP when one is configured", () => {
+  assert.deepEqual(
+    allowedOrigins({ host: "127.0.0.1", wgIp: "192.168.82.1", port: 3210 }),
+    new Set(["http://localhost:3210", "http://127.0.0.1:3210", "http://192.168.82.1:3210"]),
+  );
+});
+
+test("allowedOrigins brackets an IPv6 host or WireGuard address", () => {
+  assert.deepEqual(
+    allowedOrigins({ host: "fd00::1", wgIp: "fd00::2", port: 3210 }),
+    new Set([
+      "http://localhost:3210",
+      "http://127.0.0.1:3210",
+      "http://[fd00::1]:3210",
+      "http://[fd00::2]:3210",
+    ]),
+  );
 });

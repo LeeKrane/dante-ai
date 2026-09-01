@@ -297,6 +297,11 @@ prints nothing and gives up after a second — a Dante that is down must cost a
 session nothing. Both mechanisms report the same exit; Dante dedupes so the
 thread gets one line, not three.
 
+The hooks always post to `127.0.0.1`, never wherever `DANTE_HOST` points, so
+if you set `DANTE_HOST` to a specific non-loopback address they can no longer
+reach the server — leave `DANTE_HOST` unset, or use `0.0.0.0`, if you rely on
+these hooks.
+
 ### It asks before the two things worth asking about
 
 Sessions run under your permissions, so one that hits a permission prompt with
@@ -348,8 +353,10 @@ prompt-injected tool description argue for its own approval.
   pitch — a deeper voice also reads slower, a higher one faster. That is the
   trade-off, not a bug; there is no way to shift the pitch of a clip that was
   already synthesized at a fixed rate without it.
-- **`server.js` → `WG_IP`** — the one non-loopback address allowed to reach the
-  server. Set it to your VPN address, or drop it to stay local-only.
+- **`DANTE_HOST`, `DANTE_WG_IP` in `.env`** — the bind address (default
+  `127.0.0.1`, loopback-only) and the one non-loopback address allowed to
+  reach the server, if any. Set `DANTE_WG_IP` to your VPN address to open it
+  up over WireGuard, or leave both unset to stay local-only.
 
 ### Add a primitive
 
@@ -470,9 +477,11 @@ the anon key or the token, only an `HttpOnly` cookie. The server speaks plain
 HTTP, so that cookie is not `Secure` by default; put TLS in front of it and set
 `SECURE_COOKIE=1`.
 
-**The network.** The server binds `0.0.0.0` but only serves requests whose `Host`
-is localhost or the single VPN address in `WG_IP`, and only accepts sockets from
-the matching origins. That is the whole boundary — set `WG_IP` deliberately.
+**The network.** The server binds loopback (`127.0.0.1`) by default — reaching
+further than that is opt-in, via `DANTE_HOST` in `.env` — and only serves
+requests whose `Host` is localhost or the single VPN address in `DANTE_WG_IP`,
+and only accepts sockets from the matching origins. That is the whole boundary
+— set `DANTE_HOST` and `DANTE_WG_IP` deliberately.
 
 **What a build may do.** A build runs unattended (`--permission-mode acceptEdits`)
 in its own `builds/<timestamp>/` with the tools its primitive asked for. Two deny
