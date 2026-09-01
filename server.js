@@ -1371,28 +1371,30 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
     // it could not run it. The resume path below (`claude -p --resume ... --
     // "/cost"`) expands a built-in, a custom command and a skill (only the
     // last of which Dante ever sends), all three verified the same day, and
-    // deliverQueued uses that same path, so a
-    // command queued behind a busy session expands when its turn comes too.
-    const delivered = command
-      ? { ok: false, error: "a command does not take the peer channel" }
-      : await sendToSession({
-          pid: record.pid,
-          sessionId: record.sessionId,
-          text: plan.content,
-          priority: plan.priority,
-        });
-    if (delivered.ok) {
-      log(`${verb} sent to ${record.name} over the peer channel`);
-      // "Sent" is as far as this can honestly go: sendToSession resolving ok
-      // means the frame reached the session's socket, not that the model has
-      // read it, acted on it, or replied -- the CLI sends no acknowledgement for
-      // a user frame at all. This used to say "has it", which is already a
-      // claim about the far end; tellVerdict says what was done and that the
-      // rest cannot be checked.
-      await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "peer" })));
-      return;
+    // deliverQueued uses that same path, so a command queued behind a busy
+    // session expands when its turn comes too.
+    if (command) {
+      log(`${verb} of ${command} to ${record.name} takes the resume path, not the peer channel`);
+    } else {
+      const delivered = await sendToSession({
+        pid: record.pid,
+        sessionId: record.sessionId,
+        text: plan.content,
+        priority: plan.priority,
+      });
+      if (delivered.ok) {
+        log(`${verb} sent to ${record.name} over the peer channel`);
+        // "Sent" is as far as this can honestly go: sendToSession resolving ok
+        // means the frame reached the session's socket, not that the model has
+        // read it, acted on it, or replied -- the CLI sends no acknowledgement
+        // for a user frame at all. This used to say "has it", which is already
+        // a claim about the far end; tellVerdict says what was done and that
+        // the rest cannot be checked.
+        await say(send, joinSpoken(preamble, tellVerdict({ name: record.name, verb, channel: "peer" })));
+        return;
+      }
+      log(`peer send to ${record.name} failed: ${delivered.error}`);
     }
-    log(`peer send to ${record.name} failed: ${delivered.error}`);
 
     // Fallback: no peer address for this session (older CLI, or the state file
     // this reads did not exist). The gate below is the whole reason this path
@@ -2234,7 +2236,7 @@ wss.on("connection", (ws) => {
           // "I cannot find jarvis-1" afterwards, is worse than saying so now.
           // The resolved name is what is read back, since it is the session
           // the words will actually reach.
-          let name = session.name ?? session.repo;
+          let name = "";
           if (session.verb !== "start") {
             const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
             if (refusal) {

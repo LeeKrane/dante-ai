@@ -56,10 +56,10 @@ test("anything that is not a slash command is refused: no slash, a bad name, not
   }
 });
 
-test("the allow-list may be a Map, a Set, an array of names, or an array of records", () => {
+test("the allow-list is the Map loadCommands builds or any Set of names; anything else knows nothing", () => {
   assert.ok(parseCommand("/grilling", new Set(["grilling"])));
-  assert.ok(parseCommand("/grilling", ["grilling"]));
-  assert.ok(parseCommand("/grilling", [{ name: "grilling" }]));
+  assert.equal(parseCommand("/grilling", ["grilling"]), null);
+  assert.equal(parseCommand("/grilling", "grilling"), null);
 });
 
 test("arguments are capped and stripped of unprintables, because a model wrote them from speech", () => {
@@ -103,7 +103,7 @@ test("with nothing known there is no block at all, because a list of nothing is 
   assert.equal(commandsBlock(null), "");
   assert.equal(commandsBlock(new Map()), "");
   // A native name that somehow got in is not advertised either.
-  assert.equal(commandsBlock(["compact"]), "");
+  assert.equal(commandsBlock(new Set(["compact"])), "");
 });
 
 // ---------------------------------------------------------------------------
