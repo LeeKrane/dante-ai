@@ -721,6 +721,7 @@ async function proposeSession(send, conv, session, roster) {
         // however many seconds old the answer took to arrive, and a stop
         // resolves a name against a real process.
         await rosterPoller.read({ maxAgeMs: 0 }),
+        conv,
       ),
     spoken,
     at: Date.now(),
@@ -1578,12 +1579,19 @@ async function dispatchRead(send, session, preamble, roster, conv) {
       getNoteLimits(memoryStore),
     );
     if (written) {
-      conv.notes.touch(written.note);
-      conv.topic = { topic: spec.topic, at: now };
       log(`note saved ${spec.topic}`);
       if (written.pruned.length > 0) log(`notes pruned: ${written.pruned.join(", ")}`);
-      const flag = describeContradictions(conv.notes.contradictions());
-      if (flag) conv.flag = joinSpoken(conv.flag, flag);
+      // conv is null when dispatchRead is reached with no conversation state
+      // to track against (a call site added later that has none, say) -- the
+      // note is still saved above either way, since the file on disk is not
+      // per-conversation; only the touch/topic/contradiction bookkeeping,
+      // which lives on conv, is skipped.
+      if (conv) {
+        conv.notes.touch(written.note);
+        conv.topic = { topic: spec.topic, at: now };
+        const flag = describeContradictions(conv.notes.contradictions());
+        if (flag) conv.flag = joinSpoken(conv.flag, flag);
+      }
     }
 
     // Said plainly when the session is still going, because "it decided X" and
@@ -1593,13 +1601,15 @@ async function dispatchRead(send, session, preamble, roster, conv) {
     //
     // conv.flag rides last, after the answer: the read is what was asked for,
     // and a contradiction between notes is a caveat about something else
-    // entirely, worth hearing only once the actual answer has been.
+    // entirely, worth hearing only once the actual answer has been. conv?.flag
+    // ?? "" so a null conv (see above) speaks the plain answer rather than
+    // throwing on a property read that has nothing behind it.
     await say(send, joinSpoken(
       preamble,
       record.running === true ? `${record.name} is still working, sir. So far: ${text}` : text,
-      conv.flag,
+      conv?.flag ?? "",
     ));
-    conv.flag = "";
+    if (conv) conv.flag = "";
   } finally {
     activity(send, null);
   }
@@ -1631,7 +1641,15 @@ async function dispatchRecap(send, preamble = "") {
 // It never waits for the session to do anything. That is the entire point of
 // starting one by voice: the confirmation is immediate, and the roster is what
 // reports what happened afterwards.
-async function dispatchSession(send, session, preamble = "", roster = null) {
+// `conv` rides through here only to reach dispatchRead's verb=read branch,
+// which is the one verb here that writes and tracks a note against this
+// conversation -- the other four verbs (recap, tell, interrupt, stop, start)
+// never touch lib/notes.js and never look at it. Both call sites (the direct
+// one below and the proposal `run` closure in proposeSession) have a real
+// conv in scope and pass it; the `= null` default is only a guard against a
+// third call site someday forgetting to, and dispatchRead treats a null conv
+// as "read it and speak it, just do not track it against a conversation."
+async function dispatchSession(send, session, preamble = "", roster = null, conv = null) {
   if (session.verb === "recap") {
     await dispatchRecap(send, preamble);
     return;
@@ -2246,6 +2264,17 @@ wss.on("connection", (ws) => {
       // what it was asked behind for the call that supersedes it, and only the
       // sentences this reply addressed come off, so one said during synthesis is
       // still waiting afterwards.
+      // conv.flag (a note contradiction found while folding notes into this
+      // turn's prompt, above) is only ever fused into something spoken by the
+      // two branches that speak sentence-shaped text -- dispatchRead's own
+      // read-back (reached through the session branch below) and the plain-
+      // reply branch further down. A session or build dispatch never speaks
+      // the flag, so without the finally it would sit on conv untouched and
+      // surface, wrongly glued onto whatever the NEXT turn happens to reply
+      // with. Clearing it here, once this turn's branch has run its course
+      // whether or not it was actually spoken, is what keeps it from ever
+      // crossing into a turn that had nothing to do with raising it.
+      try {
       if (session) {
         // The exact string the model produced, tag and all, before parseAction
         // ever touches it -- so a truncated or mangled name= can be traced back
@@ -2404,7 +2433,7 @@ wss.on("connection", (ws) => {
         if (needsConfirmation(session)) {
           await proposeSession(send, conv, session, roster);
         } else {
-          await dispatchSession(send, session, reply, roster);
+          await dispatchSession(send, session, reply, roster, conv);
         }
       } else if (action) {
         dropAnswered(conv.unanswered, answering);
@@ -2438,6 +2467,9 @@ wss.on("connection", (ws) => {
       } else {
         dropAnswered(conv.unanswered, answering);
         log("brain returned no speakable text");
+      }
+      } finally {
+        conv.flag = "";
       }
     } catch (e) {
       // An abandoned turn is not a failure to report. Nobody is waiting on it,
