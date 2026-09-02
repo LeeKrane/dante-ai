@@ -32,7 +32,7 @@ import {
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import {
-  WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, unwatchVerdict, watchVerdict,
+  WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, resumedAmong, unwatchVerdict, watchVerdict,
 } from "./lib/watch.js";
 import { recallableSessions } from "./lib/recall.js";
 import {
@@ -175,6 +175,21 @@ const rosterPoller = createRosterPoller({
     // race, and it must cover every change (idle and blocked too, not only
     // gone) since any of them can be followed, later, by the "gone" event
     // that eventually reaches reportComplete.
+    //
+    // A report is old news once the session is back at work: the next block
+    // or finish is a fresh event and the generic line for it must be spoken
+    // again, so the mark comes off here. Swept before the tick below, though
+    // the order does not matter -- a watch fires only on a session that is
+    // not working, which is exactly the one this sweep leaves alone.
+    for (const sessionId of resumedAmong(watchReported, roster)) watchReported.delete(sessionId);
+    //
+    // Only while a page is open to hear it. A watcher's whole product is the
+    // spoken read-back, and announce() drops a line when no page is
+    // connected -- unlike the generic complete line, this one has no recap
+    // entry of its own to fall back on. So the watch stays live instead of
+    // firing into silence, and fires on the first tick after a page
+    // connects, reading the session back then, as fresh as it can be.
+    if (!voice) return;
     for (const fired of watchers.tick(roster, Date.now())) {
       watchReported.add(fired.watch.sessionId);
       reportWatch(fired).catch((e) => log("watch report failed:", e.message || e));
@@ -282,7 +297,9 @@ async function reportWatch({ watch, change, record }) {
     name: watch.name, change, state: record?.state ?? record?.status, text, reason,
   });
   log(`watch fired (${change}): ${spoken}`);
-  if (!announce(spoken)) log("watch report had nowhere to go (no page open)");
+  // Reachable only if the page closed during the read above: onRoster does
+  // not tick the watchers at all while no page is open.
+  if (!announce(spoken)) log("watch report had nowhere to go (page closed mid-read)");
 }
 
 // Only sessions Dante started are reported. The roster sees every terminal on
@@ -456,7 +473,9 @@ async function reportAttention(event) {
   log(`session needs attention: ${line}`);
   // Skipped when a watcher is pending for this exact session -- it will
   // report the blocked state itself, with the actual read-back, the moment
-  // the next roster tick sees it -- or has already reported it moments ago.
+  // the next roster tick sees it -- or has already reported it moments ago
+  // (onRoster forgets that report the moment the session is seen working
+  // again, so this never silences a later, unrelated block).
   // A needs-attention line and a watcher's "is blocked, sir" line about the
   // same session seconds apart is a machine reading a list. Not deleted from
   // watchReported here either way: the session has not ended, and
@@ -1474,6 +1493,11 @@ async function dispatchStop(send, session, preamble, roster) {
     if (verdict.stopped) {
       // Anything still waiting for it can never be delivered now.
       takeQueued(memoryStore, record.sessionId);
+      // A watch on it too: left in place it would fire "gone" on the next
+      // tick, spend a read-back, and announce that the session finished --
+      // seconds after Krane stopped it on purpose, and in words that say the
+      // opposite of what happened.
+      if (watchers.cancel(record.sessionId)) log(`no longer watching ${record.name}: stopped`);
       // Noted so the report when it leaves the roster says it was stopped rather
       // than that it finished -- which are different things to read at midnight.
       // Only for sessions Dante started: writing a record here for a terminal

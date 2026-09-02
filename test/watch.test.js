@@ -8,6 +8,7 @@ import {
   createWatchers,
   describeFired,
   refuseWatch,
+  resumedAmong,
   unwatchVerdict,
   watchVerdict,
   watchingLine,
@@ -229,6 +230,30 @@ test("several watches fire independently in one tick", () => {
   assert.equal(watchers.has("s1"), false);
   assert.equal(watchers.has("s2"), false);
   assert.equal(watchers.has("s3"), true);
+});
+
+// ---------------------------------------------------------------------------
+// resumedAmong
+// ---------------------------------------------------------------------------
+
+test("a reported session seen working again is returned, so its report can be forgotten", () => {
+  const reported = new Set(["s1", "s2"]);
+  const roster = [working(), working({ sessionId: "s2", state: undefined, status: "busy" })];
+  assert.deepEqual(resumedAmong(reported, roster), ["s1", "s2"]);
+});
+
+test("a reported session that is idle, blocked, or gone from the roster is not returned", () => {
+  const reported = new Set(["s1", "s2", "s3"]);
+  const roster = [working({ state: "done" }), working({ sessionId: "s2", state: "blocked" })];
+  assert.deepEqual(resumedAmong(reported, roster), []);
+});
+
+test("a working session nobody reported on is left alone, and a failed listing forgets nothing", () => {
+  const reported = new Set(["s9"]);
+  assert.deepEqual(resumedAmong(reported, [working()]), []);
+  for (const roster of [null, undefined, "not a roster", {}]) {
+    assert.deepEqual(resumedAmong(new Set(["s1"]), roster), [], String(roster));
+  }
 });
 
 // ---------------------------------------------------------------------------
