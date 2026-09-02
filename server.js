@@ -60,7 +60,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace,
-  setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
+  setMainRepo, getMainRepo, resolveRepoAlias, resolveRepoRef, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
   applyNoteLimitsTag, getNoteLimits,
@@ -749,6 +749,24 @@ async function propose(send, conv, intent, run) {
   return true;
 }
 
+// findTarget's alias cross-check (lib/confirm.js) is only meaningful when
+// repo= actually names a known workspace. It often does not: toSession copies
+// every key onto every verb, so a tag as ordinary as
+// `verb=stop number="3" repo="jarvis-1-fix-tests"` puts a session NAME in the
+// repo field, not a repository -- and passing that through as `alias` would
+// have findTarget refuse a perfectly good number with "Session three is in
+// jarvis, not jarvis-1-fix-tests, sir." An unmatched letter is the same
+// mistake from the other direction: "Z", which resolveRepoRef could not turn
+// into an alias, must never be spoken back as "not Z, sir" as though Z named
+// something. So the cross-check is only ever handed a value already proven to
+// name a real workspace -- getWorkspace's own alias, not whatever session.repo
+// happened to hold -- and undefined otherwise, which findTarget already
+// treats as "nothing to check".
+function repoCrossCheckAlias(repo) {
+  const workspace = getWorkspace(memoryStore, repo);
+  return workspace ? workspace.alias : undefined;
+}
+
 // The session equivalent of propose(), for the four verbs that always need a
 // yes (see lib/confirm.js's CONFIRMED_VERBS). Unlike propose(), this never
 // falls through to an unconfirmed dispatch: a tell, interrupt or stop that
@@ -765,7 +783,9 @@ async function proposeSession(send, conv, session, roster) {
     // pre-parsed: findTarget itself now tells a garbled number apart from no
     // number at all, and pre-parsing here would collapse that distinction
     // before it ever got there.
-    const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
+    const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
+      number: session.number, alias: repoCrossCheckAlias(session.repo),
+    });
     // Every hop the name takes, on one line: what the tag actually carried,
     // what query that became, and what it resolved to or why it did not -- so
     // a truncated or mismatched name shows up here rather than only as a
@@ -1442,6 +1462,12 @@ async function resolveSession(send, roster, session, preamble) {
   const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
     number: session.number,
     sessionId: session.sessionId,
+    // Inert on this call whenever it matters least: resolveSession runs
+    // after a "yes" with number left undefined and a sessionId already in
+    // hand, and findTarget's own alias cross-check only fires on the number
+    // path. Passed anyway so all three findTarget call sites stay uniform
+    // rather than two of them remembering to pass it and one not.
+    alias: repoCrossCheckAlias(session.repo),
   });
   if (refusal) {
     await say(send, joinSpoken(preamble, refusal));
@@ -2363,6 +2389,7 @@ wss.on("connection", (ws) => {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
         notes: notesForPrompt,
+        workspaces: workspacesForClient(memoryStore),
         // Names, not sessionIds -- the persona teaches the WATCHING line as
         // something read out by name, the same as every other machine-state
         // line, and the model never sees a sessionId anywhere else either.
@@ -2467,6 +2494,24 @@ wss.on("connection", (ws) => {
         // ever touches it -- so a truncated or mangled name= can be traced back
         // to whether the model wrote it wrong or the parser cut it short.
         log(`session tag raw=${JSON.stringify(spoken)}`);
+
+        // Resolved here, before anything branches on session.repo -- above
+        // even the interview check just below, which returns early and
+        // stores whatever session.repo holds into conv.interview.repo via
+        // noteInterview. A letter Krane said ("repo B") has to become the
+        // real alias before that store happens: conv.interview.repo is what
+        // the interviewing activity line's subject reads, and it is what the
+        // brief's own Where: line is composed from once the interview
+        // finishes (composeBrief, below and near dispatchSession) -- both
+        // would otherwise read back the letter itself rather than the
+        // repository it names. Run for every verb, not just start: a tell or
+        // a stop can carry "repo B" on its own tag just as easily, and
+        // vetCommand just below never touches .repo, so resolving before it
+        // costs nothing.
+        if (typeof session.repo === "string" && session.repo) {
+          session.repo = resolveRepoRef(memoryStore, session.repo);
+        }
+
         // The question IS the reply here: it is not confirmed and not
         // dispatched, because letting it reach dispatchSession would speak
         // dispatchSession's unknown-verb fallback ("I can start a session,
@@ -2528,13 +2573,19 @@ wss.on("connection", (ws) => {
 
         const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
 
-        // Resolved once, here, before this session is ever described back as
-        // a confirmation sentence or an activity line -- both of those and the
-        // eventual dispatch must all name the same repository, and reading
-        // session.repo straight off the tag in three different places is how
-        // they used to disagree. An interview's own answer outranks the main
-        // repository, since it is the more specific thing actually said; a
-        // named repo is untouched either way.
+        // The main-repo default for a start with nothing named -- the only
+        // repo-related thing left to do here, now that resolveRepoRef has
+        // already run once, above, before this session was ever described
+        // back as a confirmation sentence or an activity line. That single
+        // resolve is also why fromInterview needs no resolving of its own:
+        // conv.interview.repo was written by noteInterview from this same
+        // session.repo on the earlier turn that asked the interview
+        // question, which had already been run through resolveRepoRef by
+        // the same block -- so a letter never reaches this point unresolved,
+        // whether it came fresh on this tag or carried forward from the
+        // interview. An interview's own answer outranks the main repository,
+        // since it is the more specific thing actually said; a named repo is
+        // untouched either way.
         if (session.verb === "start") {
           session.repo = session.repo?.trim() ? session.repo : (fromInterview || resolveRepoAlias(memoryStore, "") || session.repo);
         }
@@ -2571,7 +2622,9 @@ wss.on("connection", (ws) => {
           // the words will actually reach.
           let name = "";
           if (session.verb !== "start") {
-            const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
+            const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
+              number: session.number, alias: repoCrossCheckAlias(session.repo),
+            });
             if (refusal) {
               log(`${session.verb} refused before read-back: ${refusal}`);
               dropAnswered(conv.unanswered, answering);

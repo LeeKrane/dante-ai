@@ -215,6 +215,56 @@ test("exactly one match returns the record and no refusal", () => {
 });
 
 // ---------------------------------------------------------------------------
+// findTarget: the repo cross-check on a number
+// ---------------------------------------------------------------------------
+
+test("a repo alongside a number that agrees with the roster resolves normally", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { number: 1, alias: "jarvis" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("a repo alongside a number that disagrees with the roster is refused, naming the real one", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 3, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { number: 3, alias: "fitness" }), {
+    record: null,
+    refusal: "Session three is in jarvis, not fitness, sir.",
+  });
+});
+
+test("the repo cross-check is case-insensitive, since a spoken letter resolves to whatever case the alias is stored in", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { number: 1, alias: "JARVIS" }), { record: roster[0], refusal: null });
+});
+
+test("the repo cross-check is skipped, not refused, when the record carries no alias at all", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1 }];
+  assert.deepEqual(findTarget(roster, "", { number: 1, alias: "fitness" }), { record: roster[0], refusal: null });
+});
+
+test("addressing by name never applies the repo cross-check, even when it would disagree", () => {
+  // The name path already had the name to go on -- a mismatched alias here
+  // would just be the same wrong guess said twice, not new information.
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "jarvis-1-fix-tests", { alias: "fitness" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("addressing by sessionId never applies the repo cross-check either", () => {
+  // A sessionId re-targets a session a proposal already resolved once; there
+  // is nothing new to cross-check on that second lookup.
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { sessionId: "a", alias: "fitness" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+// ---------------------------------------------------------------------------
 // describeIntent
 // ---------------------------------------------------------------------------
 

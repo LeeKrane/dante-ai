@@ -135,6 +135,14 @@ test("the persona explains that a session with no repo named starts in the main 
   assert.match(persona, /\[MEMORY:SET main=/);
 });
 
+test("the persona explains the lettered repository form, and how it combines with a session number", () => {
+  const persona = brain.buildPersona();
+  assert.match(persona, /Repositories: machine-state line \(A, B, C\.\.\.\)/);
+  assert.match(persona, /repo=<letter> or repo=<alias>/);
+  assert.match(persona, /Session numbers are global across every repository/);
+  assert.match(persona, /number="3" and.*repo=B/);
+});
+
 test("the persona explains the note-memory limit keys, or the model never knows they exist", () => {
   const persona = brain.buildPersona();
   assert.match(persona, /memory-max-mb=<n>/);

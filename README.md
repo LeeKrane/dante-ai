@@ -169,6 +169,14 @@ it sees the ones you started in a terminal too — and you can drive them:
   instead of its name; a number is only ever resolved against the current
   list, and a number said about one that has since stopped is refused rather
   than guessed at.
+- Repositories are lettered A, B, C... in the panel, in that same order —
+  main first, then alphabetical — so the header above each group of rows
+  reads *"A: jarvis"*, *"B: fitness"*, and so on. Letters are reassigned on
+  every view exactly the way the numbers are, never stored, so A always
+  names whichever repository is currently main. *"Start a session in repo
+  B"* and *"session three in repo B"* both work out loud, the letter
+  standing in for the repository's name the same way a number stands in for
+  a session.
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `fix-failing-builder-test`, off the
   task alone — no repository or counter baked into the name, since the panel
