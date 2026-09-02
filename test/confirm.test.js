@@ -11,6 +11,7 @@ import {
   needsConfirmation,
   parseSessionNumber,
   readAnswer,
+  readConfirmingAnswer,
   readTarget,
 } from "../lib/confirm.js";
 
@@ -597,6 +598,45 @@ test("an answer is short, and a sentence is not an answer", () => {
 test("a sentence that says both ways is a correction, never a yes", () => {
   assert.equal(readAnswer("yes but in fitness, not jarvis"), "amend");
   assert.equal(readAnswer("no, go ahead"), "amend");
+});
+
+// ---------------------------------------------------------------------------
+// readConfirmingAnswer
+// ---------------------------------------------------------------------------
+
+test("four words or fewer reads exactly like readAnswer", () => {
+  for (const text of ["yes", "go ahead", "do it", "sure", "yes that's fine", "not now"]) {
+    assert.equal(readConfirmingAnswer(text), readAnswer(text), text);
+  }
+  for (const text of ["no", "nope", "cancel", "don't"]) {
+    assert.equal(readConfirmingAnswer(text), readAnswer(text), text);
+  }
+});
+
+test("a long, plain yes to the read-back is still a yes, not a correction", () => {
+  // The asymmetry this exists for: misreading a genuine yes here sends the
+  // model around to propose again, and the whole read-back gets spoken a
+  // second time -- the very duplicate this replaced.
+  assert.equal(readConfirmingAnswer("yes that is exactly right"), "yes");
+  assert.equal(readConfirmingAnswer("go ahead that is right"), "yes");
+  assert.equal(readConfirmingAnswer("yes that's right, nothing to change"), "yes");
+  assert.equal(readConfirmingAnswer("yes that's actually perfect"), "yes");
+});
+
+test("a long answer that corrects something, even while agreeing, is a correction", () => {
+  assert.equal(readConfirmingAnswer("yes but only the test file"), "amend");
+  assert.equal(readConfirmingAnswer("no, the other test not that one"), "amend");
+  assert.equal(readConfirmingAnswer("yes, actually make it the whole repo"), "amend");
+  assert.equal(readConfirmingAnswer("yes and also skip the lint"), "amend");
+});
+
+test("a word that names a real content change, not a filler word, reads as a correction even though a yes word is present", () => {
+  // The allowlist's whole point: a word this recognises neither as a YES
+  // word nor as filler is where a correction hides, and a blacklist of
+  // correction words could never enumerate every noun that might show up
+  // there.
+  assert.equal(readConfirmingAnswer("sure, in the fitness repo"), "amend");
+  assert.equal(readConfirmingAnswer("okay so make it the whole test suite"), "amend");
 });
 
 // ---------------------------------------------------------------------------

@@ -259,20 +259,22 @@ test("the persona teaches the brief, and the two characters it may not contain",
   assert.match(persona, /square brackets/);
 });
 
-test("the persona never proposes a start before a confirmation question, and has no question cap", () => {
+test("the persona never proposes a start before its brief is read back, and has no question cap", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /have=/);
-  assert.match(persona, /confirming=/);
-  assert.match(persona, /confirmed=/);
   assert.match(persona, /no question limit/i);
   assert.match(persona, /confident/i);
   assert.match(persona, /Done when:/);
   assert.match(persona, /machine-state lines/);
-  // The sentence the whole rule hangs on: a start is read back even when the
-  // request looked complete, and the count is scaled, never padded.
-  assert.match(persona, /Never skip that, for a start, a tell or an interrupt alike, even when the request already states everything/);
-  assert.match(persona, /one or two questions, a complex one in three to five/);
-  assert.match(persona, /do not pad/);
+  // Interviewing is only for what is genuinely open -- a complete request
+  // gets no question of its own at all.
+  assert.match(persona, /gets no question at all/);
+  // The sentence the whole confirming rule hangs on: the machine, not the
+  // model, reads the brief back, once, and a correction sends the model
+  // around to propose again rather than to write a read-back of its own.
+  assert.match(persona, /read back to Krane for you/);
+  assert.match(persona, /never write a read-back/);
+  assert.match(persona, /propose again/);
   assert.doesNotMatch(persona, /Skip the interview when/);
 });
 
