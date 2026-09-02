@@ -578,7 +578,20 @@ function repoHeaderEl(group) {
   const name = document.createElement("span");
   name.className = "repo-name";
   name.textContent = group.alias;
-  header.append(star, name);
+  header.append(star);
+  // The letter this repository is A, B, C... under on this tick -- see
+  // lib/memory.js:repoLetter. Only when the group actually has one: the
+  // catch-all "elsewhere" group and a workspace from an older server both
+  // carry "" here, and an empty span would just be blank space to line up
+  // against nothing. Prepended before the name span, after the star column,
+  // so the header reads "[star] A: jarvis".
+  if (group.letter) {
+    const letter = document.createElement("span");
+    letter.className = "repo-letter";
+    letter.textContent = `${group.letter}:`;
+    header.append(letter);
+  }
+  header.append(name);
   if (group.main) {
     header.title = "main repository";
   } else if (!group.other) {

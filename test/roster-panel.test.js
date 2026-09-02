@@ -186,3 +186,40 @@ test("no workspaces and no sessions is an empty list of groups", () => {
   assert.deepEqual(groupsFromRoster([], [], NOW), []);
   assert.deepEqual(groupsFromRoster(null, null, NOW), []);
 });
+
+test("a done row's clock stops where the server said it finished, whatever the page's clock says", () => {
+  const done = record({ state: "done", status: "idle", endedAt: NOW - 5_000 });
+  assert.equal(rowsFromRoster([done], NOW)[0].elapsed, "1m");
+  // Painted again a minute later: same answer. This is the whole point --
+  // before, every repaint counted on from startedAt.
+  assert.equal(rowsFromRoster([done], NOW + 60_000)[0].elapsed, "1m");
+});
+
+test("a row without an end time keeps counting against the page's clock", () => {
+  assert.equal(rowsFromRoster([record({ endedAt: null })], NOW)[0].elapsed, "1m 5s");
+  assert.equal(rowsFromRoster([record({ endedAt: null })], NOW + 60_000)[0].elapsed, "2m 5s");
+});
+
+test("letters ride through from workspaces, in the order the server sent them", () => {
+  const workspaces = [
+    workspace({ alias: "fitness", main: true, letter: "A" }),
+    workspace({ alias: "jarvis", letter: "B" }),
+  ];
+  const groups = groupsFromRoster(workspaces, [], NOW);
+  assert.deepEqual(groups.map((g) => [g.alias, g.letter]), [["fitness", "A"], ["jarvis", "B"]]);
+});
+
+test("the elsewhere catch-all has no letter", () => {
+  const workspaces = [workspace({ alias: "jarvis", main: true, letter: "A" })];
+  const groups = groupsFromRoster(
+    workspaces,
+    [record({ sessionId: "ghost", alias: "long-gone" })],
+    NOW,
+  );
+  assert.equal(groups.find((g) => g.alias === "elsewhere").letter, "");
+});
+
+test("a workspace with no letter, from an older server, gets an empty one rather than undefined", () => {
+  const groups = groupsFromRoster([workspace({ alias: "jarvis", main: true })], [], NOW);
+  assert.equal(groups[0].letter, "");
+});

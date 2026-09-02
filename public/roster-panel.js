@@ -63,7 +63,12 @@ function rowFromRecord(record, now) {
     // the same session.
     number: Number.isInteger(record.number) ? record.number : null,
     condition: condition(record),
-    elapsed: elapsedLabel(now - record.startedAt),
+    // A finished session's clock stops where the server says it finished
+    // (endedAt, stamped by the roster poller the tick it first saw the session
+    // done); a live one counts on from startedAt against this tick's clock.
+    // A local copy of lib/agents.js's completedIn, for the same reason
+    // elapsedLabel above is a local copy: public/ cannot import from lib/.
+    elapsed: elapsedLabel((Number.isFinite(record.endedAt) ? record.endedAt : now) - record.startedAt),
   };
 }
 
@@ -115,7 +120,18 @@ export function groupsFromRoster(workspaces, roster, now = Date.now()) {
     .slice(0, MAX_ROWS)
     .map((record) => rowFromRecord(record, now));
 
-  const groups = spaces.map((w) => ({ alias: w.alias, main: Boolean(w.main), other: false, sessions: [] }));
+  // `letter` rides straight off the workspace the server already lettered
+  // (lib/memory.js's workspacesForClient) -- a string when this tick has one,
+  // "" when it does not, so app.js never has to tell "no letter" apart from
+  // "the string 'undefined'" the way it would if this just forwarded whatever
+  // `w.letter` happened to be.
+  const groups = spaces.map((w) => ({
+    alias: w.alias,
+    main: Boolean(w.main),
+    letter: typeof w.letter === "string" ? w.letter : "",
+    other: false,
+    sessions: [],
+  }));
   const byAlias = new Map(groups.map((g) => [g.alias, g]));
 
   const elsewhere = [];
@@ -125,7 +141,9 @@ export function groupsFromRoster(workspaces, roster, now = Date.now()) {
     else elsewhere.push(row);
   }
 
-  if (elsewhere.length > 0) groups.push({ alias: "elsewhere", main: false, other: true, sessions: elsewhere });
+  if (elsewhere.length > 0) {
+    groups.push({ alias: "elsewhere", main: false, letter: "", other: true, sessions: elsewhere });
+  }
   return groups;
 }
 
