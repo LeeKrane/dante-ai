@@ -682,6 +682,10 @@ async function proposeSession(send, conv, session, roster) {
     );
     if (refusal) {
       await say(send, refusal);
+      // Nothing else resets the label after a proposal that never happened --
+      // without this the page would keep reading "interviewing" or
+      // "confirming" over a refusal about a session that does not exist.
+      activity(send, null);
       return;
     }
     target = record;
@@ -695,6 +699,10 @@ async function proposeSession(send, conv, session, roster) {
     const question = clarify({ session, target });
     log(`session clarified rather than proposed: ${question}`);
     await say(send, question);
+    // Same reasoning as the refusal above: a clarifying question about the
+    // missing detail is not a proposal, and the page should not keep saying
+    // "confirming" over it.
+    activity(send, null);
     return;
   }
 
@@ -820,7 +828,12 @@ async function answerHeld(send, conv, text) {
     return false;
   }
 
-  const answer = readConfirmingAnswer(text);
+  // The escape phrase said as the answer to the read-back is Krane overriding
+  // it out loud, not answering it -- "stop asking" here means the same thing
+  // it means anywhere else in the interview, and reading it as a no or a
+  // correction would be the opposite of what he said.
+  const escaped = wantsToProceed(text);
+  const answer = escaped ? "yes" : readConfirmingAnswer(text);
   conv.held = null;
   if (answer !== "yes") {
     conv.interview = withdrawConfirming(conv.interview);
@@ -831,7 +844,7 @@ async function answerHeld(send, conv, text) {
     return true;
   }
 
-  log(`read-back confirmed: ${held.spoken}`);
+  log(escaped ? "read-back confirmed by escape phrase" : `read-back confirmed: ${held.spoken}`);
   const session = {
     ...held.session,
     brief: composeBrief({
@@ -841,13 +854,6 @@ async function answerHeld(send, conv, text) {
   };
   conv.interview = null;
   await proposeSession(send, conv, session, await rosterPoller.read({ maxAgeMs: 0 }));
-  // proposeSession only sets activity itself on the path that actually
-  // proposes (conv.proposal ends up non-null); on a refusal (the resolved
-  // session vanished) or a clarify (a tell with nothing to say) it speaks and
-  // returns without touching activity at all, which would otherwise leave
-  // the page reading "confirming" for a question that already has its
-  // answer, or a refusal, spoken over it.
-  if (!conv.proposal) activity(send, null);
   return true;
 }
 
@@ -2455,9 +2461,14 @@ wss.on("connection", (ws) => {
             conv.unanswered.slice(0, answering),
           );
           const held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
-          activity(send, "confirming", { subject: nextInterview.repo || undefined });
-          log(`confirming: ${session.verb} held (facets=${facets.join(",")}, asked=${nextInterview.asked}): ${JSON.stringify(question)}`);
+          // activity and the log both wait for say() to resolve true, same
+          // reasoning as the comment above: a dropped clip means Krane never
+          // heard the question, so the page must not label itself
+          // "confirming" and the log must not claim a hold that never
+          // actually happened.
           if (await say(send, question, undefined, () => gate.isCurrent(token))) {
+            activity(send, "confirming", { subject: nextInterview.repo || undefined });
+            log(`confirming: ${session.verb} held (facets=${facets.join(",")}, asked=${nextInterview.asked}): ${JSON.stringify(question)}`);
             conv.interview = nextInterview;
             conv.held = held;
             dropAnswered(conv.unanswered, answering);

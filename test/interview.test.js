@@ -48,6 +48,7 @@ test("a first interview tag starts a state that counts one question, keeps the n
     at: 1000,
     proceed: false,
     spokenFor: false,
+    withdrawn: false,
   });
 });
 
@@ -80,6 +81,7 @@ test("a note and a said line are both appended and the count goes up, and the in
     at: 2000,
     proceed: false,
     spokenFor: false,
+    withdrawn: false,
   });
   assert.deepEqual(first, snapshot);
 });
@@ -113,6 +115,7 @@ test("an interview that has expired starts over rather than continuing", () => {
     at: now,
     proceed: false,
     spokenFor: false,
+    withdrawn: false,
   });
 });
 
@@ -266,7 +269,7 @@ test("a start, tell or interrupt is held for a read-back until Krane says to pro
 test("withdrawing the read-back puts its facets back to unconfirmed and leaves the rest alone", () => {
   const state = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", confirmed: "goal", confirming: "where,constraints,done" }, 1000);
   const withdrawn = withdrawConfirming(state);
-  assert.deepEqual(withdrawn, { ...state, confirming: [] });
+  assert.deepEqual(withdrawn, { ...state, confirming: [], withdrawn: true });
   assert.deepEqual(unconfirmedFacets(withdrawn), ["where", "constraints", "done"]);
   assert.equal(readyToPropose(withdrawn, 1000), false);
   assert.equal(withdrawConfirming(null), null);
@@ -351,7 +354,10 @@ test("stop alone is a negation rather than the stop-asking escape, and a refusal
 // A hand-built state for the block tests, with the confirmation lists defaulting
 // to empty so a test about coverage does not have to spell them out.
 function stateOf(fields) {
-  return { name: "", notes: [], said: [], confirming: [], confirmed: [], proceed: false, spokenFor: false, ...fields };
+  return {
+    name: "", notes: [], said: [], confirming: [], confirmed: [],
+    proceed: false, spokenFor: false, withdrawn: false, ...fields,
+  };
 }
 
 const ASK_FOR_GAP =
@@ -363,7 +369,7 @@ test("the block reports nothing covered yet and asks for the biggest gap", () =>
   assert.equal(
     interviewBlock(state, 1000),
     "INTERVIEW in progress: planning a start. 1 question asked. " +
-      "Covered: none reported yet. Still open: goal, where, constraints, done. Confirmed: none yet. " +
+      "Covered: none reported yet. Still open: goal, where, constraints, done. " +
       ASK_FOR_GAP,
   );
 });
@@ -376,7 +382,7 @@ test("the block says every facet is covered and tells it to propose, never to wr
   assert.equal(
     interviewBlock(state, 2000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
-      "Covered: goal, where, constraints, done. Still open: nothing. Confirmed: none yet. " +
+      "Covered: goal, where, constraints, done. Still open: nothing. " +
       "Learned so far: n1; n2. " +
       "Every facet is covered: propose now with the start tag carrying task= and brief=; the brief is " +
       "read back to Krane for you before anything is proposed, so never write a read-back of your " +
@@ -419,19 +425,18 @@ test("the block says when the read-back was the machine's, not the model's", () 
   assert.match(interviewBlock(state, 2000), /The read-back was spoken for you, from your brief\. Krane's answer/);
 });
 
-test("a withdrawn spoken-for state -- the machine's read-back answered no or corrected -- produces the loop-back tail", () => {
-  // spokenFor survives withdrawConfirming; confirming does not. That pair is
-  // the one signal that says: what Krane says next is a correction to a
-  // read-back the machine spoke, not an answer to whatever the model itself
-  // last asked.
+test("a withdrawn state -- the machine's read-back answered no or corrected -- produces the loop-back tail", () => {
+  // withdrawn is the explicit signal withdrawConfirming sets: what Krane
+  // says next is a correction to a read-back the machine spoke, not an
+  // answer to whatever the model itself last asked.
   const state = stateOf({
     verb: "start", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
-    confirmed: [], confirming: [], asked: 2, at: 2000, spokenFor: true,
+    confirmed: [], confirming: [], asked: 2, at: 2000, spokenFor: true, withdrawn: true,
   });
   assert.equal(
     interviewBlock(state, 2000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
-      "Covered: goal, where, constraints, done. Still open: nothing. Confirmed: none yet. " +
+      "Covered: goal, where, constraints, done. Still open: nothing. " +
       "Your brief was read back to Krane by the machine, and he said no or corrected it. What he " +
       "says now is the correction: fold it in, and if it leaves a facet open, ask about that one " +
       "thing only, one question. If instead he dropped it, say so and propose nothing. Otherwise " +
@@ -460,7 +465,7 @@ test("the block names both the covered facets and the open ones", () => {
   assert.equal(
     interviewBlock(state, 2000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
-      "Covered: goal, where. Still open: constraints, done. Confirmed: none yet. " +
+      "Covered: goal, where. Still open: constraints, done. " +
       ASK_FOR_GAP,
   );
 });
@@ -471,7 +476,7 @@ test("a proceed beats the facet coverage no matter how much is still open", () =
   assert.equal(
     interviewBlock(proceeding, 1000),
     "INTERVIEW in progress: planning a start in jarvis. 3 questions asked. " +
-      "Covered: goal. Still open: where, constraints, done. Confirmed: none yet. " +
+      "Covered: goal. Still open: where, constraints, done. " +
       "Krane asked you to proceed: ask nothing more, propose now with what you have.",
   );
   assert.equal(markProceed(null), null);
@@ -484,7 +489,7 @@ test("what Krane said is read back in order, numbered", () => {
   assert.equal(
     interviewBlock(state, 1000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
-      "Covered: none reported yet. Still open: goal, where, constraints, done. Confirmed: none yet. " +
+      "Covered: none reported yet. Still open: goal, where, constraints, done. " +
       "Krane said, in order: (1) fix the tests (2) in jarvis. " +
       ASK_FOR_GAP,
   );

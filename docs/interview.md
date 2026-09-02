@@ -190,9 +190,13 @@ reasoning honest across turns and across a possible restart.
   `readAnswer`: past its four-word cutoff it still reads a long, plain "yes" as
   a yes — "yes, that's exactly right" — because misreading a genuine yes as a
   correction here is what re-proposes the whole thing and gets it read back a
-  second time, the very duplicate this replaced; anything past four words that
-  isn't a clean yes, or that carries a correction word (`but`, `except`,
-  `actually`, and the like), reads as a correction instead. A yes hands exactly
+  second time, the very duplicate this replaced. It reads a long answer as a yes
+  only when every word is affirmation vocabulary — a yes word plus filler like
+  "that's", "exactly", "right" — because an unknown content word is where a
+  correction hides ("sure, in the fitness repo"), and a blacklist of correction
+  words can never name every noun; anything else past four words reads as a
+  correction. An escape phrase ("just go", "stop asking") said in answer counts
+  as a yes too. A yes hands exactly
   the held tag on to the ordinary "Shall I, sir?" proposal, with the interview
   folded into its brief; a bare no withdraws the read-back (`withdrawConfirming`,
   activity back to `"interviewing"`) and asks what Dante got wrong; anything
