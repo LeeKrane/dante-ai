@@ -33,8 +33,8 @@ import {
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
 import {
-  DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, discussionSection, listNotes,
-  notesContext, pruneNotes, recentNotes, sessionNoteSpec, topicIsLive, writeSection,
+  DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, foldNotes, listNotes,
+  pruneNotes, recordDiscussion, sessionNoteSpec, writeSection,
 } from "./lib/notes.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
@@ -838,6 +838,13 @@ async function answerHeld(send, conv, text) {
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+// The one place "notes pruned: a, b" gets built, so all four call sites --
+// startup, a note-limit change, a session read, and a discussion appended to
+// one -- say it identically instead of repeating the same guarded log line.
+function logPruned(list, label = "notes pruned") {
+  if (Array.isArray(list) && list.length > 0) log(`${label}: ${list.join(", ")}`);
+}
+
 // What earlier runs left behind. One server serves one project, so the whole
 // store is keyed by the directory it was started in. Read once here; every
 // write below goes through saveStore, which is atomic.
@@ -854,7 +861,7 @@ const PROJECT_KEY = process.cwd();
   const entries = listNotes(NOTES_DIR);
   const totalBytes = entries.reduce((sum, e) => sum + (Number.isFinite(e.bytes) ? e.bytes : 0), 0);
   log(`notes: ${entries.length} file(s), ${(totalBytes / 1024).toFixed(1)} KB in ${NOTES_DIR}`);
-  if (bootPruned.length > 0) log(`notes pruned at startup: ${bootPruned.join(", ")}`);
+  logPruned(bootPruned, "notes pruned at startup");
 }
 
 // The directory the server was started in is a workspace by definition -- it is
@@ -1540,8 +1547,16 @@ async function dispatchRead(send, session, preamble, roster, conv) {
   // a real transcript on disk -- this is only the wiring that speaks the
   // refusal when there is one.
   const { record, refusal } = readTarget(roster, candidates, session);
+  // Every path out of this function speaks conv?.flag alongside whatever it
+  // was already going to say, and settles the tracker once that speech
+  // actually happened -- a refusal or a failed read is still a turn that
+  // heard the caveat, and skipping it here would be exactly the silent loss
+  // conv.notes.settle()'s own comment describes: computed but never spoken,
+  // and then never offered again because pending() only tracks WHETHER
+  // something has been reported, not whether it was ever actually said.
   if (refusal) {
-    await say(send, joinSpoken(preamble, refusal));
+    const spoken = await say(send, joinSpoken(preamble, refusal, conv?.flag ?? ""));
+    if (spoken) conv?.notes?.settle();
     return;
   }
 
@@ -1556,12 +1571,14 @@ async function dispatchRead(send, session, preamble, roster, conv) {
 
     if (!text) {
       log(`read ${record.name} failed: ${reason}`);
-      await say(send, joinSpoken(
+      const spoken = await say(send, joinSpoken(
         preamble,
         reason === "no-transcript"
           ? `${record.name} left nothing I can read, sir.`
           : `I could not read ${record.name} back, sir.`,
+        conv?.flag ?? "",
       ));
+      if (spoken) conv?.notes?.settle();
       return;
     }
 
@@ -1580,7 +1597,7 @@ async function dispatchRead(send, session, preamble, roster, conv) {
     );
     if (written) {
       log(`note saved ${spec.topic}`);
-      if (written.pruned.length > 0) log(`notes pruned: ${written.pruned.join(", ")}`);
+      logPruned(written.pruned);
       // conv is null when dispatchRead is reached with no conversation state
       // to track against (a call site added later that has none, say) -- the
       // note is still saved above either way, since the file on disk is not
@@ -1589,7 +1606,11 @@ async function dispatchRead(send, session, preamble, roster, conv) {
       if (conv) {
         conv.notes.touch(written.note);
         conv.topic = { topic: spec.topic, at: now };
-        const flag = describeContradictions(conv.notes.contradictions());
+        // pending(), not settled here: a read can itself create the
+        // contradiction (two reads of the same session disagreeing on a
+        // fact), and this only computes the sentence -- settle(), below,
+        // is what marks it reported, once it has actually been spoken.
+        const flag = describeContradictions(conv.notes.pending(), now);
         if (flag) conv.flag = joinSpoken(conv.flag, flag);
       }
     }
@@ -1604,12 +1625,16 @@ async function dispatchRead(send, session, preamble, roster, conv) {
     // entirely, worth hearing only once the actual answer has been. conv?.flag
     // ?? "" so a null conv (see above) speaks the plain answer rather than
     // throwing on a property read that has nothing behind it.
-    await say(send, joinSpoken(
+    const spoken = await say(send, joinSpoken(
       preamble,
       record.running === true ? `${record.name} is still working, sir. So far: ${text}` : text,
       conv?.flag ?? "",
     ));
-    if (conv) conv.flag = "";
+    // settle(), not a conv.flag reset: the flag string itself is left for
+    // the outer finally in the connection handler to clear unconditionally.
+    // settle() is the lasting half of "this was spoken" -- it marks every
+    // contradiction just spoken as reported, independent of that string.
+    if (spoken) conv?.notes?.settle();
   } finally {
     activity(send, null);
   }
@@ -2156,19 +2181,20 @@ wss.on("connection", (ws) => {
       // finished session appears in no listing, so without it the model has
       // never heard the name it is being asked about.
       // Folding a note into the prompt counts as accessing it, the same as a
-      // read does -- so every note this turn is about to fold in is touched
-      // before it is folded, and any contradiction that touch surfaces against
-      // a note touched earlier this conversation is queued in conv.flag to be
-      // spoken alongside whatever this turn ends up saying.
-      const folded = recentNotes(NOTES_DIR);
-      for (const note of folded) conv.notes.touch(note);
-      const flag = describeContradictions(conv.notes.contradictions());
-      if (flag) conv.flag = joinSpoken(conv.flag, flag);
+      // read does -- foldNotes touches every recent note into conv.notes and
+      // hands back both the machine-state block to fold into this turn's
+      // prompt and the sentence for whatever contradiction that touch
+      // surfaced against a note touched earlier this conversation. A plain
+      // assignment, not a join: conv.flag is always "" here, since the outer
+      // finally below clears it unconditionally at the end of every turn,
+      // spoken or not.
+      const { context: notesForPrompt, flag } = foldNotes(conv.notes, NOTES_DIR);
+      conv.flag = flag;
 
       const asked = mergeTurns(conv.unanswered, {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
-        notes: notesContext(folded),
+        notes: notesForPrompt,
       });
       const answering = conv.unanswered.length;
 
@@ -2231,7 +2257,7 @@ wss.on("connection", (ws) => {
           saveStore(memoryStore);
           const pruned = pruneNotes(NOTES_DIR, getNoteLimits(memoryStore));
           log(`note limits set ${JSON.stringify(limits)}`);
-          if (pruned.length > 0) log(`notes pruned: ${pruned.join(", ")}`);
+          logPruned(pruned);
         }
         const saved = applyMemoryTag(memoryStore, PROJECT_KEY, memory);
         if (saved) {
@@ -2431,26 +2457,28 @@ wss.on("connection", (ws) => {
         if (!held) await dispatchAction(send, conv, action, reply);
       } else if (reply) {
         // Captured before dropAnswered removes the prefix it addresses: `said`
-        // is exactly what this reply answered, and it is what a discussion
-        // section below records Krane as having said.
+        // is exactly what this reply answered, and it is what recordDiscussion
+        // below records Krane as having said.
         const said = conv.unanswered.slice(0, answering);
         if (await say(send, joinSpoken(conv.flag, reply), undefined, () => gate.isCurrent(token))) {
           dropAnswered(conv.unanswered, answering);
-          conv.flag = "";
+          // conv.flag itself is left for the outer finally below to clear.
+          // settle() is the lasting half of "this was spoken": it marks every
+          // contradiction just spoken as reported, so pending() omits it next
+          // turn -- independent of the transient string that carried it.
+          conv.notes.settle();
           // Only a plain reply is ever appended to the note a read just landed
           // in. A build or a session command is its own record already -- an
           // artifact on disk, a line in the recap log -- so appending it here
           // too would duplicate it; the discussion that follows a read is what
           // the note exists to keep, and this branch is the only place that
-          // discussion is heard.
-          if (topicIsLive(conv.topic, Date.now())) {
-            const section = discussionSection(said, reply, Date.now());
-            const written = section && writeSection(NOTES_DIR, conv.topic.topic, section, getNoteLimits(memoryStore));
-            if (written) {
-              conv.topic.at = Date.now();
-              log(`note updated ${conv.topic.topic}`);
-              if (written.pruned.length > 0) log(`notes pruned: ${written.pruned.join(", ")}`);
-            }
+          // discussion is heard. recordDiscussion covers the live-topic check,
+          // the empty-discussion check and the write in one call.
+          const recorded = recordDiscussion(NOTES_DIR, conv.topic, said, reply, Date.now(), getNoteLimits(memoryStore));
+          if (recorded) {
+            conv.topic = recorded.topic;
+            log(`note updated ${recorded.topic.topic}`);
+            logPruned(recorded.pruned);
           }
         }
       } else {

@@ -41,6 +41,8 @@ import {
   saveNote,
   writeSection,
   recentNotes,
+  foldNotes,
+  recordDiscussion,
 } from "../lib/notes.js";
 
 const withTempDir = (fn) => withTempDirIn("dante-notes-", fn);
@@ -401,6 +403,7 @@ test("findContradictions flags a differing fact between two notes sharing a subj
   assert.deepEqual(result, [
     {
       key: "task",
+      subject: "jarvis-3",
       newer: { topic: "jarvis-3-b", value: "ship", updated: 2000 },
       older: { topic: "jarvis-3-a", value: "build", updated: 1000 },
     },
@@ -465,25 +468,40 @@ test("describeContradictions returns an empty string for an empty list", () => {
   assert.equal(describeContradictions(null), "");
 });
 
-test("describeContradictions speaks the canonical single-contradiction sentence", () => {
+test("describeContradictions speaks the canonical single-contradiction sentence, naming the subject and never the topic slug", () => {
   const now = Date.parse("2026-08-25T12:00:00.000Z");
   const contradiction = {
     key: "task",
+    subject: "jarvis-3",
     newer: { topic: "jarvis-3-a1b2c3d4", value: "X", updated: now }, // today
     older: { topic: "jarvis-3-9f8e7d6c", value: "Y", updated: now - 3 * 24 * 60 * 60 * 1000 }, // a few days back
   };
   const sentence = describeContradictions([contradiction], now);
-  assert.match(sentence, /^Two of my notes disagree on task, sir: /);
-  assert.match(sentence, /jarvis-3-a1b2c3d4 from today says X/);
-  assert.match(sentence, /the older jarvis-3-9f8e7d6c from \w+ said Y/);
+  assert.match(sentence, /^Two of my notes on jarvis-3 disagree on task, sir: /);
+  assert.match(sentence, /today's says X/);
+  assert.match(sentence, /an older one from \w+ said Y/);
   assert.match(sentence, /I am going with the newer\.$/);
+  // The topic slugs' hex suffixes (a1b2c3d4, 9f8e7d6c) never reach the
+  // voice -- only the subject (the session name) does.
+  assert.doesNotMatch(sentence, /[0-9a-f]{8}/);
+});
+
+test("describeContradictions falls back to the newer note's topic when a contradiction carries no subject", () => {
+  const now = Date.now();
+  const contradiction = {
+    key: "task",
+    newer: { topic: "jarvis-3-a1b2c3d4", value: "X", updated: now },
+    older: { topic: "jarvis-3-9f8e7d6c", value: "Y", updated: now - 1000 },
+  };
+  const sentence = describeContradictions([contradiction], now);
+  assert.match(sentence, /^Two of my notes on jarvis-3-a1b2c3d4 disagree on task, sir: /);
 });
 
 test("describeContradictions covers every item when the list has more than one", () => {
   const now = Date.now();
   const list = [
-    { key: "task", newer: { topic: "a", value: "X", updated: now }, older: { topic: "b", value: "Y", updated: now - 1000 } },
-    { key: "status", newer: { topic: "a", value: "done", updated: now }, older: { topic: "c", value: "todo", updated: now - 2000 } },
+    { key: "task", subject: "jarvis-3", newer: { topic: "a", value: "X", updated: now }, older: { topic: "b", value: "Y", updated: now - 1000 } },
+    { key: "status", subject: "fitness-1", newer: { topic: "a", value: "done", updated: now }, older: { topic: "c", value: "todo", updated: now - 2000 } },
   ];
   const sentence = describeContradictions(list, now);
   assert.match(sentence, /task/);
@@ -494,6 +512,7 @@ test("describeContradictions is deterministic given the same now", () => {
   const now = Date.now();
   const contradiction = {
     key: "task",
+    subject: "jarvis-3",
     newer: { topic: "a", value: "X", updated: now },
     older: { topic: "b", value: "Y", updated: now - 86400000 },
   };
@@ -559,27 +578,72 @@ test("createNoteTracker.touch stores a note by topic and replaces it on a second
   assert.deepEqual(tracker.topics(), ["jarvis-3"]);
 });
 
-test("createNoteTracker.contradictions reports a pair once and then not again", () => {
+test("createNoteTracker.touch keeps only topic, facts and updated -- never sections, summary or about", () => {
+  const tracker = createNoteTracker();
+  tracker.touch({
+    topic: "jarvis-3",
+    updated: 1000,
+    facts: { subject: "jarvis-3" },
+    title: "Session jarvis-3",
+    summary: "s",
+    about: "a",
+    sections: [{ at: 1000, kind: "read", text: "x".repeat(50000) }],
+  });
+  assert.deepEqual(tracker.notes(), [{ topic: "jarvis-3", facts: { subject: "jarvis-3" }, updated: 1000 }]);
+});
+
+test("createNoteTracker.pending returns the same list on repeated calls, without marking anything reported", () => {
   const tracker = createNoteTracker();
   tracker.touch({ topic: "a", updated: 1000, facts: { subject: "x", task: "build" } });
   tracker.touch({ topic: "b", updated: 2000, facts: { subject: "x", task: "ship" } });
 
-  const first = tracker.contradictions();
+  const first = tracker.pending();
   assert.equal(first.length, 1);
 
-  const second = tracker.contradictions();
-  assert.equal(second.length, 0);
+  const second = tracker.pending();
+  assert.deepEqual(second, first);
 });
 
-test("createNoteTracker reports a third note with yet another value only against the newest", () => {
+test("createNoteTracker.settle marks every currently pending contradiction reported, so pending() is empty afterwards", () => {
+  const tracker = createNoteTracker();
+  tracker.touch({ topic: "a", updated: 1000, facts: { subject: "x", task: "build" } });
+  tracker.touch({ topic: "b", updated: 2000, facts: { subject: "x", task: "ship" } });
+
+  assert.equal(tracker.pending().length, 1);
+  tracker.settle();
+  assert.deepEqual(tracker.pending(), []);
+});
+
+test("createNoteTracker.pending reports a third note with yet another value only against the newest, before anything is settled", () => {
   const tracker = createNoteTracker();
   tracker.touch({ topic: "one", updated: 1000, facts: { subject: "x", task: "A" } });
   tracker.touch({ topic: "two", updated: 2000, facts: { subject: "x", task: "B" } });
   tracker.touch({ topic: "three", updated: 3000, facts: { subject: "x", task: "C" } });
 
-  const found = tracker.contradictions();
+  const found = tracker.pending();
   assert.equal(found.length, 2);
   assert.ok(found.every((c) => c.newer.topic === "three"));
+});
+
+test("a newly touched note's new disagreements are pending again after an earlier one was settled", () => {
+  const tracker = createNoteTracker();
+  tracker.touch({ topic: "one", updated: 1000, facts: { subject: "x", task: "A" } });
+  tracker.touch({ topic: "two", updated: 2000, facts: { subject: "x", task: "B" } });
+  assert.equal(tracker.pending().length, 1);
+  tracker.settle(); // reports task::one::two
+
+  // A third note becomes the new newest, so it is compared against BOTH
+  // earlier notes -- "one vs three" and "two vs three" are both pairs that
+  // have never been reported, even though "one vs two" already was.
+  tracker.touch({ topic: "three", updated: 3000, facts: { subject: "x", task: "C" } });
+  const found = tracker.pending();
+  assert.equal(found.length, 2);
+  assert.ok(found.every((c) => c.newer.topic === "three"));
+  assert.deepEqual(found.map((c) => c.older.topic), ["one", "two"]);
+
+  // Settling again leaves nothing pending until something else changes.
+  tracker.settle();
+  assert.deepEqual(tracker.pending(), []);
 });
 
 test("createNoteTracker.topics reflects only currently-touched notes", () => {
@@ -979,14 +1043,19 @@ test("sessionNoteSpec's facts report running when record.running is true", () =>
   assert.equal(spec.facts.status, "running");
 });
 
-test("sessionNoteSpec's facts report stopped when record.stoppedAt is a number", () => {
-  const spec = sessionNoteSpec({ name: "jarvis-3", sessionId: "a1b2c3d4", running: false, stoppedAt: 500 }, "", "text", 1000);
-  assert.equal(spec.facts.status, "stopped");
-});
-
-test("sessionNoteSpec's facts report finished when neither running nor stoppedAt apply", () => {
+test("sessionNoteSpec's facts report finished when record.running is false", () => {
   const spec = sessionNoteSpec({ name: "jarvis-3", sessionId: "a1b2c3d4", running: false }, "", "text", 1000);
   assert.equal(spec.facts.status, "finished");
+});
+
+test("sessionNoteSpec omits the status fact entirely when the roster could not be asked (running is null)", () => {
+  const spec = sessionNoteSpec({ name: "jarvis-3", sessionId: "a1b2c3d4", running: null }, "", "text", 1000);
+  assert.equal(Object.prototype.hasOwnProperty.call(spec.facts, "status"), false);
+});
+
+test("sessionNoteSpec omits the status fact when record.running is entirely absent", () => {
+  const spec = sessionNoteSpec({ name: "jarvis-3", sessionId: "a1b2c3d4" }, "", "text", 1000);
+  assert.equal(Object.prototype.hasOwnProperty.call(spec.facts, "status"), false);
 });
 
 test("sessionNoteSpec's facts carry subject, task and the cwd's basename, sanitized", () => {
@@ -1296,4 +1365,109 @@ test("a hand-edited facts: block naming constructor yields no constructor fact",
   assert.ok(note);
   assert.equal(Object.prototype.hasOwnProperty.call(note.facts, "constructor"), false);
   assert.deepEqual(note.facts, { subject: "jarvis-3" });
+});
+
+
+// ---------------------------------------------------------------------------
+// foldNotes -- the per-turn call: touch recent notes into the tracker,
+// return the context block plus any pending contradiction.
+// ---------------------------------------------------------------------------
+
+test("foldNotes touches recent notes into the tracker and returns their context block", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "jarvis-3", { at: 1000, text: "one", summary: "s1", facts: { subject: "jarvis-3" } });
+    const tracker = createNoteTracker();
+    const { context, flag } = foldNotes(tracker, dir, 1000);
+    assert.match(context, /NOTE jarvis-3/);
+    assert.equal(flag, "");
+    assert.deepEqual(tracker.topics(), ["jarvis-3"]);
+  });
+});
+
+test("foldNotes' flag reports a contradiction among the notes it just touched", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "a", { at: 1000, text: "one", facts: { subject: "x", task: "build" } });
+    writeSection(dir, "b", { at: 2000, text: "two", facts: { subject: "x", task: "ship" } });
+    const tracker = createNoteTracker();
+    const { flag } = foldNotes(tracker, dir, 2000);
+    assert.notEqual(flag, "");
+    assert.match(flag, /task/);
+  });
+});
+
+test("foldNotes never marks a contradiction reported -- calling it twice returns the same flag both times", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "a", { at: 1000, text: "one", facts: { subject: "x", task: "build" } });
+    writeSection(dir, "b", { at: 2000, text: "two", facts: { subject: "x", task: "ship" } });
+    const tracker = createNoteTracker();
+    const first = foldNotes(tracker, dir, 2000);
+    const second = foldNotes(tracker, dir, 2000);
+    assert.equal(first.flag, second.flag);
+    assert.notEqual(first.flag, "");
+  });
+});
+
+test("foldNotes on an empty directory returns an empty context and an empty flag", () => {
+  withTempDir((dir) => {
+    const tracker = createNoteTracker();
+    const { context, flag } = foldNotes(tracker, dir, 1000);
+    assert.equal(context, "");
+    assert.equal(flag, "");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordDiscussion -- append the chat that followed a read, only while its
+// topic is still live.
+// ---------------------------------------------------------------------------
+
+test("recordDiscussion appends a discussion section and returns a refreshed topic when the topic is live", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "jarvis-3", { at: 1000, kind: "read", text: "started" });
+    const topic = { topic: "jarvis-3", at: 1000 };
+    const limits = { maxBytes: DEFAULT_MAX_BYTES, maxFiles: DEFAULT_MAX_FILES };
+
+    const result = recordDiscussion(dir, topic, ["what happened"], "it finished", 2000, limits);
+    assert.ok(result);
+    assert.deepEqual(result.topic, { topic: "jarvis-3", at: 2000 });
+    assert.deepEqual(result.pruned, []);
+
+    const reloaded = loadNote(dir, "jarvis-3");
+    assert.equal(reloaded.sections.length, 2);
+    assert.equal(reloaded.sections[1].kind, "discussion");
+    assert.match(reloaded.sections[1].text, /it finished/);
+  });
+});
+
+test("recordDiscussion returns null and writes nothing once the topic has gone stale", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "jarvis-3", { at: 1000, kind: "read", text: "started" });
+    const staleTopic = { topic: "jarvis-3", at: 1000 };
+    const now = 1000 + NOTE_TOPIC_TTL_MS + 1;
+
+    const result = recordDiscussion(dir, staleTopic, ["what happened"], "it finished", now, undefined);
+    assert.equal(result, null);
+
+    const reloaded = loadNote(dir, "jarvis-3");
+    assert.equal(reloaded.sections.length, 1);
+  });
+});
+
+test("recordDiscussion returns null and writes nothing when there is nothing to record", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "jarvis-3", { at: 1000, kind: "read", text: "started" });
+    const topic = { topic: "jarvis-3", at: 1000 };
+
+    assert.equal(recordDiscussion(dir, topic, [], "it finished", 2000, undefined), null);
+    assert.equal(recordDiscussion(dir, topic, ["what happened"], "", 2000, undefined), null);
+
+    const reloaded = loadNote(dir, "jarvis-3");
+    assert.equal(reloaded.sections.length, 1);
+  });
+});
+
+test("recordDiscussion returns null for a null topic", () => {
+  withTempDir((dir) => {
+    assert.equal(recordDiscussion(dir, null, ["x"], "y", 1000, undefined), null);
+  });
 });
