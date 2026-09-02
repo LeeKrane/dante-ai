@@ -120,7 +120,18 @@ export function groupsFromRoster(workspaces, roster, now = Date.now()) {
     .slice(0, MAX_ROWS)
     .map((record) => rowFromRecord(record, now));
 
-  const groups = spaces.map((w) => ({ alias: w.alias, main: Boolean(w.main), other: false, sessions: [] }));
+  // `letter` rides straight off the workspace the server already lettered
+  // (lib/memory.js's workspacesForClient) -- a string when this tick has one,
+  // "" when it does not, so app.js never has to tell "no letter" apart from
+  // "the string 'undefined'" the way it would if this just forwarded whatever
+  // `w.letter` happened to be.
+  const groups = spaces.map((w) => ({
+    alias: w.alias,
+    main: Boolean(w.main),
+    letter: typeof w.letter === "string" ? w.letter : "",
+    other: false,
+    sessions: [],
+  }));
   const byAlias = new Map(groups.map((g) => [g.alias, g]));
 
   const elsewhere = [];
@@ -130,7 +141,9 @@ export function groupsFromRoster(workspaces, roster, now = Date.now()) {
     else elsewhere.push(row);
   }
 
-  if (elsewhere.length > 0) groups.push({ alias: "elsewhere", main: false, other: true, sessions: elsewhere });
+  if (elsewhere.length > 0) {
+    groups.push({ alias: "elsewhere", main: false, letter: "", other: true, sessions: elsewhere });
+  }
   return groups;
 }
 

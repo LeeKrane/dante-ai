@@ -169,6 +169,14 @@ it sees the ones you started in a terminal too — and you can drive them:
   instead of its name; a number is only ever resolved against the current
   list, and a number said about one that has since stopped is refused rather
   than guessed at.
+- Repositories are lettered A, B, C... in the panel, in that same order —
+  main first, then alphabetical — so the header above each group of rows
+  reads *"A: jarvis"*, *"B: fitness"*, and so on. Letters are reassigned on
+  every view exactly the way the numbers are, never stored, so A always
+  names whichever repository is currently main. *"Start a session in repo
+  B"* and *"session three in repo B"* both work out loud, the letter
+  standing in for the repository's name the same way a number stands in for
+  a session.
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `fix-failing-builder-test`, off the
   task alone — no repository or counter baked into the name, since the panel
@@ -204,8 +212,9 @@ it sees the ones you started in a terminal too — and you can drive them:
   be named instead — and takes a real question: *"did its tests pass?"*,
   *"which files did it touch?"*
 
-Reading is the one command that is **not** proposed first. The other three
-reach a live process, so a misheard sentence must not be able to move one;
+Reading is the one command that is **not** proposed first. The other five —
+start, tell, interrupt, stop and watch — reach a live process or stand up a
+promise about one, so a misheard sentence must not be able to move one;
 reading touches nothing, and putting a *"Shall I, sir?"* in front of every
 question about your own work would be a spoken round trip for nothing.
 
@@ -216,6 +225,24 @@ cached: delete a session and it stops being readable that instant, with nothing
 left behind to answer in its place. The one-line summary recorded when a
 session ends is kept only in the short recap log — cleared the first time you
 ask what you missed — and reading a session never consults it.
+
+**"Watch session three and tell me when it's done."** A fifth proposed
+command, alongside start, tell, interrupt and stop — a misheard *"watch"*
+confirmed unchecked would be a promise to report on the wrong session later,
+to whoever is listening then, so it goes through the same *"Shall I, sir?"*
+as the rest. It watches exactly the one session you named, and fires exactly
+once: the moment that session stops working — finishes, goes idle, or gets
+blocked on a permission prompt — Dante reads its transcript back, the same
+way a *read* does, and says what it produced, what state it's in now, and
+*"Ready for the next step, sir?"* Then the watch is gone; it never fires
+twice for the same ending. *"Never mind, stop watching that"* cancels one
+at once, with no confirmation needed — a watch touches no process, so
+cancelling one is the same kind of thing as reading one is. Watching a
+session that isn't currently working is refused outright: it would never
+cross the line a watcher fires on, and confirming it would be a promise
+nothing could keep. Watches exist only in memory, five at a time, and do
+not survive a restart — a Dante that just restarted has plainly stopped
+watching whatever it was watching before.
 
 The difference between *tell* and *interrupt* is timing and nothing else, and
 when it isn't clear which you meant, it picks *tell*. Neither one forks the
@@ -272,7 +299,7 @@ terminals and other tools' background jobs are not its business.
 
 **It runs your skills.** "Run the cleanup skill in jarvis" starts a session whose whole prompt is `/cleanup-session-codebase`; "send grilling to fix-tests" passes `/grilling` to a running one. Dante only sends a skill it can see: every `skills/*/SKILL.md` under `~/.claude` and under each repository's `.claude`, discovered at startup and again whenever a repository is named. A name it cannot see is refused rather than guessed at, and Claude Code's own commands (`/compact`, `/clear`, `/permissions`, `/login` and the rest) are never sendable by voice at all — those act on the session or the CLI, not on the work, and a misheard one can throw a session's context away. The proposal says the exact line — "Start a session in jarvis running /grilling the rollout plan. Shall I, sir?" — and that yes is the confirmation: a skill is its own brief, so it skips the read-back below. A skill sent to a running session always waits its turn, even when you asked to interrupt: the live channel an interrupt uses wraps what it delivers in a sentence, and a slash command inside a sentence is prose to the session, not a command.
 
-**It asks first.** A one-line spoken request is rarely a brief a session can work from. When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what must not be touched, what done looks like), Dante interviews you, **one question per turn**, most important first, until it is confident it has all four ([docs/interview.md](docs/interview.md)) or you say to stop asking or to just start it. When it is confident it proposes as usual, but the spoken sentence is a summary while the **full brief is shown centred over the orb** — above the other panels, never over the hold-to-talk button — and is what the session actually receives — a structured document (Goal / Where / Constraints / Done when) that loses nothing you said. A start, a tell and an interrupt are each confirmed first, even when the request left nothing open: Dante reads back what it understood of the goal, the place (or the session), the constraints and what done looks like, and proposes only once you say that is right. Below the state label, a line shows what Dante is doing right now (*interviewing*, *awaiting your yes*, *starting jarvis*, *telling fix-tests*, *reading readme-summary*, *building landing page*), and goes blank when nothing is.
+**It asks first.** A one-line spoken request is rarely a brief a session can work from. When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what must not be touched, what done looks like), Dante interviews you, **one question per turn**, most important first, until it is confident it has all four ([docs/interview.md](docs/interview.md)) or you say to stop asking or to just start it; a request that already states all four gets no interview question at all. Confirming is separate, and it is the machine's job, not the model's: every start, tell and interrupt is held once it is proposed, and its brief is read back to you in one question covering the goal, the place (or the session), the constraints and what done looks like — always, even when the request left nothing open for the interview to ask about — with two exceptions: an escape phrase ("just start it", "stop asking") skips the read-back and goes straight to the ordinary "Shall I, sir?", and a vetted skill (`command=`) has no facets to read back, since the command line already says the goal, constraints and acceptance all at once. Otherwise, only your yes to the read-back turns it into the proposal itself. Say no, or correct it, and Dante folds the correction in and either asks about what it left open or proposes again, read back once more the same way. The spoken read-back is a summary while the **full brief is shown centred over the orb** — above the other panels, never over the hold-to-talk button — and is what the session actually receives — a structured document (Goal / Where / Constraints / Done when) that loses nothing you said. Below the state label, a line shows what Dante is doing right now (*interviewing*, *confirming*, *awaiting your approval*, *starting jarvis*, *telling fix-tests*, *reading readme-summary*, *building landing page*), and goes blank when nothing is.
 
 These sessions run under **your** settings, permissions, hooks and MCP servers —
 the same session you'd have started by typing `claude` there. Dante imposes no

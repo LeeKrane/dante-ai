@@ -11,6 +11,7 @@ import {
   needsConfirmation,
   parseSessionNumber,
   readAnswer,
+  readConfirmingAnswer,
   readTarget,
 } from "../lib/confirm.js";
 
@@ -30,6 +31,16 @@ test("read, recap, a missing verb and a non-string verb never need confirmation"
   assert.equal(needsConfirmation({}), false);
   assert.equal(needsConfirmation(undefined), false);
   assert.equal(needsConfirmation({ verb: 7 }), false);
+});
+
+test("watch needs confirmation, in any case, but unwatch never does", () => {
+  // watch stands up something that persists past the turn, the same reason
+  // start, tell, interrupt and stop do; unwatch only dismantles one and
+  // touches no process, same class as read.
+  for (const verb of ["watch", "WATCH", "Watch"]) {
+    assert.equal(needsConfirmation({ verb }), true, verb);
+  }
+  assert.equal(needsConfirmation({ verb: "unwatch" }), false);
 });
 
 test("an interview question is never held for a confirmation", () => {
@@ -202,6 +213,56 @@ test("more than one match lists at most three names, never by position", () => {
 test("exactly one match returns the record and no refusal", () => {
   const record = { name: "jarvis-1-fix-tests", sessionId: "a" };
   assert.deepEqual(findTarget([record], "jarvis-1-fix-tests"), { record, refusal: null });
+});
+
+// ---------------------------------------------------------------------------
+// findTarget: the repo cross-check on a number
+// ---------------------------------------------------------------------------
+
+test("a repo alongside a number that agrees with the roster resolves normally", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { number: 1, alias: "jarvis" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("a repo alongside a number that disagrees with the roster is refused, naming the real one", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 3, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { number: 3, alias: "fitness" }), {
+    record: null,
+    refusal: "Session three is in jarvis, not fitness, sir.",
+  });
+});
+
+test("the repo cross-check is case-insensitive, since a spoken letter resolves to whatever case the alias is stored in", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { number: 1, alias: "JARVIS" }), { record: roster[0], refusal: null });
+});
+
+test("the repo cross-check is skipped, not refused, when the record carries no alias at all", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1 }];
+  assert.deepEqual(findTarget(roster, "", { number: 1, alias: "fitness" }), { record: roster[0], refusal: null });
+});
+
+test("addressing by name never applies the repo cross-check, even when it would disagree", () => {
+  // The name path already had the name to go on -- a mismatched alias here
+  // would just be the same wrong guess said twice, not new information.
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "jarvis-1-fix-tests", { alias: "fitness" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("addressing by sessionId never applies the repo cross-check either", () => {
+  // A sessionId re-targets a session a proposal already resolved once; there
+  // is nothing new to cross-check on that second lookup.
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { sessionId: "a", alias: "fitness" }), {
+    record: roster[0],
+    refusal: null,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -486,6 +547,38 @@ test("a session addressed by number with nothing yet resolved says the number al
 });
 
 // ---------------------------------------------------------------------------
+// describeIntent - watch
+// ---------------------------------------------------------------------------
+
+test("a watch by name is confirmed with a promise to report back", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "watch", name: "jarvis-1" } }),
+    "Watch jarvis-1 and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch by number uses whoFor, the same as stop, tell and interrupt", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "watch", number: "3" }, target: { name: "bug-hunt" } }),
+    "Watch session three, bug-hunt and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch says back the session Dante resolved, not the one the model wrote", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "watch", name: "jarvis-1" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "Watch jarvis-1-fix-failing-builder-test and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch tag with nothing to name describes nothing, so it is clarified instead", () => {
+  assert.equal(describeIntent({ session: { verb: "watch" } }), null);
+});
+
+// ---------------------------------------------------------------------------
 // readTarget
 // ---------------------------------------------------------------------------
 
@@ -557,6 +650,10 @@ test("a stop with nothing to name asks which session, not what to say to it", ()
   assert.equal(clarify({ session: { verb: "tell" } }), "Which session, sir?");
 });
 
+test("a watch with nothing to name asks which session too, the default clarify question", () => {
+  assert.equal(clarify({ session: { verb: "watch" } }), "Which session, sir?");
+});
+
 test("a read is not a confirmable verb, so clarify has nothing to ask", () => {
   assert.equal(clarify({ session: { verb: "read", name: "jarvis-1" } }), null);
   assert.equal(clarify({ session: { verb: "recap" } }), null);
@@ -597,6 +694,45 @@ test("an answer is short, and a sentence is not an answer", () => {
 test("a sentence that says both ways is a correction, never a yes", () => {
   assert.equal(readAnswer("yes but in fitness, not jarvis"), "amend");
   assert.equal(readAnswer("no, go ahead"), "amend");
+});
+
+// ---------------------------------------------------------------------------
+// readConfirmingAnswer
+// ---------------------------------------------------------------------------
+
+test("four words or fewer reads exactly like readAnswer", () => {
+  for (const text of ["yes", "go ahead", "do it", "sure", "yes that's fine", "not now"]) {
+    assert.equal(readConfirmingAnswer(text), readAnswer(text), text);
+  }
+  for (const text of ["no", "nope", "cancel", "don't"]) {
+    assert.equal(readConfirmingAnswer(text), readAnswer(text), text);
+  }
+});
+
+test("a long, plain yes to the read-back is still a yes, not a correction", () => {
+  // The asymmetry this exists for: misreading a genuine yes here sends the
+  // model around to propose again, and the whole read-back gets spoken a
+  // second time -- the very duplicate this replaced.
+  assert.equal(readConfirmingAnswer("yes that is exactly right"), "yes");
+  assert.equal(readConfirmingAnswer("go ahead that is right"), "yes");
+  assert.equal(readConfirmingAnswer("yes that's right, nothing to change"), "yes");
+  assert.equal(readConfirmingAnswer("yes that's actually perfect"), "yes");
+});
+
+test("a long answer that corrects something, even while agreeing, is a correction", () => {
+  assert.equal(readConfirmingAnswer("yes but only the test file"), "amend");
+  assert.equal(readConfirmingAnswer("no, the other test not that one"), "amend");
+  assert.equal(readConfirmingAnswer("yes, actually make it the whole repo"), "amend");
+  assert.equal(readConfirmingAnswer("yes and also skip the lint"), "amend");
+});
+
+test("a word that names a real content change, not a filler word, reads as a correction even though a yes word is present", () => {
+  // The allowlist's whole point: a word this recognises neither as a YES
+  // word nor as filler is where a correction hides, and a blacklist of
+  // correction words could never enumerate every noun that might show up
+  // there.
+  assert.equal(readConfirmingAnswer("sure, in the fitness repo"), "amend");
+  assert.equal(readConfirmingAnswer("okay so make it the whole test suite"), "amend");
 });
 
 // ---------------------------------------------------------------------------

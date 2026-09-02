@@ -3,12 +3,21 @@ import assert from "node:assert/strict";
 
 import { MAX_BRIEF_CHARS, MAX_SUBJECT_CHARS, describeActivity } from "../public/activity-policy.js";
 
-test("an interview reads as interviewing and a proposal as awaiting your yes", () => {
+test("an interview reads as interviewing and a proposal as awaiting your approval", () => {
   assert.deepEqual(describeActivity({ value: "interviewing" }), { label: "interviewing", detail: "" });
   assert.deepEqual(describeActivity({ value: "proposing", brief: "Build it." }), {
-    label: "awaiting your yes",
+    label: "awaiting your approval",
     detail: "Build it.",
   });
+});
+
+test("the machine's read-back reads as confirming, with no detail of its own", () => {
+  // Its own label rather than folded into "interviewing": it is a different
+  // phase, run by the machine rather than the model, and the page should say
+  // so. It carries no brief the way "proposing" does -- the read-back is
+  // spoken, not shown.
+  assert.deepEqual(describeActivity({ value: "confirming" }), { label: "confirming", detail: "" });
+  assert.deepEqual(describeActivity({ value: "confirming", subject: "jarvis" }), { label: "confirming", detail: "" });
 });
 
 test("a verb names its subject, and a primitive id is read as words", () => {

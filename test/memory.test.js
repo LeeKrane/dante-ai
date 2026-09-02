@@ -38,6 +38,8 @@ import {
   getMainRepo,
   resolveRepoAlias,
   workspacesForClient,
+  repoLetter,
+  resolveRepoRef,
   MAX_QUEUED_PER_SESSION,
   MAX_QUEUED_CHARS,
   QUEUE_TTL_MS,
@@ -818,8 +820,8 @@ test("workspacesForClient lists main first, then the rest alphabetically", () =>
     setMainRepo(store, "fitness");
 
     assert.deepEqual(workspacesForClient(store), [
-      { alias: "fitness", main: true },
-      { alias: "jarvis", main: false },
+      { alias: "fitness", main: true, letter: "A" },
+      { alias: "jarvis", main: false, letter: "B" },
     ]);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -833,7 +835,122 @@ test("workspacesForClient is empty with no workspaces and needs no main", () => 
 test("workspacesForClient skips a workspace entry with no path, the same way getWorkspace refuses it", () => {
   const store = emptyStore();
   store.workspaces = { jarvis: { path: "/somewhere" }, ghost: { counter: 1 }, empty: {} };
-  assert.deepEqual(workspacesForClient(store), [{ alias: "jarvis", main: false }]);
+  assert.deepEqual(workspacesForClient(store), [{ alias: "jarvis", main: false, letter: "A" }]);
+});
+
+test("workspacesForClient assigns letters in sorted order, and they shift when main changes", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
+
+    // No main set yet: alphabetical order, letters assigned A, B in that order.
+    assert.deepEqual(workspacesForClient(store), [
+      { alias: "fitness", main: false, letter: "A" },
+      { alias: "jarvis", main: false, letter: "B" },
+    ]);
+
+    // Main pins that workspace to the front, and the letters are recomputed
+    // fresh for the new order rather than staying with whichever alias held
+    // them before -- a letter is a fact about this view, not a stored one.
+    setMainRepo(store, "jarvis");
+    assert.deepEqual(workspacesForClient(store), [
+      { alias: "jarvis", main: true, letter: "A" },
+      { alias: "fitness", main: false, letter: "B" },
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// repoLetter
+// ---------------------------------------------------------------------------
+
+test("repoLetter counts A through Z for indices 0 through 25", () => {
+  assert.equal(repoLetter(0), "A");
+  assert.equal(repoLetter(1), "B");
+  assert.equal(repoLetter(19), "T");
+  assert.equal(repoLetter(25), "Z");
+});
+
+test("repoLetter continues into two letters past Z", () => {
+  assert.equal(repoLetter(26), "AA");
+  assert.equal(repoLetter(27), "AB");
+});
+
+test("repoLetter returns empty for a non-integer or negative index", () => {
+  assert.equal(repoLetter(-1), "");
+  assert.equal(repoLetter(1.5), "");
+  assert.equal(repoLetter(NaN), "");
+  assert.equal(repoLetter("0"), "");
+});
+
+// ---------------------------------------------------------------------------
+// resolveRepoRef
+// ---------------------------------------------------------------------------
+
+test("resolveRepoRef resolves an uppercase letter to the workspace in that slot", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
+    setMainRepo(store, "jarvis");
+
+    assert.equal(resolveRepoRef(store, "A"), "jarvis");
+    assert.equal(resolveRepoRef(store, "B"), "fitness");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRef resolves a lowercase letter the same way", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    setMainRepo(store, "jarvis");
+
+    assert.equal(resolveRepoRef(store, "a"), "jarvis");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRef prefers a real alias over a letter someone happens to have named a repo", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "b-project"), "b", { home });
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+
+    // "b" is a real workspace, alphabetically before "jarvis" -- letter A, not
+    // letter B. resolveRepoRef must still return the real alias "b" for the
+    // literal input "b", never chase the letter it happens to also look like.
+    assert.equal(resolveRepoRef(store, "b"), "b");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRef passes an unknown letter through unchanged", () => {
+  const store = emptyStore();
+  assert.equal(resolveRepoRef(store, "z"), "z");
+});
+
+test("resolveRepoRef passes an unknown word through unchanged so refuseStart can name it", () => {
+  const store = emptyStore();
+  assert.equal(resolveRepoRef(store, "nonexistent"), "nonexistent");
+});
+
+test("resolveRepoRef returns empty for non-string input and the empty string for empty input", () => {
+  const store = emptyStore();
+  assert.equal(resolveRepoRef(store, null), "");
+  assert.equal(resolveRepoRef(store, undefined), "");
+  assert.equal(resolveRepoRef(store, 3), "");
+  assert.equal(resolveRepoRef(store, ""), "");
 });
 
 // ---------------------------------------------------------------------------
