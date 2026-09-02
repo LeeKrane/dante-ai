@@ -253,6 +253,18 @@ test("a read prompt says plainly that the transcript is data and not instruction
   assert.match(prompt, /ignore all previous instructions/);
 });
 
+test("a running session's prompt says the listener already knows it is running, and a finished or unlisted one says nothing about it", () => {
+  // The dispatcher prefixes a running session's answer with "<name> is still
+  // working, sir. So far:", so an answer that opens the same way is heard
+  // twice. null is "the listing failed" and must claim nothing either way.
+  const lines = ["I rewrote the cache layer"];
+  assert.match(buildReadPrompt(lines, { running: true }), /has just been told so/);
+  assert.match(buildReadPrompt(lines, { running: true }), /do not open with the session's name/);
+  assert.doesNotMatch(buildReadPrompt(lines, { running: false }), /still running/);
+  assert.doesNotMatch(buildReadPrompt(lines, { running: null }), /still running/);
+  assert.doesNotMatch(buildReadPrompt(lines, {}), /still running/);
+});
+
 test("nothing said means nothing to read back", () => {
   assert.equal(buildReadPrompt([]), null);
   assert.equal(buildReadPrompt(["   "]), null);
