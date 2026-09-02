@@ -282,7 +282,7 @@ async function reportWatch({ watch, change, record }) {
     name: watch.name, change, state: record?.state ?? record?.status, text, reason,
   });
   log(`watch fired (${change}): ${spoken}`);
-  if (!announce(spoken)) log("watch report had nowhere to go, sir (no page open)");
+  if (!announce(spoken)) log("watch report had nowhere to go (no page open)");
 }
 
 // Only sessions Dante started are reported. The roster sees every terminal on
@@ -349,7 +349,7 @@ async function reportComplete(sessionId, context = {}) {
   // reportComplete could race a still-pending watcher. Two announcements
   // about one ending, seconds apart, is a machine reading a list.
   if (watched) {
-    log(`watch already covers ${remembered.name ?? context.name}, sir - skipping the generic line`);
+    log(`watch already covers ${remembered.name ?? context.name} - skipping the generic line`);
   } else {
     announce(formatSpoken({
       kind: "complete",
@@ -464,7 +464,7 @@ async function reportAttention(event) {
   // recordEvent above still happens regardless -- a session stopped on a
   // person belongs in the log even when nothing is spoken about it.
   if (watchers.has(event.sessionId) || watchReported.has(event.sessionId)) {
-    log(`watch covers ${remembered.name}, sir - skipping the generic attention line`);
+    log(`watch covers ${remembered.name} - skipping the generic attention line`);
   } else {
     announce(formatSpoken({ kind: "needs-attention", name: remembered.name, detail: event.detail }));
   }
