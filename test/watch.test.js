@@ -42,13 +42,16 @@ test("a session that is not working refuses a watch, because it would never fire
   );
 });
 
-test("a nameless record still gets a sensible refusal", () => {
+test("a record with no usable name refuses before anything else is checked, even one that is also not working", () => {
   const watchers = createWatchers();
-  const idle = { sessionId: "s1", name: null, state: "done" };
-  assert.equal(
-    refuseWatch(idle, watchers),
-    "that session is not working just now, sir, so there is nothing to wait for.",
-  );
+  for (const name of [null, undefined, "", 42]) {
+    const record = { sessionId: "s1", name, state: "done" };
+    assert.equal(
+      refuseWatch(record, watchers),
+      "I cannot watch a session with no name, sir.",
+      String(name),
+    );
+  }
 });
 
 test("a full watch list refuses one more, and cancelling frees a slot", () => {
@@ -127,6 +130,13 @@ test("names come back in insertion order", () => {
   watchers.add(working({ sessionId: "s2", name: "second" }), 2);
   watchers.add(working({ sessionId: "s3", name: "third" }), 3);
   assert.deepEqual(watchers.names(), ["first", "second", "third"]);
+});
+
+test("names falls back to a generic subject for a watch with no name, so the WATCHING line never lists a blank item", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ sessionId: "s1", name: null }), 1);
+  watchers.add(working({ sessionId: "s2", name: "second" }), 2);
+  assert.deepEqual(watchers.names(), ["that session", "second"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -232,6 +242,28 @@ test("cancelTarget resolves by sessionId when one is given and matches", () => {
   const { watch, refusal } = cancelTarget(watchers, { sessionId: "s2" });
   assert.equal(refusal, null);
   assert.equal(watch.sessionId, "s2");
+});
+
+test("cancelTarget refuses outright when sessionId is given but matches no watch, even with one unrelated watch live", () => {
+  // A stale id must not silently fall through to no-name resolution and
+  // cancel the one live watch that happens to be unrelated to it.
+  const watchers = createWatchers();
+  watchers.add(working({ sessionId: "s1", name: "one" }), Date.now());
+  const { watch, refusal } = cancelTarget(watchers, { sessionId: "stale-id" });
+  assert.equal(watch, null);
+  assert.equal(refusal, "That session is no longer being watched, sir.");
+  assert.equal(watchers.has("s1"), true);
+});
+
+test("cancelTarget's Which one join never speaks a blank item for a nameless watch", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ sessionId: "s1", name: null }), Date.now());
+  watchers.add(working({ sessionId: "s2", name: "named" }), Date.now());
+  const { watch, refusal } = cancelTarget(watchers, {});
+  assert.equal(watch, null);
+  assert.match(refusal, /^Which one, sir\?/);
+  assert.match(refusal, /that session/);
+  assert.match(refusal, /named/);
 });
 
 test("cancelTarget matches a named watch via matchSessions", () => {
