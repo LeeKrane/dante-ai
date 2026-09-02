@@ -1610,8 +1610,11 @@ async function dispatchRead(send, session, preamble, roster, conv) {
         // contradiction (two reads of the same session disagreeing on a
         // fact), and this only computes the sentence -- settle(), below,
         // is what marks it reported, once it has actually been spoken.
-        const flag = describeContradictions(conv.notes.pending(), now);
-        if (flag) conv.flag = joinSpoken(conv.flag, flag);
+        // Assigned, not appended: pending() is cumulative and still holds
+        // whatever foldNotes found at the start of this turn, so appending
+        // would speak that contradiction twice -- and with the newest note
+        // just changed, the second telling could name the opposite winner.
+        conv.flag = describeContradictions(conv.notes.pending(), now);
       }
     }
 
