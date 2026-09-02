@@ -40,7 +40,7 @@ import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, completedIn, createRosterPoller, endedAtIn, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning,
+  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning,
   visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
@@ -167,7 +167,7 @@ const rosterPoller = createRosterPoller({
       // not be held open by a summarize call and the announcement behind it.
       if (kind === "gone") {
         reportComplete(session.sessionId, {
-          cwd: session.cwd, name: session.name, startedAt: session.startedAt, endedAt: session.endedAt, roster,
+          cwd: session.cwd, name: session.name, startedAt: session.startedAt, endedAt: endedAtOf(session), roster,
         }).catch((e) => log("report failed:", e.message || e));
       }
     }
@@ -224,22 +224,6 @@ async function deliverQueued(record) {
 // not alternatives, so the deduper is what keeps one exit from becoming two
 // lines in the thread.
 const reported = createDeduper();
-
-// When a hook-reported completion happened. Stop fires at the moment itself,
-// so that moment is the answer, and it is also handed to the poller: a Stop
-// beats the tick that would stamp the session by up to POLL_MS, and a session
-// that was done, resumed and finished again inside one poll window is one the
-// listing alone could never re-stamp. SessionEnd fires when the process goes,
-// which can be an hour after the work ended, so it asks the roster for the
-// stamp instead and lets completedIn fall back to now only when there is none.
-function hookEndedAt(event, roster) {
-  if (event.event === "Stop") {
-    const at = Date.now();
-    rosterPoller.noteEnded(event.sessionId, at);
-    return at;
-  }
-  return endedAtIn(roster, event.sessionId);
-}
 
 // Only sessions Dante started are reported. The roster sees every terminal on
 // this machine, and recording every time somebody closes one would make the
@@ -1076,9 +1060,16 @@ const server = createServer(async (req, res) => {
     // straight off the CLI's own Stop/SessionEnd event. rosterPoller.current()
     // is the best available answer to "what else is running" without paying
     // for a fresh listing on a path that already raced to answer the hook.
-    const roster = rosterPoller.current();
+    // Stop fires at the moment the work ended, so that moment is the finish
+    // time, and the poller is told (noteEnded says what it does with it).
+    // SessionEnd fires when the process goes, which can be an hour later, so
+    // it asks the poller for the time it already has; completedIn falls back
+    // to now only when there is none.
+    const endedAt = event.event === "Stop"
+      ? rosterPoller.noteEnded(event.sessionId, Date.now())
+      : rosterPoller.endedAt(event.sessionId);
     const work = event.kind === "complete"
-      ? reportComplete(event.sessionId, { cwd: event.cwd, roster, endedAt: hookEndedAt(event, roster) })
+      ? reportComplete(event.sessionId, { cwd: event.cwd, roster: rosterPoller.current(), endedAt })
       : reportAttention(event);
     work.catch((e) => log("hook report failed:", e.message || e));
     return;

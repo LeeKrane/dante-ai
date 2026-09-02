@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { writeFakeCli } from "./helpers.js";
+import { DEDUPE_MS } from "../lib/hooks.js";
 import {
   LIST_TIMEOUT_MS,
   MAX_LISTED,
@@ -13,7 +14,6 @@ import {
   completedIn,
   countWord,
   createRosterPoller,
-  endedAtIn,
   endedAtOf,
   isDone,
   stampEnded,
@@ -1228,7 +1228,7 @@ test("nothing to count is not an error", () => {
 });
 
 // ---------------------------------------------------------------------------
-// When a session finished: trackEnded, stampEnded, endedAtOf, endedAtIn
+// When a session finished: trackEnded, stampEnded, endedAtOf, and the poller
 // ---------------------------------------------------------------------------
 
 const DONE = { state: "done", status: "idle" };
@@ -1297,14 +1297,41 @@ test("a finish time is read off a record only when it is done, whichever caller 
   assert.equal(endedAtOf(null), null);
 });
 
-test("a hook-driven report reads the stamp off the roster, so a SessionEnd an hour after done does not report the hour", () => {
-  const roster = stampEnded(rosterOf(session(DONE)), new Map([[session().sessionId, 5_000]]));
-  const id = roster[0].sessionId;
-  assert.equal(endedAtIn(roster, id), 5_000);
-  assert.equal(endedAtIn(rosterOf(session({ state: "working" })), id), null);
-  assert.equal(endedAtIn(roster, "not-on-the-roster"), null);
-  assert.equal(endedAtIn(null, id), null);
-  assert.equal(endedAtIn([null, "x"], id), null);
+test("a hook-driven report reads the time straight off the poller, even on a tick the filter dropped the session", async () => {
+  // A SessionEnd an hour after done must not report the hour, and must not
+  // depend on the session being in current() at that instant.
+  let time = 0;
+  let hide = false;
+  const list = scripted(rosterOf(session(DONE)));
+  const poller = createRosterPoller({
+    list,
+    maxAgeMs: 0,
+    now: () => time,
+    filter: (roster) => (hide ? [] : roster),
+  });
+  const id = session().sessionId;
+  assert.equal(poller.endedAt(id), null);
+  time = 5_000;
+  await poller.read();
+  assert.equal(poller.endedAt(id), 5_000);
+  hide = true;
+  time = 10_000;
+  await poller.read();
+  assert.deepEqual(poller.current(), []);
+  assert.equal(poller.endedAt(id), 5_000);
+  assert.equal(poller.endedAt("not-on-the-roster"), null);
+  assert.equal(poller.endedAt(null), null);
+  poller.stop();
+});
+
+test("a finish time that moved on a session that stayed done is an event, so the panel is told", () => {
+  const before = stampEnded(rosterOf(session(DONE)), new Map([[session().sessionId, 5_000]]));
+  const moved = stampEnded(rosterOf(session(DONE)), new Map([[session().sessionId, 50_000]]));
+  assert.deepEqual(diffRoster(before, moved).map((e) => e.kind), ["finished"]);
+  // The same time again is not news, and neither is the first stamp on its
+  // own: that tick already carries the idle (or started) event.
+  assert.deepEqual(diffRoster(before, before), []);
+  assert.deepEqual(diffRoster(rosterOf(session(DONE)), before), []);
 });
 
 test("how long a session took ends at the stamp when there is one and at now when there is not", () => {
@@ -1374,25 +1401,39 @@ test("a failed listing leaves the finish times where they were", async () => {
 
 test("a time noted from outside wins over the tick's own, and the listing still has the last word", async () => {
   // A Stop hook beats the tick that would stamp the session, and a Stop for a
-  // session that was done, resumed and finished again inside one poll window
-  // is the only thing that can move a stamp the listing keeps reporting done.
+  // session that was done, resumed and finished again is the only thing that
+  // can move a stamp the listing keeps reporting done.
   let time = 0;
   const list = scripted(rosterOf(session(DONE)), rosterOf(session(DONE)), rosterOf(session({ state: "working" })));
   const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
-  poller.noteEnded(session().sessionId, 2_000);
+  const id = session().sessionId;
+  assert.equal(poller.noteEnded(id, 2_000), 2_000);
   time = 5_000;
   await poller.read();
   assert.equal(poller.current()[0].endedAt, 2_000);
-  poller.noteEnded(session().sessionId, 7_000);
-  time = 10_000;
+  const later = 2_000 + DEDUPE_MS;
+  assert.equal(poller.noteEnded(id, later), later);
+  time = later + 3_000;
   await poller.read();
-  assert.equal(poller.current()[0].endedAt, 7_000);
-  time = 15_000;
+  assert.equal(poller.current()[0].endedAt, later);
+  time += 5_000;
   await poller.read();
   assert.equal("endedAt" in poller.current()[0], false);
   // Nothing to note is not an error.
-  poller.noteEnded(null, 1);
-  poller.noteEnded(session().sessionId, NaN);
+  assert.equal(poller.noteEnded(null, 1), null);
+  assert.equal(poller.noteEnded(id, NaN), null);
+  poller.stop();
+});
+
+test("a Stop that arrives again inside the dedupe window is a retry, and does not move the time", async () => {
+  // A hook can fire twice for one exit; the second is byte-for-byte the first,
+  // and the only thing that tells it from a genuine second finish is the gap.
+  const poller = createRosterPoller({ list: scripted(rosterOf(session(DONE))), maxAgeMs: 0 });
+  const id = session().sessionId;
+  assert.equal(poller.noteEnded(id, 2_000), 2_000);
+  assert.equal(poller.noteEnded(id, 2_500), 2_000);
+  assert.equal(poller.noteEnded(id, 2_000 + DEDUPE_MS - 1), 2_000);
+  assert.equal(poller.endedAt(id), 2_000);
   poller.stop();
 });
 
