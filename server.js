@@ -1540,7 +1540,16 @@ function recallable(roster) {
 // (lib/notes.js) so the conversation that follows can build on it and a
 // restart does not forget it. The note is written from what was just read,
 // never read from -- see lib/recall.js's own comment for the full rule.
+//
+// `preamble` is accepted for the dispatchSession signature and then dropped on
+// every path, unlike the other verbs. Those are proposals, and the model's
+// sentence is the offer; a read is finished before a word of this is spoken,
+// so "let me read what jarvis three is doing" fused onto the findings announces
+// an action that has already happened and sounds like one still pending. The
+// persona is told to say nothing for a read, but a model that says it anyway
+// must not be heard, so the drop is enforced here rather than trusted there.
 async function dispatchRead(send, session, preamble, roster, conv) {
+  preamble = "";
   const candidates = recallable(roster);
   // The number-then-name resolution, and the wording of each refusal, live in
   // lib/confirm.js's readTarget so they can be tested without a live roster or

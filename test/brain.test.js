@@ -187,6 +187,15 @@ test("a read is taught as running straight away, unlike the four that are propos
   assert.match(persona, /verb=read is the exception/);
 });
 
+test("a read is taught to carry no spoken sentence, so the findings are not announced as pending", () => {
+  // "Let me read what jarvis three is doing" is heard only after the read has
+  // already happened, so it promises an action that is finished. The reply
+  // for a read is the tag alone.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /for a read the reply is the tag and nothing else/);
+  assert.match(persona, /no sentence saying you will read, are reading/);
+});
+
 test("the sessions block teaches the recap verb for catching up on what was missed", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /\[ACTION:SESSION verb=recap\]/);
