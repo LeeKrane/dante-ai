@@ -92,7 +92,7 @@ export function describeActivity(msg) {
   }
 
   if (value === "interviewing") return { label: "interviewing", detail: "" };
-  if (value === "proposing") return { label: "awaiting your yes", detail: cleanBrief(msg.brief) };
+  if (value === "proposing") return { label: "awaiting your approval", detail: cleanBrief(msg.brief) };
 
   let subject = cleanSubject(msg.subject);
   if (value === "building" && subject) subject = wordsFromId(subject);

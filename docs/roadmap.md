@@ -564,7 +564,7 @@ sends the brief as the session's prompt with the task kept as its name. The brie
 **not read aloud** — a decision taken with the user: the spoken proposal only mentions it, and the
 page shows it in full while the yes is awaited. `public/activity-policy.js` and an `activity`
 message add a line below the state label naming what Dante is doing right now (*interviewing*,
-*awaiting your yes*, *starting jarvis*, *telling jarvis-1*, *reading jarvis-2*, *building landing
+*awaiting your approval*, *starting jarvis*, *telling jarvis-1*, *reading jarvis-2*, *building landing
 page*), blank when nothing is. A request that is already specific gets no interview.
 
 **Stage 44 — confident, not counted.** The four-question cap was a guess at a number standing in

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 
 import { MAX_BRIEF_CHARS, MAX_SUBJECT_CHARS, describeActivity } from "../public/activity-policy.js";
 
-test("an interview reads as interviewing and a proposal as awaiting your yes", () => {
+test("an interview reads as interviewing and a proposal as awaiting your approval", () => {
   assert.deepEqual(describeActivity({ value: "interviewing" }), { label: "interviewing", detail: "" });
   assert.deepEqual(describeActivity({ value: "proposing", brief: "Build it." }), {
-    label: "awaiting your yes",
+    label: "awaiting your approval",
     detail: "Build it.",
   });
 });
