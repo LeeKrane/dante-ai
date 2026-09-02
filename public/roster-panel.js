@@ -63,7 +63,10 @@ function rowFromRecord(record, now) {
     // the same session.
     number: Number.isInteger(record.number) ? record.number : null,
     condition: condition(record),
-    elapsed: elapsedLabel(now - record.startedAt),
+    // A finished session's clock stops where the server says it finished
+    // (endedAt, stamped by the roster poller the tick it first saw the session
+    // done); a live one counts on from startedAt against this tick's clock.
+    elapsed: elapsedLabel((Number.isFinite(record.endedAt) ? record.endedAt : now) - record.startedAt),
   };
 }
 

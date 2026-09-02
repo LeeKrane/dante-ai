@@ -162,7 +162,7 @@ const rosterPoller = createRosterPoller({
       // not be held open by a summarize call and the announcement behind it.
       if (kind === "gone") {
         reportComplete(session.sessionId, {
-          cwd: session.cwd, name: session.name, startedAt: session.startedAt, roster,
+          cwd: session.cwd, name: session.name, startedAt: session.startedAt, endedAt: session.endedAt, roster,
         }).catch((e) => log("report failed:", e.message || e));
       }
     }
@@ -237,6 +237,12 @@ async function reportComplete(sessionId, context = {}) {
   if (chain) saveStore(memoryStore);
 
   const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
+  // The moment the roster first saw it done, when the poller is what noticed
+  // (carryEnded in lib/agents.js); a session can sit done for an hour before
+  // its process goes, and "took an hour and four minutes" would be counting
+  // that hour. The hooks fire at the moment itself, so now is right for them.
+  const endedAt = Number.isFinite(context.endedAt) ? context.endedAt : Date.now();
+  const durationMs = Number.isFinite(startedAt) ? endedAt - startedAt : undefined;
   // Up to ~25 s of Haiku, and worth it: "done" without it is not news. Read
   // once and used twice -- the posted line and the spoken one say the same
   // thing about the same session, at different lengths.
@@ -248,7 +254,7 @@ async function reportComplete(sessionId, context = {}) {
   const line = formatEvent({
     kind: "complete",
     name: remembered.name ?? context.name,
-    durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
+    durationMs,
     summary,
     detail: remembered.stoppedAt ? "stopped from here" : "",
   });
@@ -270,7 +276,7 @@ async function reportComplete(sessionId, context = {}) {
   announce(formatSpoken({
     kind: "complete",
     name: remembered.name ?? context.name,
-    durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
+    durationMs,
     summary,
   }));
 
@@ -517,6 +523,10 @@ function rosterForClient(roster) {
     state: record.state,
     status: record.status,
     startedAt: record.startedAt,
+    // When it finished, for a done session, so the page can stop the clock at
+    // that moment rather than counting on from startedAt (see carryEnded in
+    // lib/agents.js). null for a live one: its age is counted on the page.
+    endedAt: Number.isFinite(record.endedAt) ? record.endedAt : null,
   }));
 }
 

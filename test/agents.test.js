@@ -10,6 +10,7 @@ import {
   MAX_LISTED,
   MAX_ROSTER_AGE_MS,
   POLL_MS,
+  carryEnded,
   countWord,
   createRosterPoller,
   describeRoster,
@@ -1219,4 +1220,83 @@ test("nothing to count is not an error", () => {
   assert.deepEqual(ownRunning(null, {}), { running: 0, oldestIdle: null });
   assert.deepEqual(ownRunning([], null), { running: 0, oldestIdle: null });
   assert.deepEqual(ownRunning(rosterOf(session()), "not a store"), { running: 0, oldestIdle: null });
+});
+
+// ---------------------------------------------------------------------------
+// carryEnded
+// ---------------------------------------------------------------------------
+
+test("a session first seen done is stamped with that tick's clock, and a live one is not", () => {
+  const next = rosterOf(session({ state: "done", status: "idle" }), session({ sessionId: "live", state: "working" }));
+  const [done, live] = carryEnded(null, next, 5_000);
+  assert.equal(done.endedAt, 5_000);
+  assert.equal("endedAt" in live, false);
+});
+
+test("the end time is carried forward unchanged on every later tick, so a done clock never moves", () => {
+  const first = carryEnded(null, rosterOf(session({ state: "done", status: "idle" })), 5_000);
+  // The next tick hands over fresh records (orderRoster rebuilds them), not
+  // the stamped ones, so the carry has to come from the previous roster.
+  const second = carryEnded(first, rosterOf(session({ state: "done", status: "idle" })), 65_000);
+  const third = carryEnded(second, rosterOf(session({ state: "done", status: "idle" })), 125_000);
+  assert.equal(second[0].endedAt, 5_000);
+  assert.equal(third[0].endedAt, 5_000);
+});
+
+test("a done session that is picked up again is back on a live clock, and finishing again stamps it afresh", () => {
+  const done = carryEnded(null, rosterOf(session({ state: "done", status: "idle" })), 5_000);
+  const resumed = carryEnded(done, rosterOf(session({ state: "working", status: "busy" })), 10_000);
+  assert.equal("endedAt" in resumed[0], false);
+  const again = carryEnded(resumed, rosterOf(session({ state: "done", status: "idle" })), 20_000);
+  assert.equal(again[0].endedAt, 20_000);
+});
+
+test("an end time only carries from a record that was itself done, never from a stale stamp on a live one", () => {
+  // A hand-built previous record that says working but still carries an
+  // endedAt is a contradiction; the tick's own clock wins over it.
+  const previous = [{ ...session({ state: "working" }), endedAt: 1 }];
+  const [record] = carryEnded(previous, rosterOf(session({ state: "done", status: "idle" })), 9_000);
+  assert.equal(record.endedAt, 9_000);
+});
+
+test("carryEnded never throws on what the poller could hand it", () => {
+  assert.equal(carryEnded(null, null, 1), null);
+  assert.deepEqual(carryEnded(undefined, [], 1), []);
+  assert.deepEqual(carryEnded([null, "x"], [null, "x"], 1), [null, "x"]);
+});
+
+test("the poller stamps a session the tick it is first seen done and keeps that stamp on every tick after", async () => {
+  let time = 0;
+  const list = scripted(
+    rosterOf(session({ state: "working" })),
+    rosterOf(session({ state: "done", status: "idle" })),
+  );
+  const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
+  time = 1_000;
+  await poller.read();
+  assert.equal("endedAt" in poller.current()[0], false);
+  time = 6_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 6_000);
+  time = 66_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 6_000);
+  poller.stop();
+});
+
+test("a filter that rebuilds every record does not lose the stamp", async () => {
+  let time = 0;
+  const list = scripted(rosterOf(session({ state: "done", status: "idle" })));
+  const poller = createRosterPoller({
+    list,
+    maxAgeMs: 0,
+    now: () => time,
+    filter: (roster) => roster.map((record) => ({ ...record, number: 1 })),
+  });
+  time = 3_000;
+  await poller.read();
+  time = 33_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 3_000);
+  poller.stop();
 });
