@@ -21,14 +21,14 @@ import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import {
-  clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer, readTarget,
+  clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer, readConfirmingAnswer, readTarget,
 } from "./lib/confirm.js";
 // `matches` is imported under a longer name because dispatchRead already has a
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
 import {
-  composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
-  unconfirmedFacets, wantsToProceed, withdrawConfirming,
+  FACETS, composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
+  wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import { recallableSessions } from "./lib/recall.js";
@@ -786,23 +786,30 @@ async function answerProposal(send, conv, text) {
   return true;
 }
 
-// The answer to a read-back the machine spoke (the hold in the say handler,
-// below), if that is what this was. Returns true when the words were spent
-// on it.
+// The answer to the read-back the machine spoke (the hold in the say
+// handler, above), if that is what this was. Returns true when the words
+// were spent on it.
 //
 // The proposal path has answerProposal and readAnswer so that a yes is read
 // by code rather than by the model, and the machine's own read-back gets the
 // same treatment for the same reason: a yes to "have I got that right?" has
 // to lift the hold on exactly the tag that was read back, not on whatever
 // the model recomposes from memory a turn later -- which, after a cold
-// restart of the warm CLI, is all it would have. A yes runs nothing here: it
-// consumes the interview into the held tag's brief and hands the tag to
-// proposeSession, whose "Shall I, sir?" follows as it would have without the
-// hold. A no is not a refusal to act, it is "you got it wrong", so the
-// facets go back to unconfirmed and the model is asked what it got wrong. A
-// longer answer is the correction itself: the hold is dropped the same way
-// and the sentence goes on to be an ordinary turn, so the model folds it in
-// and reads that facet back again.
+// restart of the warm CLI, is all it would have. It reads readConfirmingAnswer
+// rather than readAnswer, though: this is a longer question than "Shall I,
+// sir?" and it is common to answer it at length ("yes, that's exactly
+// right"), so the vocabulary here favours reading a long yes as a yes -- see
+// readConfirmingAnswer's own comment for why misreading it the other way is
+// the expensive direction. A yes runs nothing here: it consumes the
+// interview into the held tag's brief and hands the tag to proposeSession,
+// whose "Shall I, sir?" follows as it would have without the hold -- Krane
+// can still decline that. A no is not a refusal to act, it is "you got it
+// wrong", so confirming is withdrawn (back to interviewing, on the page) and
+// the model is asked what it got wrong. A longer answer is the correction
+// itself: the hold is dropped the same way, activity goes back to
+// interviewing, and the sentence goes on to be an ordinary turn, so the
+// model folds it in and either asks about what it left open or proposes
+// again -- read back once more, the same way.
 async function answerHeld(send, conv, text) {
   const held = conv.held;
   if (!held) return false;
@@ -813,10 +820,11 @@ async function answerHeld(send, conv, text) {
     return false;
   }
 
-  const answer = readAnswer(text);
+  const answer = readConfirmingAnswer(text);
   conv.held = null;
   if (answer !== "yes") {
     conv.interview = withdrawConfirming(conv.interview);
+    activity(send, "interviewing", { subject: conv.interview.repo || undefined });
     log(`read-back ${answer === "no" ? "denied" : "corrected"}: ${JSON.stringify(text)}`);
     if (answer !== "no") return false;
     await say(send, "What did I get wrong, sir?");
@@ -833,6 +841,13 @@ async function answerHeld(send, conv, text) {
   };
   conv.interview = null;
   await proposeSession(send, conv, session, await rosterPoller.read({ maxAgeMs: 0 }));
+  // proposeSession only sets activity itself on the path that actually
+  // proposes (conv.proposal ends up non-null); on a refusal (the resolved
+  // session vanished) or a clarify (a tell with nothing to say) it speaks and
+  // returns without touching activity at all, which would otherwise leave
+  // the page reading "confirming" for a question that already has its
+  // answer, or a refusal, spoken over it.
+  if (!conv.proposal) activity(send, null);
   return true;
 }
 
@@ -1245,9 +1260,12 @@ async function say(send, text, nextState, stillCurrent) {
 
 // What the page shows under the state label: a short gerund naming what Dante
 // is doing right now, plus whatever names the thing it is doing it to. `value`
-// is one of interviewing | proposing | starting | telling | interrupting |
-// stopping | reading | building | null (null clears the label). `subject`
-// names the session, repo, or primitive involved. `brief` rides only alongside
+// is one of interviewing | confirming | proposing | starting | telling |
+// interrupting | stopping | reading | building | null (null clears the
+// label). interviewing is the model asking about an open facet; confirming
+// is the machine reading the whole brief back for a yes -- a different phase
+// with its own label, not a kind of interviewing. `subject` names the
+// session, repo, or primitive involved. `brief` rides only alongside
 // "proposing", because the spoken sentence only summarises the brief and the
 // person is being asked to approve the full text, which the page can then show.
 function activity(send, value, extra = {}) {
@@ -2372,27 +2390,31 @@ wss.on("connection", (ws) => {
 
         const ownInterview = isLive(conv.interview) && matchesInterview(conv.interview, session) ? conv.interview : null;
 
-        // A start, tell or interrupt is never proposed until its facets have
-        // been read back and answered (readyToPropose, and the rule in
-        // docs/interview.md). A proposal's "Shall I, sir?" confirms the act,
-        // not the understanding behind it: a yes to "start a session in
-        // jarvis to fix the tests" says nothing about which tests the model
-        // has in mind, and that is the detail that used to reach a running
-        // session unchecked whenever the model decided the request was clear
-        // enough to skip the interview. So a tag that arrives unconfirmed --
-        // no interview at all, or one whose facets were never read back -- is
-        // held here, and the read-back is spoken from the model's own brief in
-        // place of the proposal. It is folded into the interview as a question
-        // the machine asked (spokenFor), so the model's next turn knows
-        // Krane's yes or no answers that question and not whatever it said
-        // last, and the tag itself is kept (conv.held) so that a yes lifts
-        // the hold on exactly what was read back rather than on whatever the
-        // model recomposes a turn later -- see answerHeld. The escape phrase
-        // is one way past this, because it is Krane saying so; a skill is the
-        // other, because its facets ARE the command line, and the proposal
-        // reads that line back exactly -- a read-back before it would be the
-        // same question asked twice. holdForReadBack is the rule; this is the
-        // wiring.
+        // A start, tell or interrupt is never proposed straight off the
+        // model's own tag: confirming is the machine's job, not the model's,
+        // and it runs exactly once per proposal. A proposal's "Shall I,
+        // sir?" confirms the act, not the understanding behind it -- a yes to
+        // "start a session in jarvis to fix the tests" says nothing about
+        // which tests the model has in mind -- and that used to be checked
+        // twice over, once by a read-back the model wrote into its own tag
+        // (confirming=/confirmed=) and once more by the machine for whatever
+        // that read-back left out, which is how the same understanding ended
+        // up read back to Krane in two similar-sounding questions. Now
+        // readyToPropose only ever says yes when Krane told the model
+        // outright to proceed, so every other start, tell or interrupt lands
+        // here and is held: the read-back is spoken from the model's own
+        // brief, covering all four facets in one question, in place of the
+        // proposal. It is folded into the interview as a question the
+        // machine asked (spokenFor), so the model's next turn knows Krane's
+        // yes, no or correction answers that question and not whatever it
+        // said last, and the tag itself is kept (conv.held) so that a yes
+        // lifts the hold on exactly what was read back rather than on
+        // whatever the model recomposes a turn later -- see answerHeld. The
+        // escape phrase is one way past this, because it is Krane saying so;
+        // a skill is the other, because its facets ARE the command line, and
+        // the proposal reads that line back exactly -- a read-back before it
+        // would be the same question asked twice. holdForReadBack is the
+        // rule; this is the wiring.
         if (holdForReadBack(session, ownInterview)) {
           // For a tell or an interrupt the session is resolved first, for the
           // same reason proposeSession resolves it before proposing: reading
@@ -2411,18 +2433,33 @@ wss.on("connection", (ws) => {
             }
             name = record.name;
           }
-          const facets = unconfirmedFacets(ownInterview);
+          // Every facet, every time -- one read-back that covers the whole
+          // brief rather than only whatever the model left uncovered, which
+          // is what let a partial model-side read-back and this one land on
+          // the same facet twice.
+          const facets = FACETS;
           const question = readBack({ ...session, name }, facets);
-          conv.interview = noteInterview(
+          // Computed into locals rather than committed to conv straight away.
+          // say() can drop a clip as superseded (a newer utterance interrupts
+          // it before it plays), in which case it returns false and Krane
+          // never heard this question at all -- but conv.interview/conv.held
+          // used to be set unconditionally above, so his next "yes" (meant
+          // for whatever he actually said) would still be read by answerHeld
+          // as agreeing to a read-back nobody spoke. Waiting for say() to
+          // resolve true before assigning keeps the hold in sync with what
+          // was actually heard.
+          const nextInterview = noteInterview(
             ownInterview,
             { for: session.verb, repo: session.repo, name, confirming: facets.join(","), spokenFor: true },
             Date.now(),
             conv.unanswered.slice(0, answering),
           );
-          conv.held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
-          activity(send, "interviewing", { subject: conv.interview.repo || undefined });
-          log(`start held for confirmation (facets=${facets.join(",")}, asked=${conv.interview.asked}): ${JSON.stringify(question)}`);
+          const held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
+          activity(send, "confirming", { subject: nextInterview.repo || undefined });
+          log(`confirming: ${session.verb} held (facets=${facets.join(",")}, asked=${nextInterview.asked}): ${JSON.stringify(question)}`);
           if (await say(send, question, undefined, () => gate.isCurrent(token))) {
+            conv.interview = nextInterview;
+            conv.held = held;
             dropAnswered(conv.unanswered, answering);
           }
           return;

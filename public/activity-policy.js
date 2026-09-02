@@ -18,11 +18,12 @@ export const MAX_SUBJECT_CHARS = 60;
 // step if either changes.
 export const MAX_BRIEF_CHARS = 6000;
 
-// The seven things worth a word, plus the null the server sends when nothing
+// The eight things worth a word, plus the null the server sends when nothing
 // is going on. Anything else is a value this page does not know yet, and
 // guessing at a label for it would be worse than saying nothing.
 const KNOWN_VALUES = new Set([
   "interviewing",
+  "confirming",
   "proposing",
   "starting",
   "telling",
@@ -92,6 +93,7 @@ export function describeActivity(msg) {
   }
 
   if (value === "interviewing") return { label: "interviewing", detail: "" };
+  if (value === "confirming") return { label: "confirming", detail: "" };
   if (value === "proposing") return { label: "awaiting your yes", detail: cleanBrief(msg.brief) };
 
   let subject = cleanSubject(msg.subject);
