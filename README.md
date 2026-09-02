@@ -417,18 +417,30 @@ where there are no keys, tapping those is how the panels are toggled.
 | `server.js` | static files, WebSocket, dispatch. Wiring only — logic lives in `lib/`. |
 | `lib/brain.js` | **the seam.** The warm CLI, the persona, `ask` / `askResilient`. |
 | `lib/agents.js` | the session roster: `claude agents --json`, parsed and said out loud. |
+| `lib/transcript.js` | reading a session's own `.jsonl` off disk and summarizing what it actually did. |
+| `lib/recall.js` | which sessions can still be read once they've fallen off the roster. |
 | `lib/memory.js` | the store — preferences, summaries, artifacts, workspace aliases. |
 | `lib/notes.js` | the second half of memory — one Markdown file per topic, weighted and pruned. |
 | `lib/turns.js` | what one call carries: merged interruptions, the roster, the turn gate. |
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
+| `lib/module-dir.js` | the shared loader behind `lib/registry.js` and `lib/sessions.js` — every `*.mjs` in a directory into a keyed Map. |
 | `lib/spawn-session.js` | starting, telling and stopping a real session. |
+| `lib/interview.js` | asking one question at a time before a session gets proposed — the goal/where/constraints/done facets. |
+| `lib/confirm.js` | turning a parsed tag into a spoken proposal, and turning yes/no back into an action. |
+| `lib/commands.js` | vetting a spoken skill name against `/`-commands before it reaches a running session. |
 | `lib/run-cli.js` | one child-process runner for every verb that spawns the CLI and waits: deadline, two-step kill, capped pipes. |
 | `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
+| `lib/approval.js` + `hooks/dante-approve.mjs` | the PreToolUse hook that asks out loud before an outside-repo write or a publishing git op, and blocks for your answer. |
+| `lib/hooks.js` + `hooks/dante-notify.mjs` | the fast path for "something happened in a session" — hook events, deduplicated against the roster poller. |
+| `lib/notify.js` | the wording of an event, recap and spoken forms, in one pure place. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
 | `lib/action.js`, `outcome.js`, `verdict.js`, `progress.js`, `tts.js`, `config.js` | tags, build success detection, what a session command may claim afterwards, readable progress, speech, config. |
 | `claude-settings.json` | small and load-bearing — hooks off, thinking off. A build gets a throwaway copy with path deny rules merged on. |
+
+`recap` ("catch me up") is dispatched as its own session verb too, alongside
+start/tell/interrupt/stop/read.
 
 `npm test` — `node --test`, no network and no keys needed.
 
@@ -534,6 +546,9 @@ any primitive, and `denyRules()` names credentials, shell startup files and
 this app's own source, never the repository a build was pointed at. So "does
 not write to the repo it reads" is enforced by the system prompt alone, which
 is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
+
+What silently does not hold, and which CLI internals this leans on, is kept in
+[docs/known-limitations.md](docs/known-limitations.md).
 
 ## When something breaks
 

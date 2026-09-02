@@ -28,7 +28,7 @@ the writing, under the user's own permissions.
 | Spawned session permissions | **Your normal default** — voice-started and hand-started sessions behave identically. |
 | Session naming | `jarvis-1-builder-test-fix` — repo alias, per-workspace counter, task-derived slug. |
 | Follow-up to a busy session | **Queue it**, deliver the moment it goes idle. |
-| Concurrency | **Cap of five** voice-started sessions. |
+| Concurrency | **Cap of five** voice-started sessions — fifteen as of Stage 35; see the reconciliation note below the table. |
 | Session kinds | A `sessions/*.mjs` registry mirroring `primitives/`. |
 | Chaining | **Conditional** — chain on success, report on failure. |
 | Slack | Bot token + `chat.postMessage`, **one thread per session**. Outbound only, no inbound. |
@@ -41,6 +41,17 @@ the writing, under the user's own permissions.
 | Remote access | **Already works** as intended. Not on this roadmap. |
 | `primitives/` builds | **Keep**, and repoint the tree HUD at session progress. |
 | First slice | **Phases A and B** (stages 21–28), then reassess. |
+
+**Reconciliation, 2026-09-02.** The five in the Concurrency row was the interview's number, not
+today's: Stage 35's `ownRunning` (`lib/agents.js`, ~465-481) — counting only the sessions Dante
+itself remembers starting, rather than every background job on the machine — is what made a
+ceiling of five safe to lift, and `MAX_SESSIONS` in `lib/spawn-session.js` has read fifteen since.
+Told honestly: as of today the cap has never actually been enforced. `claude --bg` ignores
+`--session-id`, so every session Dante remembers is keyed by an id the daemon never assigned it
+(`docs/stop-verb-investigation.md`, "Not changed, but found on the way"), `ownRunning`'s
+intersection against the roster always comes back empty, and the ceiling has been silently inert
+since Stage 35 shipped. A fix keying memory by the daemon's own id is landing alongside this doc
+edit.
 
 ---
 
@@ -196,7 +207,7 @@ ten sessions recited aloud is a hostage situation.
 
 #### Stage 22 — the roster reaches the model
 
-`server.js:62` records the trap: a warm CLI keeps the system prompt it was spawned with, so a
+`server.js:914` records the trap: a warm CLI keeps the system prompt it was spawned with, so a
 rebuilt persona does not reach the model until the next cold start. The roster changes every few
 seconds, so it **cannot** live in the persona.
 
@@ -261,6 +272,11 @@ Naming, per the interview: `<alias>-<n>-<task-slug>` → `jarvis-1-builder-test-
 is pure: alias from workspaces, `n` from the per-workspace counter in memory, slug from the task
 (lowercased, non-alphanumerics collapsed, capped at four or five words). Collisions get a suffix.
 
+**Reconciliation, 2026-09-02.** The per-repo counter this section names was dropped (`5610c86`,
+`b0ad17c`): a session's name carries no repository and no counter, only the task slug. The number
+spoken and shown beside it is the roster position `orderRoster` assigns fresh on every tick, not a
+value burned into the name at start — see the `beginSession` comment in `server.js`, ~1773.
+
 #### Stage 25 — `[ACTION:SESSION verb=start repo=<alias> task="..." kind=<id>]`
 
 `parseAction` already tolerates any verb after the colon (`lib/action.js:7` notes a future
@@ -282,6 +298,10 @@ waits — that is the whole point.
 **Cap of five.** Counted from the roster, not from a local tally, so a session you started in a
 terminal counts too, and a session that died does not. A sixth request gets "you've got five
 running, sir" and names the oldest idle one as the obvious thing to stop.
+
+**Reconciliation, 2026-09-02.** Fifteen today, not five — see the note after the decisions table
+for why the ceiling moved and the honest catch: it has been unenforced since it moved, for the
+`--session-id` reason documented there.
 
 **Security posture, stated deliberately.** These sessions run with your settings, your permissions,
 your hooks, your MCP servers. Dante imposes no deny list, because you asked for an orchestrator,
@@ -341,6 +361,12 @@ Never `SIGKILL`: a session mid-write should be allowed to finish the write.
 
 ### Phase C — report back
 
+**Reconciliation, 2026-09-02.** Slack shipped, then was removed: `aadbca5` ("feat!: remove Slack
+integration; session events survive as voice announcements and the recap log"). `lib/notify.js`
+(Stage 31) now formats the same events as spoken announcements and recap lines instead of Slack
+messages, and `lib/slack.js` no longer exists. The stage text below is left as it was written —
+this is what was planned and, for a while, what shipped.
+
 #### Stage 29 — `lib/slack.js`
 
 Threading needs a message timestamp back from Slack, and an incoming webhook returns only `ok`. So
@@ -375,7 +401,7 @@ disk today and should be treated as an observed convention, not a contract: an u
 transcript degrades to "no summary available", never to an error.
 
 The summary itself reuses the cold `ask()` path with a dedicated persona, exactly as
-`SUMMARY_PERSONA` at `server.js:446` already does for conversation summaries. Haiku, ~300 ms, one
+`SUMMARY_PERSONA` at `server.js:2000` already does for conversation summaries. Haiku, ~300 ms, one
 sentence, no markdown. Transcript content is untrusted input to that call — it contains whatever
 the session read from disk or the web — so the summarizer prompt states plainly that the transcript
 is data to be summarized and never instructions to follow, and the result is capped and sanitized
@@ -538,7 +564,7 @@ Claude Code session exposes no pass/fail verdict, only `idle` or `gone` from the
 because ending something on purpose is not the same as it finishing what it was asked to do. The
 table lives in `lib/memory.js` beside the follow-up queue, bounded the same three ways: depth, age
 and total size. Chains are capped in depth and expire, and a chained session counts against the
-five-session cap like any other.
+five-session cap like any other (fifteen now — see the reconciliation note after Stage 25).
 
 **Stage 41 — "catch me up."** An event log in the memory store, capped like `artifacts`. "What
 happened while I was out" replays it as one spoken paragraph and clears the announcement queue.
@@ -597,6 +623,73 @@ walk-through yet.
 
 ---
 
+## Shipped since Stage 44 (to 2026-09-02)
+
+None of this was on the numbered plan above; it is what daily use since Stage 44 actually turned
+up and fixed.
+
+**The daemon `stop` path.** `stopSession` in `lib/spawn-session.js` now sends `claude stop <id>`
+to a background session instead of `SIGTERM`ing its worker pid, because the daemon resumes a
+`SIGTERM`ed worker about ten seconds later under a new pid — "stopped" was being said of a session
+still running. Investigated and fixed as `docs/stop-verb-investigation.md` records; landed as
+`d1f106a` and hardened by `7beeeed` and `bf728c8`.
+
+**`lib/verdict.js`.** Three words for what Dante is allowed to claim after a start, tell,
+interrupt or stop: proposed, attempted, verified. A stop or start is never reported done from the
+signal alone; the roster is re-read first, so "I could not check" and "it is gone" stay two
+different sentences (`06b34f2`).
+
+**`lib/peer.js`.** Writing straight into a running session's own `uds-messaging` unix socket, the
+same channel a person's keystrokes use into a busy terminal — an undocumented CLI 2.1.246 behaviour
+verified empirically against a live session before it was relied on. `dispatchTell` tries this
+path first, with `tellSession`'s cold `--resume` underneath it (`13abf18`, `94b5e31`).
+
+**The interview confirmation gate.** A start is no longer proposed on the model's say-so that a
+facet is covered; `confirming=`/`confirmed=` tag keys mean every one of the four facets has been
+read back to Krane and answered yes before a proposal is made (`9e33997`, `ec42a3e`).
+
+**`lib/commands.js`.** Slash commands by voice — "run the cleanup skill in jarvis" — vetted against
+the skills actually discovered on disk (a `SKILL.md` under `~/.claude/skills` or a repo's own), and
+never one of the CLI's own native commands, because a misheard `/compact` must not reach a session
+(`b96e456`, `a23cd6a`).
+
+**`lib/notes.js`.** Markdown memory notes, one file per topic, with weight-based pruning and
+contradiction detection, folded into every turn a topic is relevant to — a second, human-readable
+store beside `lib/memory.js`'s single JSON one (`1edd6fb`, `8ed54ed`, `16941df`, `ed7dd05`).
+
+**Worktree-scoped sessions.** A session whose `cwd` lands under `<repo>/.claude/worktrees/<name>`
+is recognised as inside that repo rather than as its own untitled workspace — `lib/agents.js`'s
+`aliasFor` treats the worktree path as contained by the same `within` check `visibleSessions`
+already used (`8ebd9e6`).
+
+**The rename to Dante AI.** The project and its README changed name and repo URL; the code this
+roadmap describes is the same code (`6b087ab`).
+
+---
+
+## Next (council review, 2026-09-02)
+
+**Now.** The session-identity fix above, and `docs/known-limitations.md` — a silently unenforced
+cap is worse than a documented gap, and the fix is landing anyway.
+
+**Next.** A real-CLI smoke test (`npm run smoke`: exec the actually-installed `claude --bg` and
+assert the roster lists it, excluded from `npm test` because it needs the CLI on the machine
+running it) — the daemon-id bug above is exactly the class of fact a fake CLI cannot catch. Then a
+text-input fallback, a push-to-talk toggle, and `aria-live` on the panels — the loop still assumes
+a working microphone and a sighted reader of the screen.
+
+**Later.** Verb extensions before new subsystems, because the verbs already shipped are where the
+daily friction is: `read` with tail-follow; `recap` saying stopped versus finished honestly;
+`recall` over the notes directory; the interview brief piped straight into `start=`; a notes panel
+with a voice "forget"; then, once those exist, extracting only the dispatch paths they touch out of
+`server.js`.
+
+**Not planned.** Multi-user and concurrent builds — the deny layer in `lib/builder.js` was never
+designed for concurrent cleanup, and pretending otherwise is how it stops being load-bearing.
+Local STT/TTS — Chrome's Web Speech API and Fish Audio are the whole reason the loop is fast.
+
+---
+
 ## Deliberately not on this roadmap
 
 - **Dante editing your source.** Read-only. The sessions it starts do the writing.
@@ -614,7 +707,8 @@ walk-through yet.
 ## Verification
 
 **The baseline this roadmap starts from.** `npm test` green at 368 tests, on the branch
-`feat/session-orchestration`.
+`feat/session-orchestration`. **Reconciliation, 2026-09-02:** that was the count when this
+document was written; the suite has grown stage by stage since and stands at 1,297 tests today.
 
 **Re-check before executing any phase** — the CLI ships weekly and these facts are load-bearing.
 Both were verified when this document was written:

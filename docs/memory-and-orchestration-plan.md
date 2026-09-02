@@ -11,7 +11,7 @@ repo's own README names as its intended growth paths:
 2. **No orchestration.** One `[ACTION:BUILD]` tag spawns exactly one `claude -p` in one fresh
    directory. There is no plan → build → verify decomposition.
 
-`dante-memory-and-orchestration-guide.md` (in the repo root) specifies both. This plan
+[`docs/archive/memory-and-orchestration-guide.md`](archive/memory-and-orchestration-guide.md) (archived) specifies both. This plan
 implements guide sections 1, 2.1–2.4, and deliberately **skips 2.5** (builds spawning their
 own sub-builds) — that widens the sandbox, and the repo's whole posture is least privilege.
 
@@ -162,7 +162,7 @@ const TAG_SOURCE = String.raw`\[\s*(action|memory)\s*:([^\]]*)\]`;
 
 Extract `parsePairs(body)` from today's `parseTagBody` (verb strip + `PAIR` loop + `unquote`,
 all reused verbatim); add `toAction(bag)` (today's semantics) and `toMemory(bag)`.
-`parseAction` keeps its name and export (`server.js:9`) but widens to
+`parseAction` keeps its name and export (`server.js:46`) but widens to
 `{ reply, action, memory }`. First dispatchable ACTION wins (unchanged); MEMORY tags **merge**
 across all matches.
 
@@ -210,7 +210,7 @@ right: a conversation that heals itself.
 ## Stage 5 — `server.js` wiring
 
 - `const memoryStore = loadStore()`, `const PROJECT_KEY = process.cwd()`.
-- **`persona` must become a `let`** (it is `const` at `server.js:49`). Add `refreshPersona()`.
+- **`persona` must become a `let`** (it is `const` at `server.js:899`). Add `refreshPersona()`.
   Without this the headline feature only takes effect after a restart, with no error anywhere.
   Comment the caveat: on a `--resume`d session the CLI may keep the system prompt it started
   with, so a refreshed persona is guaranteed correct on the next cold start.
@@ -223,7 +223,7 @@ right: a conversation that heals itself.
   with no await between: *"make it dark from now on and build me a landing page"* must have the
   preference on disk before the build starts. Both tags in one reply are independent; both apply.
 - After `outcome.ok` in `build()`: `recordArtifact` with the **basename** (`dir`, already
-  computed at `server.js:282`), not the absolute path — same token `/builds/` uses, and it keeps
+  computed at `server.js:1939`), not the absolute path — same token `/builds/` uses, and it keeps
   a home path out of a file that is read back into a system prompt.
 - `ws.on("close")`: read `sessions.get(ws)` **before** the delete (only handle to the id), then
   fire-and-forget `summarizeOnClose(sessionId, conv.turns)`.
@@ -279,7 +279,7 @@ comment verbatim, it is a real fix) move in unchanged.
   then stats (`lib/builder.js:461-471`) and a naive try/finally silently inverts that.
 
 **Widen the envelope uniformly**, single-shot included. The payload is already opaque to the
-server (`server.js:272`); two shapes means every consumer forever needs a `typeof` branch, and
+server (`server.js:1929`); two shapes means every consumer forever needs a `typeof` branch, and
 `build-hud.js:892` calls `String(...)` so the shape you forgot renders as `[object Object]` —
 a bug that ships silently because it looks like text. The string shape is pinned in exactly one
 place: `test/builder.test.js:210`.
@@ -310,7 +310,7 @@ fail at different times for different audiences.
 
 **Last step's contract must equal `primitive.outputContract`.** This is a real bug in the
 guide's own example (`verify.txt` vs `index.html`). `run()` decides success by
-`primitive.outputContract` and `server.js:289` builds the `open` URL from it; without the rule
+`primitive.outputContract` and `server.js:1957` builds the `open` URL from it; without the rule
 you get a chain that "succeeds" while the last step's promise is never checked, or a browser
 opening a file the last step never touched.
 
@@ -319,7 +319,7 @@ Export the already-written `contractIsUsable` from `lib/outcome.js:22-26` and ap
 surfaces after a build has been paid for. **Deliberate, requested hardening** — not scope creep.
 
 Also fix the existing inconsistency found during exploration: `startLine` is read by
-`server.js:265` but never validated and never documented. Validate it as an optional function
+`server.js:1922` but never validated and never documented. Validate it as an optional function
 and document it, plus `steps`, in `primitives/_template.mjs`.
 
 `withDefaults` (`lib/registry.js:90-99`) must deep-copy `steps` — the module cache returns the
@@ -363,7 +363,7 @@ turns a 900-second combined log from unreadable into diagnosable.
 from `runSingleShot` so today's return shape is byte-identical. `lib/outcome.js`'s
 `describeFailure` appends `" It stopped at the <step> step."` only when it has both a base
 message and a step id, speaking the id as words. Every existing `outcome.test.js` case passes no
-`failedStep` and stays green. `server.js:303-309` passes it through.
+`failedStep` and stays green. `server.js:1971-1979` passes it through.
 
 ## Stage 10 — `primitives/marketing-site.mjs`
 
@@ -409,7 +409,7 @@ DANTE cannot currently be interrupted. `playAudio()` (`app.js:348`) keeps no han
 `AudioBufferSourceNode` it creates, so a clip can only be waited out or reloaded away, and
 `startListening()` (`app.js:308`) says so outright by returning early on `state === "speaking"`.
 This stage is barge-in: pressing the record button cancels whatever is speaking and starts
-listening. Client-only — `say()` (`server.js:156-164`) resolves once the audio has been *sent*,
+listening. Client-only — `say()` (`server.js:1189`) resolves once the audio has been *sent*,
 so nothing on the wire or under `lib/` changes.
 
 `public/playback-policy.js` is the fourth module in the `stt-policy` / `visibility-policy`
@@ -861,7 +861,7 @@ files mode `0o755` and passed as `opts.bin` (`test/builder.test.js:138-151`) —
 6. `primitive.steps` must be `undefined`, never `[]`, when absent.
 7. The client breaks before its tests do — that is why stage 6 exists and must not be merged
    into 7 or reordered.
-8. `persona` is `const` at `server.js:49` and must become `let`.
+8. `persona` is `const` at `server.js:899` and must become `let`.
 9. Never store the session id the summary call returns.
 10. Read `sessions.get(ws)` before `sessions.delete(ws)` in the close handler.
 11. Seed the session id per connection, not from a boot-time snapshot.
