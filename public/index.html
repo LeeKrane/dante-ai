@@ -137,6 +137,10 @@
   /* The star reserves its own column whether or not it has anything in it, so
      every repository name lines up under the one before it. */
   #sessions .repo .star { display: inline-block; width: 1.4ch; color: var(--amber); }
+  /* Same fixed-width treatment as .star, just beside it and a touch wider --
+     "A:" and "AA:" both fit -- so "A: jarvis" and "B: fitness" still line up
+     under one another the way the star column already does. */
+  #sessions .repo .repo-letter { display: inline-block; width: 2.6ch; color: var(--cyan); }
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
   }

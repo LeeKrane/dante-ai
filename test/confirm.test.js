@@ -33,6 +33,16 @@ test("read, recap, a missing verb and a non-string verb never need confirmation"
   assert.equal(needsConfirmation({ verb: 7 }), false);
 });
 
+test("watch needs confirmation, in any case, but unwatch never does", () => {
+  // watch stands up something that persists past the turn, the same reason
+  // start, tell, interrupt and stop do; unwatch only dismantles one and
+  // touches no process, same class as read.
+  for (const verb of ["watch", "WATCH", "Watch"]) {
+    assert.equal(needsConfirmation({ verb }), true, verb);
+  }
+  assert.equal(needsConfirmation({ verb: "unwatch" }), false);
+});
+
 test("an interview question is never held for a confirmation", () => {
   // The question is the reply, and holding it would put a Shall I, sir? in
   // front of a question.
@@ -203,6 +213,56 @@ test("more than one match lists at most three names, never by position", () => {
 test("exactly one match returns the record and no refusal", () => {
   const record = { name: "jarvis-1-fix-tests", sessionId: "a" };
   assert.deepEqual(findTarget([record], "jarvis-1-fix-tests"), { record, refusal: null });
+});
+
+// ---------------------------------------------------------------------------
+// findTarget: the repo cross-check on a number
+// ---------------------------------------------------------------------------
+
+test("a repo alongside a number that agrees with the roster resolves normally", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "bug-hunt", { number: 1, alias: "jarvis" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("a repo alongside a number that disagrees with the roster is refused, naming the real one", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 3, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { number: 3, alias: "fitness" }), {
+    record: null,
+    refusal: "Session three is in jarvis, not fitness, sir.",
+  });
+});
+
+test("the repo cross-check is case-insensitive, since a spoken letter resolves to whatever case the alias is stored in", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1, alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { number: 1, alias: "JARVIS" }), { record: roster[0], refusal: null });
+});
+
+test("the repo cross-check is skipped, not refused, when the record carries no alias at all", () => {
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", number: 1 }];
+  assert.deepEqual(findTarget(roster, "", { number: 1, alias: "fitness" }), { record: roster[0], refusal: null });
+});
+
+test("addressing by name never applies the repo cross-check, even when it would disagree", () => {
+  // The name path already had the name to go on -- a mismatched alias here
+  // would just be the same wrong guess said twice, not new information.
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "jarvis-1-fix-tests", { alias: "fitness" }), {
+    record: roster[0],
+    refusal: null,
+  });
+});
+
+test("addressing by sessionId never applies the repo cross-check either", () => {
+  // A sessionId re-targets a session a proposal already resolved once; there
+  // is nothing new to cross-check on that second lookup.
+  const roster = [{ name: "jarvis-1-fix-tests", sessionId: "a", alias: "jarvis" }];
+  assert.deepEqual(findTarget(roster, "", { sessionId: "a", alias: "fitness" }), {
+    record: roster[0],
+    refusal: null,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -487,6 +547,38 @@ test("a session addressed by number with nothing yet resolved says the number al
 });
 
 // ---------------------------------------------------------------------------
+// describeIntent - watch
+// ---------------------------------------------------------------------------
+
+test("a watch by name is confirmed with a promise to report back", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "watch", name: "jarvis-1" } }),
+    "Watch jarvis-1 and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch by number uses whoFor, the same as stop, tell and interrupt", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "watch", number: "3" }, target: { name: "bug-hunt" } }),
+    "Watch session three, bug-hunt and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch says back the session Dante resolved, not the one the model wrote", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "watch", name: "jarvis-1" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "Watch jarvis-1-fix-failing-builder-test and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch tag with nothing to name describes nothing, so it is clarified instead", () => {
+  assert.equal(describeIntent({ session: { verb: "watch" } }), null);
+});
+
+// ---------------------------------------------------------------------------
 // readTarget
 // ---------------------------------------------------------------------------
 
@@ -556,6 +648,10 @@ test("a stop with nothing to name asks which session, not what to say to it", ()
   assert.equal(clarify({ session: { verb: "stop" } }), "Which session, sir?");
   assert.equal(clarify({ session: { verb: "interrupt" } }), "Which session, sir?");
   assert.equal(clarify({ session: { verb: "tell" } }), "Which session, sir?");
+});
+
+test("a watch with nothing to name asks which session too, the default clarify question", () => {
+  assert.equal(clarify({ session: { verb: "watch" } }), "Which session, sir?");
 });
 
 test("a read is not a confirmable verb, so clarify has nothing to ask", () => {
