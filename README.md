@@ -427,6 +427,7 @@ Claude Code will still use a tool you leave off the list, which is why
 | Key | Does |
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
+| **← / →** | step back and forward through this tab's messages, timestamped; gone when the tab closes |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
 | **s** | sessions panel (grouped by repository, main starred first; what is running, where, for how long; on by default) |
 | **t** | the caption line |
@@ -436,6 +437,13 @@ Toggles are ignored while Space is held, so a stray key mid-sentence can't blank
 the screen. If part of the UI "disappeared," press the key again. All four are
 also on screen as switches under the controls, lit while on -- on a phone,
 where there are no keys, tapping those is how the panels are toggled.
+
+The arrows step one line at a time -- what you said, what Dante said, a question
+it asked, an error -- with the time under each. The view returns to the newest
+line the moment Space is pressed, and when Dante asks a question or something
+goes wrong; a plain reply that arrives while you are reading an older line lights
+the → button instead of pulling you away. On a phone the two arrows sit under the
+caption.
 
 ## How it's put together
 
