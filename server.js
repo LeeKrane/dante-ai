@@ -1683,7 +1683,15 @@ async function dispatchWatch(send, session, preamble, roster) {
 // it only forgets a promise Dante made to itself -- which is why verb=unwatch
 // needs no confirmation at all (see lib/confirm.js's CONFIRMED_VERBS).
 async function dispatchUnwatch(send, session, preamble) {
-  const { watch, refusal } = cancelTarget(watchers, session);
+  // repo= that names a real workspace is a repository, never a session name,
+  // and cancelTarget's name fallback (session.name ?? session.repo) exists
+  // only for the model putting a NAME in the wrong field. Resolved letters
+  // arrive here as aliases (see the resolveRepoRef block in the message
+  // handler), so "unwatch repo=B" with one live watch must fall through to
+  // the exactly-one-watch branch rather than refuse "I am not watching
+  // fitness, sir."
+  const target = repoCrossCheckAlias(session.repo) ? { ...session, repo: undefined } : session;
+  const { watch, refusal } = cancelTarget(watchers, target);
   if (refusal) {
     await say(send, refusal);
     return;
