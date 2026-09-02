@@ -16,6 +16,7 @@ import {
   idleAmong,
   isWorking,
   matchSessions,
+  matchStarted,
   diffRoster,
   listAgents,
   orderRoster,
@@ -1219,4 +1220,134 @@ test("nothing to count is not an error", () => {
   assert.deepEqual(ownRunning(null, {}), { running: 0, oldestIdle: null });
   assert.deepEqual(ownRunning([], null), { running: 0, oldestIdle: null });
   assert.deepEqual(ownRunning(rosterOf(session()), "not a store"), { running: 0, oldestIdle: null });
+});
+
+// Remembering a session under the roster's own sessionId -- not the
+// provisional uuid --bg ignores -- is the whole point of resolveStartedSession
+// in lib/spawn-session.js; this is what makes that worth doing.
+test("a session remembered under the roster's real id is counted, not the discarded provisional one", () => {
+  const roster = rosterOf(session({ sessionId: MINE, name: "jarvis-1-fix" }));
+  const discarded = "9999ffff-0000-0000-0000-000000000000";
+  assert.equal(ownRunning(roster, { [discarded]: { name: "jarvis-1-fix" } }).running, 0);
+  assert.equal(ownRunning(roster, { [MINE]: { name: "jarvis-1-fix" } }).running, 1);
+});
+
+// ---------------------------------------------------------------------------
+// matchStarted
+// ---------------------------------------------------------------------------
+
+test("a matching id wins outright, name and all", () => {
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1" }),
+    session({ sessionId: YOURS, id: "eeee5555", name: "some-other-session" }),
+  );
+  const found = matchStarted(roster, { shortId: "eeee5555", name: "dante-probe-1" });
+  assert.equal(found.sessionId, YOURS);
+});
+
+test("an id that matches nothing falls back to the name", () => {
+  const roster = rosterOf(session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1" }));
+  const found = matchStarted(roster, { shortId: "zzzzzzzz", name: "dante-probe-1" });
+  assert.equal(found.sessionId, MINE);
+});
+
+test("no id at all still resolves by name", () => {
+  const roster = rosterOf(session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1" }));
+  const found = matchStarted(roster, { shortId: null, name: "dante-probe-1" });
+  assert.equal(found.sessionId, MINE);
+});
+
+test("a name collision is settled by which record is newest", () => {
+  // A name is only unique among sessions alive right now -- buildName in
+  // server.js reuses the name of one that has since ended -- so an older
+  // record can share a label with the one just started.
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1", startedAt: 1000 }),
+    session({ sessionId: YOURS, id: "eeee5555", name: "dante-probe-1", startedAt: 9000 }),
+  );
+  const found = matchStarted(roster, { shortId: null, name: "dante-probe-1" });
+  assert.equal(found.sessionId, YOURS);
+});
+
+test("an interactive session never wins the name fallback", () => {
+  // Only `claude --bg` sessions are ever what this is resolving for; an
+  // interactive terminal happening to share the label is not a match.
+  const roster = rosterOf(session({ sessionId: MINE, id: null, name: "dante-probe-1", kind: "interactive" }));
+  assert.equal(matchStarted(roster, { shortId: null, name: "dante-probe-1" }), null);
+});
+
+test("nothing to go on at all is not a match", () => {
+  const roster = rosterOf(session({ sessionId: MINE, name: "dante-probe-1" }));
+  assert.equal(matchStarted(roster, {}), null);
+  assert.equal(matchStarted(roster, { shortId: "", name: "" }), null);
+  assert.equal(matchStarted(null, { shortId: "abcd1234", name: "dante-probe-1" }), null);
+  assert.equal(matchStarted([], { shortId: "abcd1234", name: "dante-probe-1" }), null);
+});
+
+test("an older same-name record in another cwd is not the name-fallback match", () => {
+  // A background session Dante cannot see — started somewhere else entirely
+  // — must not become the remembered session just because it shares a slug.
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1", cwd: "/home/krane/development/other" }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found, null);
+});
+
+test("a same-name record started before since is not the name-fallback match", () => {
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1", startedAt: 1000 }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found, null);
+});
+
+test("the right record still matches by name inside both bounds", () => {
+  const roster = rosterOf(
+    session({
+      sessionId: MINE,
+      id: "abcd1234",
+      name: "dante-probe-1",
+      cwd: "/home/krane/development/jarvis",
+      startedAt: 500_500,
+    }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found.sessionId, MINE);
+});
+
+test("the since tolerance covers the small gap between this clock and the daemon's own", () => {
+  // startedAt comes back on the daemon's own clock; two seconds earlier than
+  // `since` is still close enough to be the very session waited on.
+  const roster = rosterOf(
+    session({
+      sessionId: MINE,
+      id: "abcd1234",
+      name: "dante-probe-1",
+      cwd: "/home/krane/development/jarvis",
+      startedAt: 499_000,
+    }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found.sessionId, MINE);
 });

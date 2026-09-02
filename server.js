@@ -47,7 +47,8 @@ import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { loadSessionKinds, buildName } from "./lib/sessions.js";
 import {
-  MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession, createInFlight,
+  MAX_SESSIONS, newSessionId, refuseStart, startSession, resolveStartedSession, stopSession, tellSession,
+  createInFlight, daemonId,
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
 import { loadCommands, vetCommand } from "./lib/commands.js";
@@ -1802,19 +1803,58 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     return { ok: false, name, error: started.error };
   }
 
+  // `sessionId` above is only ever provisional: --bg ignores --session-id and
+  // mints its own (see the comment on UUID in lib/spawn-session.js), so it is
+  // not the id this session will actually answer to. The roster is what
+  // knows that id, and resolveStartedSession is what finds the record on it
+  // -- matched on the short id parseStartedId read off stdout, or by name
+  // when that read came back empty. That record's own sessionId, not the
+  // uuid above, is the key everything downstream has to agree with the
+  // roster on: ownRunning counts against it, dispatchStop writes a stoppedAt
+  // against it, and a chain fires off it.
+  //
+  // `list: () => rosterPoller.fresh()` rather than bare listAgents: a start
+  // that spawned its own `claude agents --json` on every poll of this wait
+  // would be a second, uncoordinated source of roster reads racing the
+  // poller's own — fresh() is the poller's own de-duplicated read (see
+  // createRosterPoller in lib/agents.js), so a start costs at most one
+  // listing beyond whatever the poller was already about to do. `cwd` and
+  // `since` are what let matchStarted's name fallback tell this session
+  // apart from an older, unrelated one sharing its name — see matchStarted's
+  // own comment for why both bounds matter.
+  const resolved = await resolveStartedSession(
+    { shortId: started.shortId, name, cwd: workspace.path, since: started.startedAtMs },
+    { list: () => rosterPoller.fresh(), deadlineMs: 5000 },
+  );
+  const liveSessionId = resolved?.sessionId ?? sessionId;
+  if (!resolved) {
+    // Not a failed start -- the session is running either way -- but nothing
+    // keyed on its real id will ever find it: ownRunning will not count it
+    // against the cap, dispatchStop will not be able to record a stop for
+    // it, and a chain on it will never fire. Worth a log line, not a spoken
+    // error, since there is nothing here for a person to act on.
+    log(`session started name=${name} id=${sessionId} but could not be matched on the roster -- cap, queue and chain will not track it`);
+  }
+
   // Its own bucket, not the artifacts list: artifacts answer "what did we build
   // lately", and ten sessions would push every build out of that answer.
-  rememberSession(memoryStore, sessionId, {
+  rememberSession(memoryStore, liveSessionId, {
     name, alias: workspace.alias, cwd: workspace.path, task, kind: kindId ?? null,
+    // daemonId(), not the record's `.id` read straight off it: everything the
+    // roster carries came from the CLI, but a stored shortId is later handed
+    // to `claude stop <id>` as an argument, and this is what makes sure it
+    // still looks like an id rather than something that would be read as a
+    // flag by the time that happens.
+    shortId: daemonId(resolved?.record) ?? started.shortId ?? null,
   });
   // What to do once it finishes, if anything was asked for. Recorded now rather
   // than looked up later: by the time it ends, the turn that asked is long over.
-  if (then) chainAfter(memoryStore, sessionId, { task: then, alias: workspace.alias, depth });
+  if (then) chainAfter(memoryStore, liveSessionId, { task: then, alias: workspace.alias, depth });
   recordEvent(memoryStore, { kind: "started", name, detail: task });
   saveStore(memoryStore);
-  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
+  log(`session started name=${name} id=${liveSessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
 
-  return { ok: true, name, sessionId };
+  return { ok: true, name, sessionId: liveSessionId };
 }
 
 async function dispatchAction(send, conv, action, preamble = "") {
