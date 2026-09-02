@@ -1541,15 +1541,13 @@ function recallable(roster) {
 // restart does not forget it. The note is written from what was just read,
 // never read from -- see lib/recall.js's own comment for the full rule.
 //
-// `preamble` is accepted for the dispatchSession signature and then dropped on
-// every path, unlike the other verbs. Those are proposals, and the model's
-// sentence is the offer; a read is finished before a word of this is spoken,
-// so "let me read what jarvis three is doing" fused onto the findings announces
-// an action that has already happened and sounds like one still pending. The
-// persona is told to say nothing for a read, but a model that says it anyway
-// must not be heard, so the drop is enforced here rather than trusted there.
+// `preamble` is usually "" here, and deliberately: the chat turn that
+// dispatches a read blanks the model's sentence before calling in, because a
+// read is finished before a word of it is spoken and "let me read what jarvis
+// three is doing" fused onto the findings announces an action that has already
+// happened as one still pending. See the read branch of the chat handler for
+// when the sentence is kept anyway.
 async function dispatchRead(send, session, preamble, roster, conv) {
-  preamble = "";
   const candidates = recallable(roster);
   // The number-then-name resolution, and the wording of each refusal, live in
   // lib/confirm.js's readTarget so they can be tested without a live roster or
@@ -1574,8 +1572,11 @@ async function dispatchRead(send, session, preamble, roster, conv) {
   activity(send, "reading", { subject: record.name });
   try {
     send({ type: "state", value: "thinking" });
+    // `running` goes along so the read model knows the "still working, sir"
+    // prefix below is coming and does not open its own answer the same way.
     const { text, reason } = await readSession({
       cwd: record.cwd, sessionId: record.sessionId, task: record.task, question,
+      running: record.running,
     });
 
     if (!text) {
@@ -2460,7 +2461,19 @@ wss.on("connection", (ws) => {
         if (needsConfirmation(session)) {
           await proposeSession(send, conv, session, roster);
         } else {
-          await dispatchSession(send, session, reply, roster, conv);
+          // A read's sentence is dropped too, but only when the turn answered
+          // a single sentence. The persona is told to say nothing for a read,
+          // because the findings are heard after the read is already done and
+          // "let me read what jarvis three is doing" then promises something
+          // finished -- but a model that says it anyway must not be heard, so
+          // the drop is enforced here. A merged turn is the exception: "what
+          // is jarvis three doing, and make the orb blue" gets its second
+          // sentence answered in that same prose, and dropAnswered above has
+          // already marked it answered, so blanking it there would lose the
+          // answer for good. The persona covers that case instead.
+          const sentence = session.verb === "read" && answering <= 1 ? "" : reply;
+          if (sentence !== reply) log(`read: dropped the model's sentence ${JSON.stringify(reply)}`);
+          await dispatchSession(send, session, sentence, roster, conv);
         }
       } else if (action) {
         dropAnswered(conv.unanswered, answering);
