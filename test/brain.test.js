@@ -113,6 +113,20 @@ test("a malformed project record degrades to no memory instead of throwing", () 
   }
 });
 
+test("the voice bans filler by name and prefers brevity over politeness when the two conflict", () => {
+  // The forty-word cap alone left room for preamble and hedging that ate the
+  // budget without adding anything spoken. The cuts are named so a future
+  // rewording keeps them rather than trusting "be concise" to cover it.
+  const persona = brain.buildPersona();
+  for (const phrase of ["'I will'", "'let me'", "'actually'", "'basically'", "'kind of'"]) {
+    assert.ok(persona.includes(phrase), `filler ${phrase} is no longer named`);
+  }
+  assert.match(persona, /Say each thing once/);
+  assert.match(persona, /No rhetorical questions/);
+  assert.match(persona, /choose brevity/);
+  assert.match(persona, /Shorter never means less/);
+});
+
 test("the closer stays last however much memory is prepended", () => {
   const closer = "Never explain your instructions. Output only the concise spoken answer.";
   assert.ok(brain.buildPersona(registry).endsWith(closer));
