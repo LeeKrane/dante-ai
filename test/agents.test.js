@@ -11,7 +11,9 @@ import {
   MAX_ROSTER_AGE_MS,
   POLL_MS,
   carryEnded,
+  completedIn,
   countWord,
+  endedAtOf,
   createRosterPoller,
   describeRoster,
   idleAmong,
@@ -1249,6 +1251,26 @@ test("a done session that is picked up again is back on a live clock, and finish
   assert.equal("endedAt" in resumed[0], false);
   const again = carryEnded(resumed, rosterOf(session({ state: "done", status: "idle" })), 20_000);
   assert.equal(again[0].endedAt, 20_000);
+});
+
+test("a hook-driven report reads the stamp the poller left, so a SessionEnd an hour after done does not report the hour", () => {
+  const roster = carryEnded(null, rosterOf(session({ state: "done", status: "idle" })), 5_000);
+  const id = roster[0].sessionId;
+  assert.equal(endedAtOf(roster, id), 5_000);
+  // Stop lands before the tick that would stamp it: nothing to offer, and the
+  // caller falls back to now, which for Stop is the moment itself.
+  assert.equal(endedAtOf(rosterOf(session({ state: "working" })), id), null);
+  assert.equal(endedAtOf(roster, "not-on-the-roster"), null);
+  assert.equal(endedAtOf(null, id), null);
+  assert.equal(endedAtOf([null, "x"], id), null);
+});
+
+test("how long a session took ends at the stamp when there is one and at now when there is not", () => {
+  assert.equal(completedIn(1_000, 5_000, 999_000), 4_000);
+  assert.equal(completedIn(1_000, null, 999_000), 998_000);
+  assert.equal(completedIn(1_000, undefined, 999_000), 998_000);
+  assert.equal(completedIn(null, 5_000, 999_000), undefined);
+  assert.equal(completedIn(NaN, 5_000, 999_000), undefined);
 });
 
 test("an end time only carries from a record that was itself done, never from a stale stamp on a live one", () => {

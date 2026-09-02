@@ -40,7 +40,7 @@ import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, createRosterPoller, idleAmong, isWorking, orderRoster, ownRunning, visibleSessions,
+  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning, visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
@@ -237,12 +237,12 @@ async function reportComplete(sessionId, context = {}) {
   if (chain) saveStore(memoryStore);
 
   const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
-  // The moment the roster first saw it done, when the poller is what noticed
-  // (carryEnded in lib/agents.js); a session can sit done for an hour before
+  // The moment the roster first saw it done (carryEnded in lib/agents.js),
+  // whichever path noticed the exit: a session can sit done for an hour before
   // its process goes, and "took an hour and four minutes" would be counting
-  // that hour. The hooks fire at the moment itself, so now is right for them.
-  const endedAt = Number.isFinite(context.endedAt) ? context.endedAt : Date.now();
-  const durationMs = Number.isFinite(startedAt) ? endedAt - startedAt : undefined;
+  // that hour. Only a Stop hook, which lands ahead of the tick that would
+  // stamp it, has nothing to offer here, and for it now is the moment itself.
+  const durationMs = completedIn(startedAt, context.endedAt);
   // Up to ~25 s of Haiku, and worth it: "done" without it is not news. Read
   // once and used twice -- the posted line and the spoken one say the same
   // thing about the same session, at different lengths.
@@ -1056,7 +1056,13 @@ const server = createServer(async (req, res) => {
     // is the best available answer to "what else is running" without paying
     // for a fresh listing on a path that already raced to answer the hook.
     const work = event.kind === "complete"
-      ? reportComplete(event.sessionId, { cwd: event.cwd, roster: rosterPoller.current() })
+      ? reportComplete(event.sessionId, {
+        cwd: event.cwd,
+        roster: rosterPoller.current(),
+        // A SessionEnd for a session that finished an hour ago must not report
+        // the hour: the roster still holds the stamp from when it was seen done.
+        endedAt: endedAtOf(rosterPoller.current(), event.sessionId),
+      })
       : reportAttention(event);
     work.catch((e) => log("hook report failed:", e.message || e));
     return;
