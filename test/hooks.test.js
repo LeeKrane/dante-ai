@@ -19,6 +19,10 @@ test("only this machine is loopback", () => {
 test("the three hook events Dante reports become the two kinds it reports them as", () => {
   assert.equal(parseHookEvent({ hook_event_name: "Stop", session_id: ID }).kind, "complete");
   assert.equal(parseHookEvent({ hook_event_name: "SessionEnd", session_id: ID }).kind, "complete");
+  // Two events, one kind, and not the same moment: the completion report has
+  // to know which one it is holding to say how long the session took.
+  assert.equal(parseHookEvent({ hook_event_name: "Stop", session_id: ID }).event, "Stop");
+  assert.equal(parseHookEvent({ hook_event_name: "SessionEnd", session_id: ID }).event, "SessionEnd");
   assert.equal(parseHookEvent({ hook_event_name: "Notification", session_id: ID }).kind, "needs-attention");
 });
 
@@ -64,7 +68,7 @@ test("a SessionEnd reports how it ended", () => {
 
 test("an event with no detail at all is still an event", () => {
   const event = parseHookEvent({ hook_event_name: "Stop", session_id: ID });
-  assert.deepEqual(event, { kind: "complete", sessionId: ID, cwd: "", detail: "" });
+  assert.deepEqual(event, { kind: "complete", event: "Stop", sessionId: ID, cwd: "", detail: "" });
 });
 
 // ---------------------------------------------------------------------------

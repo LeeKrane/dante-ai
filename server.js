@@ -40,7 +40,8 @@ import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning, visibleSessions,
+  MAX_LISTED, completedIn, createRosterPoller, endedAtIn, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning,
+  visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
@@ -59,6 +60,7 @@ import {
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace,
   setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
+  rememberEnded, endedSeeds,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
   applyNoteLimitsTag, getNoteLimits,
 } from "./lib/memory.js";
@@ -153,6 +155,9 @@ const rosterPoller = createRosterPoller({
   // not one is.
   onRoster: (roster) => {
     for (const record of idleAmong(roster, queuedSessionIds(memoryStore))) deliverQueued(record);
+    // The finish times the poller stamped, written down so they survive a
+    // restart (endedSeeds, below). Saved only when one is new or moved.
+    if (rememberEnded(memoryStore, roster) > 0) saveStore(memoryStore);
   },
 
   onEvents: (events, roster) => {
@@ -220,6 +225,22 @@ async function deliverQueued(record) {
 // lines in the thread.
 const reported = createDeduper();
 
+// When a hook-reported completion happened. Stop fires at the moment itself,
+// so that moment is the answer, and it is also handed to the poller: a Stop
+// beats the tick that would stamp the session by up to POLL_MS, and a session
+// that was done, resumed and finished again inside one poll window is one the
+// listing alone could never re-stamp. SessionEnd fires when the process goes,
+// which can be an hour after the work ended, so it asks the roster for the
+// stamp instead and lets completedIn fall back to now only when there is none.
+function hookEndedAt(event, roster) {
+  if (event.event === "Stop") {
+    const at = Date.now();
+    rosterPoller.noteEnded(event.sessionId, at);
+    return at;
+  }
+  return endedAtIn(roster, event.sessionId);
+}
+
 // Only sessions Dante started are reported. The roster sees every terminal on
 // this machine, and recording every time somebody closes one would make the
 // recap worthless within a day.
@@ -237,11 +258,11 @@ async function reportComplete(sessionId, context = {}) {
   if (chain) saveStore(memoryStore);
 
   const startedAt = Number.isFinite(context.startedAt) ? context.startedAt : remembered.at;
-  // The moment the roster first saw it done (carryEnded in lib/agents.js),
-  // whichever path noticed the exit: a session can sit done for an hour before
-  // its process goes, and "took an hour and four minutes" would be counting
-  // that hour. Only a Stop hook, which lands ahead of the tick that would
-  // stamp it, has nothing to offer here, and for it now is the moment itself.
+  // The moment the session was seen done (trackEnded in lib/agents.js), when
+  // there was one: a session can sit done for an hour before its process goes,
+  // and "took an hour and four minutes" would be counting that hour. Without
+  // one -- a Stop hook, or a session that went straight from working to gone --
+  // now is as close as anything gets.
   const durationMs = completedIn(startedAt, context.endedAt);
   // Up to ~25 s of Haiku, and worth it: "done" without it is not news. Read
   // once and used twice -- the posted line and the spoken one say the same
@@ -524,9 +545,9 @@ function rosterForClient(roster) {
     status: record.status,
     startedAt: record.startedAt,
     // When it finished, for a done session, so the page can stop the clock at
-    // that moment rather than counting on from startedAt (see carryEnded in
+    // that moment rather than counting on from startedAt (see trackEnded in
     // lib/agents.js). null for a live one: its age is counted on the page.
-    endedAt: Number.isFinite(record.endedAt) ? record.endedAt : null,
+    endedAt: endedAtOf(record),
   }));
 }
 
@@ -1055,14 +1076,9 @@ const server = createServer(async (req, res) => {
     // straight off the CLI's own Stop/SessionEnd event. rosterPoller.current()
     // is the best available answer to "what else is running" without paying
     // for a fresh listing on a path that already raced to answer the hook.
+    const roster = rosterPoller.current();
     const work = event.kind === "complete"
-      ? reportComplete(event.sessionId, {
-        cwd: event.cwd,
-        roster: rosterPoller.current(),
-        // A SessionEnd for a session that finished an hour ago must not report
-        // the hour: the roster still holds the stamp from when it was seen done.
-        endedAt: endedAtOf(rosterPoller.current(), event.sessionId),
-      })
+      ? reportComplete(event.sessionId, { cwd: event.cwd, roster, endedAt: hookEndedAt(event, roster) })
       : reportAttention(event);
     work.catch((e) => log("hook report failed:", e.message || e));
     return;
@@ -2599,5 +2615,9 @@ server.listen(PORT, HOST, () => {
   console.log(`session kinds: ${kinds.length ? kinds.join(", ") : "none"}`);
   // Started once the server is actually up: a poller ticking behind a failed
   // listen() would be a child process every five seconds with nobody to tell.
+  // Seeded first with the finish times remembered from before the last stop,
+  // so the first tick confirms them against the listing rather than stamping
+  // every session still sitting done with the time Dante came back.
+  for (const [id, at] of endedSeeds(memoryStore)) rosterPoller.noteEnded(id, at);
   rosterPoller.start();
 });

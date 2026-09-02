@@ -48,6 +48,8 @@ import {
   queuedSessionIds,
   MAX_SESSIONS_REMEMBERED,
   rememberSession,
+  rememberEnded,
+  endedSeeds,
   getSessionRecord,
   getSessions,
   MAX_CHAIN_DEPTH,
@@ -1003,6 +1005,31 @@ test("a started session is remembered by what it was asked to do", () => {
   const saved = rememberSession(store, SESSION_ID, { name: "jarvis-1-review", task: "look at the diff" });
   assert.equal(saved.name, "jarvis-1-review");
   assert.equal(getSessionRecord(store, SESSION_ID).task, "look at the diff");
+});
+
+test("a finish time the poller stamped is written onto the remembered session, once, and only for sessions Dante started", () => {
+  const store = emptyStore();
+  rememberSession(store, SESSION_ID, { name: "jarvis-1-review" });
+  const mine = { sessionId: SESSION_ID, state: "done", endedAt: 5_000 };
+  const stranger = { sessionId: "not-ours", state: "done", endedAt: 5_000 };
+  const live = { sessionId: SESSION_ID, state: "working", endedAt: 5_000 };
+  assert.equal(rememberEnded(store, [mine, stranger]), 1);
+  assert.equal(getSessionRecord(store, SESSION_ID).endedAt, 5_000);
+  assert.equal(getSessionRecord(store, "not-ours"), null);
+  // The same stamp again is not a change, so a save is not owed for it.
+  assert.equal(rememberEnded(store, [mine]), 0);
+  // A live record never carries one in practice; a contradictory one is ignored.
+  assert.equal(rememberEnded(store, [live]), 0);
+  assert.equal(rememberEnded(store, null), 0);
+  assert.equal(rememberEnded(store, [null, "x", {}]), 0);
+});
+
+test("the remembered finish times come back as seeds for the poller, and nothing else does", () => {
+  const store = emptyStore();
+  rememberSession(store, SESSION_ID, { name: "jarvis-1-review", endedAt: 5_000 });
+  rememberSession(store, "still-running-0000", { name: "jarvis-2-build" });
+  assert.deepEqual(endedSeeds(store), [[SESSION_ID, 5_000]]);
+  assert.deepEqual(endedSeeds({}), []);
 });
 
 test("a later patch adds to a session record rather than replacing it", () => {

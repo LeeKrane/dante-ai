@@ -66,6 +66,8 @@ function rowFromRecord(record, now) {
     // A finished session's clock stops where the server says it finished
     // (endedAt, stamped by the roster poller the tick it first saw the session
     // done); a live one counts on from startedAt against this tick's clock.
+    // A local copy of lib/agents.js's completedIn, for the same reason
+    // elapsedLabel above is a local copy: public/ cannot import from lib/.
     elapsed: elapsedLabel((Number.isFinite(record.endedAt) ? record.endedAt : now) - record.startedAt),
   };
 }

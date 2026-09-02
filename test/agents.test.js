@@ -10,11 +10,14 @@ import {
   MAX_LISTED,
   MAX_ROSTER_AGE_MS,
   POLL_MS,
-  carryEnded,
   completedIn,
   countWord,
-  endedAtOf,
   createRosterPoller,
+  endedAtIn,
+  endedAtOf,
+  isDone,
+  stampEnded,
+  trackEnded,
   describeRoster,
   idleAmong,
   isWorking,
@@ -1225,44 +1228,83 @@ test("nothing to count is not an error", () => {
 });
 
 // ---------------------------------------------------------------------------
-// carryEnded
+// When a session finished: trackEnded, stampEnded, endedAtOf, endedAtIn
 // ---------------------------------------------------------------------------
 
-test("a session first seen done is stamped with that tick's clock, and a live one is not", () => {
-  const next = rosterOf(session({ state: "done", status: "idle" }), session({ sessionId: "live", state: "working" }));
-  const [done, live] = carryEnded(null, next, 5_000);
+const DONE = { state: "done", status: "idle" };
+
+test("done is the one terminal state, and an idle terminal is not it", () => {
+  assert.equal(isDone(session(DONE)), true);
+  assert.equal(isDone(session({ state: null, status: "idle" })), false);
+  assert.equal(isDone(session({ state: "blocked" })), false);
+  assert.equal(isDone(null), false);
+  assert.equal(isDone("done"), false);
+});
+
+test("a session first seen done takes that tick's clock, and a live one is not tracked", () => {
+  const ended = trackEnded(null, rosterOf(session(DONE), session({ sessionId: "live" })), 5_000);
+  assert.deepEqual([...ended], [[session().sessionId, 5_000]]);
+});
+
+test("the time is carried forward unchanged on every later tick, so a done clock never moves", () => {
+  const first = trackEnded(new Map(), rosterOf(session(DONE)), 5_000);
+  const second = trackEnded(first, rosterOf(session(DONE)), 65_000);
+  const third = trackEnded(second, rosterOf(session(DONE)), 125_000);
+  assert.equal(third.get(session().sessionId), 5_000);
+});
+
+test("a done session that is picked up again is dropped, and finishing again takes a fresh time", () => {
+  const done = trackEnded(null, rosterOf(session(DONE)), 5_000);
+  const resumed = trackEnded(done, rosterOf(session({ state: "working" })), 10_000);
+  assert.equal(resumed.size, 0);
+  const again = trackEnded(resumed, rosterOf(session(DONE)), 20_000);
+  assert.equal(again.get(session().sessionId), 20_000);
+});
+
+test("a session that leaves the listing is forgotten, so a reused id cannot inherit its finish time", () => {
+  const done = trackEnded(null, rosterOf(session(DONE)), 5_000);
+  assert.equal(trackEnded(done, rosterOf(), 10_000).size, 0);
+  assert.equal(trackEnded(done, null, 10_000).size, 0);
+});
+
+test("a time handed in ahead of the listing is kept iff the listing agrees the session is done", () => {
+  // A Stop hook lands before the tick; a seed from the memory store lands
+  // before the first tick. Either is confirmed or discarded by the listing.
+  const early = new Map([[session().sessionId, 4_000], ["gone", 1]]);
+  const confirmed = trackEnded(early, rosterOf(session(DONE)), 9_000);
+  assert.deepEqual([...confirmed], [[session().sessionId, 4_000]]);
+  const refused = trackEnded(early, rosterOf(session({ state: "working" })), 9_000);
+  assert.equal(refused.size, 0);
+});
+
+test("the stamp lands on done records only, and a record without a time is handed back untouched", () => {
+  const ended = new Map([[session().sessionId, 5_000]]);
+  const [done, live, unknown] = stampEnded(
+    rosterOf(session(DONE), session({ sessionId: "live" }), session({ ...DONE, sessionId: "unknown" })),
+    ended,
+  );
   assert.equal(done.endedAt, 5_000);
   assert.equal("endedAt" in live, false);
+  assert.equal("endedAt" in unknown, false);
+  assert.equal(stampEnded(null, ended), null);
+  assert.deepEqual(stampEnded([null, "x"], ended), [null, "x"]);
 });
 
-test("the end time is carried forward unchanged on every later tick, so a done clock never moves", () => {
-  const first = carryEnded(null, rosterOf(session({ state: "done", status: "idle" })), 5_000);
-  // The next tick hands over fresh records (orderRoster rebuilds them), not
-  // the stamped ones, so the carry has to come from the previous roster.
-  const second = carryEnded(first, rosterOf(session({ state: "done", status: "idle" })), 65_000);
-  const third = carryEnded(second, rosterOf(session({ state: "done", status: "idle" })), 125_000);
-  assert.equal(second[0].endedAt, 5_000);
-  assert.equal(third[0].endedAt, 5_000);
+test("a finish time is read off a record only when it is done, whichever caller asks", () => {
+  assert.equal(endedAtOf({ ...session(DONE), endedAt: 5_000 }), 5_000);
+  assert.equal(endedAtOf(session(DONE)), null);
+  assert.equal(endedAtOf({ ...session({ state: "working" }), endedAt: 5_000 }), null);
+  assert.equal(endedAtOf(null), null);
 });
 
-test("a done session that is picked up again is back on a live clock, and finishing again stamps it afresh", () => {
-  const done = carryEnded(null, rosterOf(session({ state: "done", status: "idle" })), 5_000);
-  const resumed = carryEnded(done, rosterOf(session({ state: "working", status: "busy" })), 10_000);
-  assert.equal("endedAt" in resumed[0], false);
-  const again = carryEnded(resumed, rosterOf(session({ state: "done", status: "idle" })), 20_000);
-  assert.equal(again[0].endedAt, 20_000);
-});
-
-test("a hook-driven report reads the stamp the poller left, so a SessionEnd an hour after done does not report the hour", () => {
-  const roster = carryEnded(null, rosterOf(session({ state: "done", status: "idle" })), 5_000);
+test("a hook-driven report reads the stamp off the roster, so a SessionEnd an hour after done does not report the hour", () => {
+  const roster = stampEnded(rosterOf(session(DONE)), new Map([[session().sessionId, 5_000]]));
   const id = roster[0].sessionId;
-  assert.equal(endedAtOf(roster, id), 5_000);
-  // Stop lands before the tick that would stamp it: nothing to offer, and the
-  // caller falls back to now, which for Stop is the moment itself.
-  assert.equal(endedAtOf(rosterOf(session({ state: "working" })), id), null);
-  assert.equal(endedAtOf(roster, "not-on-the-roster"), null);
-  assert.equal(endedAtOf(null, id), null);
-  assert.equal(endedAtOf([null, "x"], id), null);
+  assert.equal(endedAtIn(roster, id), 5_000);
+  assert.equal(endedAtIn(rosterOf(session({ state: "working" })), id), null);
+  assert.equal(endedAtIn(roster, "not-on-the-roster"), null);
+  assert.equal(endedAtIn(null, id), null);
+  assert.equal(endedAtIn([null, "x"], id), null);
 });
 
 test("how long a session took ends at the stamp when there is one and at now when there is not", () => {
@@ -1273,26 +1315,9 @@ test("how long a session took ends at the stamp when there is one and at now whe
   assert.equal(completedIn(NaN, 5_000, 999_000), undefined);
 });
 
-test("an end time only carries from a record that was itself done, never from a stale stamp on a live one", () => {
-  // A hand-built previous record that says working but still carries an
-  // endedAt is a contradiction; the tick's own clock wins over it.
-  const previous = [{ ...session({ state: "working" }), endedAt: 1 }];
-  const [record] = carryEnded(previous, rosterOf(session({ state: "done", status: "idle" })), 9_000);
-  assert.equal(record.endedAt, 9_000);
-});
-
-test("carryEnded never throws on what the poller could hand it", () => {
-  assert.equal(carryEnded(null, null, 1), null);
-  assert.deepEqual(carryEnded(undefined, [], 1), []);
-  assert.deepEqual(carryEnded([null, "x"], [null, "x"], 1), [null, "x"]);
-});
-
 test("the poller stamps a session the tick it is first seen done and keeps that stamp on every tick after", async () => {
   let time = 0;
-  const list = scripted(
-    rosterOf(session({ state: "working" })),
-    rosterOf(session({ state: "done", status: "idle" })),
-  );
+  const list = scripted(rosterOf(session({ state: "working" })), rosterOf(session(DONE)));
   const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
   time = 1_000;
   await poller.read();
@@ -1306,19 +1331,68 @@ test("the poller stamps a session the tick it is first seen done and keeps that 
   poller.stop();
 });
 
-test("a filter that rebuilds every record does not lose the stamp", async () => {
+test("a session the filter hides for one tick comes back with the stamp it had", async () => {
+  // The times are kept off the raw listing, not the filtered roster: a
+  // listing that omitted a cwd for one tick drops the session from
+  // visibleSessions and nothing else, and its clock must not move for it.
   let time = 0;
-  const list = scripted(rosterOf(session({ state: "done", status: "idle" })));
+  let hide = false;
+  const list = scripted(rosterOf(session(DONE)));
   const poller = createRosterPoller({
     list,
     maxAgeMs: 0,
     now: () => time,
-    filter: (roster) => roster.map((record) => ({ ...record, number: 1 })),
+    filter: (roster) => (hide ? [] : roster.map((record) => ({ ...record, number: 1 }))),
   });
   time = 3_000;
   await poller.read();
-  time = 33_000;
+  assert.equal(poller.current()[0].endedAt, 3_000);
+  hide = true;
+  time = 8_000;
+  await poller.read();
+  assert.deepEqual(poller.current(), []);
+  hide = false;
+  time = 13_000;
   await poller.read();
   assert.equal(poller.current()[0].endedAt, 3_000);
   poller.stop();
 });
+
+test("a failed listing leaves the finish times where they were", async () => {
+  let time = 0;
+  const list = scripted(rosterOf(session(DONE)), null, rosterOf(session(DONE)));
+  const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
+  time = 3_000;
+  await poller.read();
+  time = 8_000;
+  await poller.read();
+  time = 13_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 3_000);
+  poller.stop();
+});
+
+test("a time noted from outside wins over the tick's own, and the listing still has the last word", async () => {
+  // A Stop hook beats the tick that would stamp the session, and a Stop for a
+  // session that was done, resumed and finished again inside one poll window
+  // is the only thing that can move a stamp the listing keeps reporting done.
+  let time = 0;
+  const list = scripted(rosterOf(session(DONE)), rosterOf(session(DONE)), rosterOf(session({ state: "working" })));
+  const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
+  poller.noteEnded(session().sessionId, 2_000);
+  time = 5_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 2_000);
+  poller.noteEnded(session().sessionId, 7_000);
+  time = 10_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 7_000);
+  time = 15_000;
+  await poller.read();
+  assert.equal("endedAt" in poller.current()[0], false);
+  // Nothing to note is not an error.
+  poller.noteEnded(null, 1);
+  poller.noteEnded(session().sessionId, NaN);
+  poller.stop();
+});
+
