@@ -204,8 +204,9 @@ it sees the ones you started in a terminal too — and you can drive them:
   be named instead — and takes a real question: *"did its tests pass?"*,
   *"which files did it touch?"*
 
-Reading is the one command that is **not** proposed first. The other three
-reach a live process, so a misheard sentence must not be able to move one;
+Reading is the one command that is **not** proposed first. The other five —
+start, tell, interrupt, stop and watch — reach a live process or stand up a
+promise about one, so a misheard sentence must not be able to move one;
 reading touches nothing, and putting a *"Shall I, sir?"* in front of every
 question about your own work would be a spoken round trip for nothing.
 
@@ -216,6 +217,24 @@ cached: delete a session and it stops being readable that instant, with nothing
 left behind to answer in its place. The one-line summary recorded when a
 session ends is kept only in the short recap log — cleared the first time you
 ask what you missed — and reading a session never consults it.
+
+**"Watch session three and tell me when it's done."** A fifth proposed
+command, alongside start, tell, interrupt and stop — a misheard *"watch"*
+confirmed unchecked would be a promise to report on the wrong session later,
+to whoever is listening then, so it goes through the same *"Shall I, sir?"*
+as the rest. It watches exactly the one session you named, and fires exactly
+once: the moment that session stops working — finishes, goes idle, or gets
+blocked on a permission prompt — Dante reads its transcript back, the same
+way a *read* does, and says what it produced, what state it's in now, and
+*"Ready for the next step, sir?"* Then the watch is gone; it never fires
+twice for the same ending. *"Never mind, stop watching that"* cancels one
+at once, with no confirmation needed — a watch touches no process, so
+cancelling one is the same kind of thing as reading one is. Watching a
+session that isn't currently working is refused outright: it would never
+cross the line a watcher fires on, and confirming it would be a promise
+nothing could keep. Watches exist only in memory, five at a time, and do
+not survive a restart — a Dante that just restarted has plainly stopped
+watching whatever it was watching before.
 
 The difference between *tell* and *interrupt* is timing and nothing else, and
 when it isn't clear which you meant, it picks *tell*. Neither one forks the

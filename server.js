@@ -31,6 +31,9 @@ import {
   unconfirmedFacets, wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
+import {
+  WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, unwatchVerdict, watchVerdict,
+} from "./lib/watch.js";
 import { recallableSessions } from "./lib/recall.js";
 import {
   DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, foldNotes, listNotes,
@@ -110,6 +113,14 @@ const sessionKinds = await loadSessionKinds();
 // named mid-conversation brings its own .claude/skills with it.
 let knownCommands = loadCommands({ repos: [] });
 
+// Every "watch jarvis-1 and tell me when it's done" outstanding right now.
+// Module scope, not per-conversation: a watcher has to outlive the tab that
+// created it, the same reason the queue and the chain table in lib/memory.js
+// do. Never persisted to disk -- watchers exist only in memory, and a
+// restart having forgotten them is the correct behaviour, not a bug, since a
+// process that just restarted has plainly stopped watching anything.
+const watchers = createWatchers();
+
 // One place that knows what Claude Code sessions are running. A turn reads it
 // (usually from cache, so an ordinary turn costs no child process at all), and
 // the ticks are what notice a session finishing while nobody is looking --
@@ -153,6 +164,14 @@ const rosterPoller = createRosterPoller({
   // not one is.
   onRoster: (roster) => {
     for (const record of idleAmong(roster, queuedSessionIds(memoryStore))) deliverQueued(record);
+    // Not awaited, same reason reportComplete below is not: a poller tick
+    // must not be held open by a read-back call and the announcement behind
+    // it. This runs before onEvents, in the same tick (see createRosterPoller
+    // above), so a watcher's own report is filed before reportComplete's
+    // generic "complete" announcement ever gets a chance to duplicate it.
+    for (const fired of watchers.tick(roster, Date.now())) {
+      reportWatch(fired).catch((e) => log("watch report failed:", e.message || e));
+    }
   },
 
   onEvents: (events, roster) => {
@@ -220,6 +239,39 @@ async function deliverQueued(record) {
 // lines in the thread.
 const reported = createDeduper();
 
+// Sessions a watcher has already announced the ending of, this tick. The
+// roster poller runs onRoster (where watchers.tick fires and reportWatch
+// files this) before onEvents (where reportComplete runs) within the same
+// tick -- see the comment on createRosterPoller in lib/agents.js -- so a
+// "gone" watch is always in this set before reportComplete gets a chance to
+// check it. Entries are removed the moment reportComplete consumes them, so
+// this never grows: it only ever holds however many watched sessions ended
+// in the tick just processed.
+const watchReported = new Set();
+
+// A watcher fires at most once, and this is what "firing" means: read the
+// session back the same way verb=read does -- that answer is the actual
+// point of a watch, not merely noticing the session stopped -- and speak
+// the result. Not awaited by its caller (see onRoster above), for the same
+// reason reportComplete below is not: a poller tick must not be held open
+// by a read-back call and the announcement behind it.
+async function reportWatch({ watch, change, record }) {
+  const { text, reason } = await readSession({
+    cwd: watch.cwd, sessionId: watch.sessionId, task: watch.task, question: WATCH_QUESTION,
+  });
+  const spoken = describeFired({
+    name: watch.name, change, state: record?.state ?? record?.status, text, reason,
+  });
+  log(`watch fired (${change}): ${spoken}`);
+  // A session that just went "gone" is about to be reported a second time,
+  // seconds from now, by reportComplete's own generic "it's done" line for
+  // the very same roster event -- two announcements about one ending is a
+  // machine reading a list. Marking it here lets reportComplete skip its
+  // spoken line for this one session while still writing its recap entry.
+  if (change === "gone") watchReported.add(watch.sessionId);
+  if (!announce(spoken)) log("watch report had nowhere to go, sir (no page open)");
+}
+
 // Only sessions Dante started are reported. The roster sees every terminal on
 // this machine, and recording every time somebody closes one would make the
 // recap worthless within a day.
@@ -267,12 +319,23 @@ async function reportComplete(sessionId, context = {}) {
   // The spoken form is shorter and only reaches anyone if a page is open and
   // the floor comes free before it goes stale; the recap above already has the
   // full detail regardless.
-  announce(formatSpoken({
-    kind: "complete",
-    name: remembered.name ?? context.name,
-    durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
-    summary,
-  }));
+  //
+  // Skipped when a watcher already spoke about this exact ending -- see
+  // reportWatch, which runs first within the same roster tick and marks the
+  // sessionId here. Two announcements about one ending is a machine reading
+  // a list; the recap entry above is written either way, only the spoken
+  // line is the one being deduplicated. The set entry is consumed here so it
+  // never grows past however many watched sessions ended in one tick.
+  if (watchReported.delete(sessionId)) {
+    log(`watch already announced ${remembered.name ?? context.name}, sir - skipping the generic line`);
+  } else {
+    announce(formatSpoken({
+      kind: "complete",
+      name: remembered.name ?? context.name,
+      durationMs: Number.isFinite(startedAt) ? Date.now() - startedAt : undefined,
+      summary,
+    }));
+  }
 
   await dispatchChain(sessionId, remembered, chain, context.roster);
 }
@@ -659,7 +722,7 @@ async function propose(send, conv, intent, run) {
 async function proposeSession(send, conv, session, roster) {
   const verb = typeof session.verb === "string" ? session.verb.toLowerCase() : "";
   let target = null;
-  if (verb === "tell" || verb === "interrupt" || verb === "stop") {
+  if (verb === "tell" || verb === "interrupt" || verb === "stop" || verb === "watch") {
     // Resolved before it is ever proposed: a yes to a session that does not
     // exist is a false confirmation, and asking "shall I stop jarvis-1, sir?"
     // only to say "I cannot find jarvis-1 running" after the yes is worse than
@@ -685,6 +748,20 @@ async function proposeSession(send, conv, session, roster) {
       return;
     }
     target = record;
+
+    // A watch proposal gets a second check findTarget cannot make: a session
+    // that is not working would never cross the working-to-anything-else
+    // line a watcher fires on, and one already watched would just make the
+    // same promise twice. Resolving before proposing is the same reasoning
+    // as the block above; this is only the half of it that is specific to
+    // watch.
+    if (verb === "watch") {
+      const watchRefusal = refuseWatch(target, watchers);
+      if (watchRefusal) {
+        await say(send, watchRefusal);
+        return;
+      }
+    }
   }
 
   const spoken = describeIntent({ session, workspace: getWorkspace(memoryStore, session.repo), target });
@@ -1510,6 +1587,51 @@ async function dispatchTell(send, session, preamble, roster, verb = "tell") {
   }
 }
 
+// Start watching a session someone just confirmed. resolveSession re-targets
+// by sessionId (the proposal carried it -- see proposeSession), which is the
+// exact process the "Shall I, sir?" was about; refuseWatch is checked again
+// rather than trusted from the proposal, because the roster it resolved
+// against is however many seconds old the "yes" took to arrive, and the
+// session may have gone idle, gone altogether, or been watched by some other
+// route in that window.
+async function dispatchWatch(send, session, preamble, roster) {
+  const record = await resolveSession(send, roster, session, preamble);
+  if (!record) return;
+
+  const refusal = refuseWatch(record, watchers);
+  if (refusal) {
+    await say(send, refusal);
+    return;
+  }
+
+  watchers.add({
+    sessionId: record.sessionId,
+    name: record.name,
+    cwd: record.cwd,
+    // The brief a start or tell held for this session, if any -- readSession
+    // (via reportWatch) folds it into the question it asks the transcript,
+    // the same way dispatchRead already does for verb=read.
+    task: getSessionRecord(memoryStore, record.sessionId)?.task ?? "",
+    state: record.state,
+  }, Date.now());
+  log(`watching ${record.name} (${record.sessionId})`);
+  await say(send, joinSpoken(preamble, watchVerdict({ name: record.name })));
+}
+
+// Cancel a watch. Unlike dispatchWatch this never touches a live process --
+// it only forgets a promise Dante made to itself -- which is why verb=unwatch
+// needs no confirmation at all (see lib/confirm.js's CONFIRMED_VERBS).
+async function dispatchUnwatch(send, session, preamble) {
+  const { watch, refusal } = cancelTarget(watchers, session);
+  if (refusal) {
+    await say(send, refusal);
+    return;
+  }
+  watchers.cancel(watch.sessionId);
+  log(`no longer watching ${watch.name} (${watch.sessionId})`);
+  await say(send, joinSpoken(preamble, unwatchVerdict({ name: watch.name })));
+}
+
 // Every session that can be asked about right now: what Dante remembers
 // starting, minus whatever has no transcript on disk, plus what is running, all inside the
 // repositories named out loud. Built here rather than cached because the two
@@ -1694,10 +1816,18 @@ async function dispatchSession(send, session, preamble = "", roster = null, conv
     await dispatchRead(send, session, preamble, roster, conv);
     return;
   }
+  if (session.verb === "watch") {
+    await dispatchWatch(send, session, preamble, roster);
+    return;
+  }
+  if (session.verb === "unwatch") {
+    await dispatchUnwatch(send, session, preamble);
+    return;
+  }
   if (session.verb !== "start") {
     // Saying so is better than silence: the tag was stripped, so otherwise
     // nothing would happen and nothing would explain why.
-    await say(send, joinSpoken(preamble, "I can start a session, talk to one, interrupt one, stop one, read one back, or catch you up, sir."));
+    await say(send, joinSpoken(preamble, "I can start a session, talk to one, interrupt one, stop one, read one back, watch one, or catch you up, sir."));
     return;
   }
 
@@ -2198,6 +2328,10 @@ wss.on("connection", (ws) => {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
         notes: notesForPrompt,
+        // Names, not sessionIds -- the persona teaches the WATCHING line as
+        // something read out by name, the same as every other machine-state
+        // line, and the model never sees a sessionId anywhere else either.
+        watching: watchers.names(),
       });
       const answering = conv.unanswered.length;
 

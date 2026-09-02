@@ -32,6 +32,16 @@ test("read, recap, a missing verb and a non-string verb never need confirmation"
   assert.equal(needsConfirmation({ verb: 7 }), false);
 });
 
+test("watch needs confirmation, in any case, but unwatch never does", () => {
+  // watch stands up something that persists past the turn, the same reason
+  // start, tell, interrupt and stop do; unwatch only dismantles one and
+  // touches no process, same class as read.
+  for (const verb of ["watch", "WATCH", "Watch"]) {
+    assert.equal(needsConfirmation({ verb }), true, verb);
+  }
+  assert.equal(needsConfirmation({ verb: "unwatch" }), false);
+});
+
 test("an interview question is never held for a confirmation", () => {
   // The question is the reply, and holding it would put a Shall I, sir? in
   // front of a question.
@@ -486,6 +496,38 @@ test("a session addressed by number with nothing yet resolved says the number al
 });
 
 // ---------------------------------------------------------------------------
+// describeIntent - watch
+// ---------------------------------------------------------------------------
+
+test("a watch by name is confirmed with a promise to report back", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "watch", name: "jarvis-1" } }),
+    "Watch jarvis-1 and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch by number uses whoFor, the same as stop, tell and interrupt", () => {
+  assert.equal(
+    describeIntent({ session: { verb: "watch", number: "3" }, target: { name: "bug-hunt" } }),
+    "Watch session three, bug-hunt and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch says back the session Dante resolved, not the one the model wrote", () => {
+  assert.equal(
+    describeIntent({
+      session: { verb: "watch", name: "jarvis-1" },
+      target: { name: "jarvis-1-fix-failing-builder-test" },
+    }),
+    "Watch jarvis-1-fix-failing-builder-test and tell you the moment it stops working. Shall I, sir?",
+  );
+});
+
+test("a watch tag with nothing to name describes nothing, so it is clarified instead", () => {
+  assert.equal(describeIntent({ session: { verb: "watch" } }), null);
+});
+
+// ---------------------------------------------------------------------------
 // readTarget
 // ---------------------------------------------------------------------------
 
@@ -555,6 +597,10 @@ test("a stop with nothing to name asks which session, not what to say to it", ()
   assert.equal(clarify({ session: { verb: "stop" } }), "Which session, sir?");
   assert.equal(clarify({ session: { verb: "interrupt" } }), "Which session, sir?");
   assert.equal(clarify({ session: { verb: "tell" } }), "Which session, sir?");
+});
+
+test("a watch with nothing to name asks which session too, the default clarify question", () => {
+  assert.equal(clarify({ session: { verb: "watch" } }), "Which session, sir?");
 });
 
 test("a read is not a confirmable verb, so clarify has nothing to ask", () => {

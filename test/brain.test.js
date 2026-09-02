@@ -179,11 +179,12 @@ test("reading is taught as the only way to know what a session did", () => {
   assert.match(persona, /never answer such a question from your own knowledge/);
 });
 
-test("a read is taught as running straight away, unlike the four that are proposed", () => {
+test("a read is taught as running straight away, unlike the five that are proposed", () => {
   // It is the one verb lib/confirm.js deliberately cannot describe, so the
   // persona must not promise a confirmation nobody is going to be asked for.
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /A start, tell, interrupt or stop tag is a PROPOSAL, not an act/);
+  assert.match(persona, /A start, tell, interrupt, stop or watch tag is a PROPOSAL, not an act/);
+  assert.match(persona, /For those five, say one short sentence/);
   assert.match(persona, /verb=read is the exception/);
 });
 
@@ -222,6 +223,29 @@ test("the guardrail against acting on an unmentioned session also covers interru
     persona,
     /the same guardrail covers verb=interrupt: never emit it unless\s+Krane asked you, in this turn, to interrupt that session/,
   );
+});
+
+test("the guardrail against acting on an unmentioned session also covers watch", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(
+    persona,
+    /The same guardrail covers\s+verb=watch: never emit it unless\s+Krane asked you, in this turn, to watch that session/,
+  );
+});
+
+test("the sessions block teaches the watch tag as a proposal that fires once and reports back", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=watch name="<session name>"\] \(or number="<n>"\)/);
+  assert.match(persona, /stops working - finishes, goes idle or gets blocked/);
+  assert.match(persona, /never for a session he did not name, never for every session/);
+  assert.match(persona, /never on your own initiative/);
+});
+
+test("the sessions block teaches the unwatch tag as running at once, like read", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=unwatch name="<session name>"\]/);
+  assert.match(persona, /it runs at once,\s+like read, and needs no confirmation/);
+  assert.match(persona, /The WATCHING line in the machine-state lines says which/);
 });
 
 test("the four proposed verbs are phrased as an offer ending in Shall I, sir, never as done", () => {

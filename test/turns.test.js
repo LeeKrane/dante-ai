@@ -316,3 +316,64 @@ test("a non-string notes value is ignored rather than stringified into the turn"
     assert.equal(mergeTurns(["what's running?"], { roster: ROSTER, now: NOW, notes: bad }), baseline);
   }
 });
+
+// ---------------------------------------------------------------------------
+// opts.watching
+// ---------------------------------------------------------------------------
+
+test("no watching, or an empty list, leaves the turn exactly as it was", () => {
+  const baseline = mergeTurns(["what's running?"], { roster: ROSTER, now: NOW });
+  assert.equal(mergeTurns(["what's running?"], { roster: ROSTER, now: NOW, watching: [] }), baseline);
+  assert.equal(mergeTurns(["what's running?"], { roster: ROSTER, now: NOW, watching: undefined }), baseline);
+
+  const plainTurn = mergeTurns(["x"]);
+  assert.equal(mergeTurns(["x"], { watching: [] }), plainTurn);
+});
+
+test("the watching line rides after the roster and finished lines, before the interview line", () => {
+  const merged = mergeTurns(["what's running?"], {
+    roster: ROSTER,
+    recalled: RECALLED,
+    now: NOW,
+    interview: "we were building a feature",
+    watching: ["jarvis-1-builder-test-fix"],
+  });
+  assert.match(merged, /WATCHING: jarvis-1-builder-test-fix - you will be told the moment each stops working\./);
+
+  const rosterIndex = merged.indexOf("1: jarvis-1-builder-test-fix in jarvis, working");
+  const finishedIndex = merged.indexOf("Finished, still readable");
+  const watchingIndex = merged.indexOf("WATCHING:");
+  const interviewIndex = merged.indexOf("we were building a feature");
+  assert.ok(
+    rosterIndex < finishedIndex && finishedIndex < watchingIndex && watchingIndex < interviewIndex,
+    merged,
+  );
+  // Still framed as machine state, and the request is still last.
+  assert.match(merged, /not something anyone said/);
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("several watched names are joined by commas on the one line", () => {
+  const merged = mergeTurns(["what's running?"], {
+    roster: ROSTER,
+    now: NOW,
+    watching: ["jarvis-1", "jarvis-2"],
+  });
+  assert.match(merged, /WATCHING: jarvis-1, jarvis-2 -/);
+});
+
+test("a watching line still rides even when the roster listing failed", () => {
+  // What Dante is watching is a fact about its own standing state, not about
+  // this tick's listing -- a roster that failed to load must not also hide
+  // that a watcher still exists.
+  const merged = mergeTurns(["what's running?"], { roster: null, watching: ["jarvis-1"] });
+  assert.match(merged, /WATCHING: jarvis-1 -/);
+  assert.match(merged, /not something anyone said/);
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("a watching line with no roster and no interview still frames as machine state on its own", () => {
+  const merged = mergeTurns(["x"], { watching: ["jarvis-1"] });
+  assert.ok(merged.startsWith("Machine state right now"));
+  assert.match(merged, /WATCHING: jarvis-1 -/);
+});
