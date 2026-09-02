@@ -186,3 +186,27 @@ test("no workspaces and no sessions is an empty list of groups", () => {
   assert.deepEqual(groupsFromRoster([], [], NOW), []);
   assert.deepEqual(groupsFromRoster(null, null, NOW), []);
 });
+
+test("letters ride through from workspaces, in the order the server sent them", () => {
+  const workspaces = [
+    workspace({ alias: "fitness", main: true, letter: "A" }),
+    workspace({ alias: "jarvis", letter: "B" }),
+  ];
+  const groups = groupsFromRoster(workspaces, [], NOW);
+  assert.deepEqual(groups.map((g) => [g.alias, g.letter]), [["fitness", "A"], ["jarvis", "B"]]);
+});
+
+test("the elsewhere catch-all has no letter", () => {
+  const workspaces = [workspace({ alias: "jarvis", main: true, letter: "A" })];
+  const groups = groupsFromRoster(
+    workspaces,
+    [record({ sessionId: "ghost", alias: "long-gone" })],
+    NOW,
+  );
+  assert.equal(groups.find((g) => g.alias === "elsewhere").letter, "");
+});
+
+test("a workspace with no letter, from an older server, gets an empty one rather than undefined", () => {
+  const groups = groupsFromRoster([workspace({ alias: "jarvis", main: true })], [], NOW);
+  assert.equal(groups[0].letter, "");
+});

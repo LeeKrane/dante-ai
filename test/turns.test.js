@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MAX_UNANSWERED, createTurnGate, dropAnswered, mergeTurns } from "../lib/turns.js";
+import { MAX_UNANSWERED, createTurnGate, dropAnswered, mergeTurns, describeWorkspaces } from "../lib/turns.js";
 import { parseRoster } from "../lib/agents.js";
 
 test("one sentence reaches the model exactly as it was said", () => {
@@ -376,4 +376,86 @@ test("a watching line with no roster and no interview still frames as machine st
   const merged = mergeTurns(["x"], { watching: ["jarvis-1"] });
   assert.ok(merged.startsWith("Machine state right now"));
   assert.match(merged, /WATCHING: jarvis-1 -/);
+});
+
+// ---------------------------------------------------------------------------
+// describeWorkspaces
+// ---------------------------------------------------------------------------
+
+test("describeWorkspaces names the main repository, with its letter", () => {
+  const list = [
+    { alias: "jarvis", main: true, letter: "A" },
+    { alias: "fitness", main: false, letter: "B" },
+  ];
+  assert.equal(describeWorkspaces(list), "Repositories: A: jarvis (main), B: fitness.");
+});
+
+test("describeWorkspaces says nothing is main when nothing is", () => {
+  const list = [
+    { alias: "jarvis", main: false, letter: "A" },
+    { alias: "fitness", main: false, letter: "B" },
+  ];
+  assert.equal(describeWorkspaces(list), "Repositories: A: jarvis, B: fitness.");
+});
+
+test("describeWorkspaces is empty when there is nothing to say", () => {
+  assert.equal(describeWorkspaces([]), "");
+  assert.equal(describeWorkspaces(null), "");
+  assert.equal(describeWorkspaces(undefined), "");
+});
+
+test("describeWorkspaces writes an entry with no letter as its bare alias, not the word undefined", () => {
+  const list = [{ alias: "jarvis", main: true }];
+  const line = describeWorkspaces(list);
+  assert.equal(line, "Repositories: jarvis (main).");
+  assert.ok(!line.includes("undefined"), line);
+});
+
+test("the Repositories line rides first in the machine-state block, before the roster line", () => {
+  const merged = mergeTurns(["what's running?"], {
+    roster: ROSTER,
+    now: NOW,
+    workspaces: [{ alias: "jarvis", main: true, letter: "A" }, { alias: "fitness", main: false, letter: "B" }],
+  });
+  assert.match(merged, /Repositories: A: jarvis \(main\), B: fitness\./);
+  const workspacesIndex = merged.indexOf("Repositories:");
+  const rosterIndex = merged.indexOf("1: jarvis-1-builder-test-fix in jarvis, working");
+  assert.ok(workspacesIndex >= 0 && workspacesIndex < rosterIndex, merged);
+});
+
+test("no workspaces passed leaves the block exactly as it already was", () => {
+  assert.equal(
+    mergeTurns(["what's running?"], { roster: ROSTER, now: NOW }),
+    mergeTurns(["what's running?"], { roster: ROSTER, now: NOW, workspaces: [] }),
+  );
+});
+
+test("the Repositories line still rides when the roster listing failed, the same way the watching line does", () => {
+  // The letter-to-repository mapping is not a fact about this tick's roster
+  // read -- it is a fact about the panel's current view -- so a roster read
+  // failing must not also make "B: fitness" disappear from the turn while
+  // the panel keeps showing it.
+  const merged = mergeTurns(["what's running?"], {
+    roster: null,
+    workspaces: [{ alias: "jarvis", main: true, letter: "A" }, { alias: "fitness", main: false, letter: "B" }],
+  });
+  assert.match(merged, /Repositories: A: jarvis \(main\), B: fitness\./);
+  assert.match(merged, /not something anyone said/);
+  assert.ok(merged.endsWith("what's running?"), merged);
+});
+
+test("the Repositories line leads even the no-roster machine-state block, before watching and interview", () => {
+  const merged = mergeTurns(["x"], {
+    roster: undefined,
+    workspaces: [{ alias: "jarvis", main: true, letter: "A" }],
+    watching: ["jarvis-1"],
+    interview: "we were building a feature",
+  });
+  const workspacesIndex = merged.indexOf("Repositories:");
+  const watchingIndex = merged.indexOf("WATCHING:");
+  const interviewIndex = merged.indexOf("we were building a feature");
+  assert.ok(
+    workspacesIndex >= 0 && workspacesIndex < watchingIndex && watchingIndex < interviewIndex,
+    merged,
+  );
 });

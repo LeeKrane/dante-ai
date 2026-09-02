@@ -21,14 +21,14 @@ import { formatEvent, formatRecap, formatSpoken } from "./lib/notify.js";
 import { createDeduper, isLoopback, parseHookEvent } from "./lib/hooks.js";
 import { buildDecision, inApprovalScope, parseYesNo } from "./lib/approval.js";
 import {
-  clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer, readTarget,
+  clarify, describeIntent, findTarget, isAnswerable, needsConfirmation, readAnswer, readConfirmingAnswer, readTarget,
 } from "./lib/confirm.js";
 // `matches` is imported under a longer name because dispatchRead already has a
 // local `matches` (a list of roster records), and a shadowed import is a bug
 // waiting for the first person to use the wrong one.
 import {
-  composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
-  unconfirmedFacets, wantsToProceed, withdrawConfirming,
+  FACETS, composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
+  wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import {
@@ -60,7 +60,7 @@ import { run as runBuild } from "./lib/builder.js";
 import {
   loadStore, saveStore, getProject, touchProject, recordArtifact, applyMemoryTag,
   addWorkspace, applyWorkspaceTag, workspacePaths, getWorkspace,
-  setMainRepo, getMainRepo, resolveRepoAlias, workspacesForClient,
+  setMainRepo, getMainRepo, resolveRepoAlias, resolveRepoRef, workspacesForClient,
   queueForSession, takeQueued, dropQueuesExcept, queuedSessionIds, rememberSession, getSessionRecord, getSessions,
   chainAfter, takeChain, dropChainsExcept, recordEvent, getEvents, clearEvents,
   applyNoteLimitsTag, getNoteLimits,
@@ -768,6 +768,24 @@ async function propose(send, conv, intent, run) {
   return true;
 }
 
+// findTarget's alias cross-check (lib/confirm.js) is only meaningful when
+// repo= actually names a known workspace. It often does not: toSession copies
+// every key onto every verb, so a tag as ordinary as
+// `verb=stop number="3" repo="jarvis-1-fix-tests"` puts a session NAME in the
+// repo field, not a repository -- and passing that through as `alias` would
+// have findTarget refuse a perfectly good number with "Session three is in
+// jarvis, not jarvis-1-fix-tests, sir." An unmatched letter is the same
+// mistake from the other direction: "Z", which resolveRepoRef could not turn
+// into an alias, must never be spoken back as "not Z, sir" as though Z named
+// something. So the cross-check is only ever handed a value already proven to
+// name a real workspace -- getWorkspace's own alias, not whatever session.repo
+// happened to hold -- and undefined otherwise, which findTarget already
+// treats as "nothing to check".
+function repoCrossCheckAlias(repo) {
+  const workspace = getWorkspace(memoryStore, repo);
+  return workspace ? workspace.alias : undefined;
+}
+
 // The session equivalent of propose(), for the four verbs that always need a
 // yes (see lib/confirm.js's CONFIRMED_VERBS). Unlike propose(), this never
 // falls through to an unconfirmed dispatch: a tell, interrupt or stop that
@@ -784,7 +802,9 @@ async function proposeSession(send, conv, session, roster) {
     // pre-parsed: findTarget itself now tells a garbled number apart from no
     // number at all, and pre-parsing here would collapse that distinction
     // before it ever got there.
-    const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
+    const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
+      number: session.number, alias: repoCrossCheckAlias(session.repo),
+    });
     // Every hop the name takes, on one line: what the tag actually carried,
     // what query that became, and what it resolved to or why it did not -- so
     // a truncated or mismatched name shows up here rather than only as a
@@ -799,6 +819,10 @@ async function proposeSession(send, conv, session, roster) {
     );
     if (refusal) {
       await say(send, refusal);
+      // Nothing else resets the label after a proposal that never happened --
+      // without this the page would keep reading "interviewing" or
+      // "confirming" over a refusal about a session that does not exist.
+      activity(send, null);
       return;
     }
     target = record;
@@ -826,6 +850,10 @@ async function proposeSession(send, conv, session, roster) {
     const question = clarify({ session, target });
     log(`session clarified rather than proposed: ${question}`);
     await say(send, question);
+    // Same reasoning as the refusal above: a clarifying question about the
+    // missing detail is not a proposal, and the page should not keep saying
+    // "confirming" over it.
+    activity(send, null);
     return;
   }
 
@@ -917,23 +945,30 @@ async function answerProposal(send, conv, text) {
   return true;
 }
 
-// The answer to a read-back the machine spoke (the hold in the say handler,
-// below), if that is what this was. Returns true when the words were spent
-// on it.
+// The answer to the read-back the machine spoke (the hold in the say
+// handler, above), if that is what this was. Returns true when the words
+// were spent on it.
 //
 // The proposal path has answerProposal and readAnswer so that a yes is read
 // by code rather than by the model, and the machine's own read-back gets the
 // same treatment for the same reason: a yes to "have I got that right?" has
 // to lift the hold on exactly the tag that was read back, not on whatever
 // the model recomposes from memory a turn later -- which, after a cold
-// restart of the warm CLI, is all it would have. A yes runs nothing here: it
-// consumes the interview into the held tag's brief and hands the tag to
-// proposeSession, whose "Shall I, sir?" follows as it would have without the
-// hold. A no is not a refusal to act, it is "you got it wrong", so the
-// facets go back to unconfirmed and the model is asked what it got wrong. A
-// longer answer is the correction itself: the hold is dropped the same way
-// and the sentence goes on to be an ordinary turn, so the model folds it in
-// and reads that facet back again.
+// restart of the warm CLI, is all it would have. It reads readConfirmingAnswer
+// rather than readAnswer, though: this is a longer question than "Shall I,
+// sir?" and it is common to answer it at length ("yes, that's exactly
+// right"), so the vocabulary here favours reading a long yes as a yes -- see
+// readConfirmingAnswer's own comment for why misreading it the other way is
+// the expensive direction. A yes runs nothing here: it consumes the
+// interview into the held tag's brief and hands the tag to proposeSession,
+// whose "Shall I, sir?" follows as it would have without the hold -- Krane
+// can still decline that. A no is not a refusal to act, it is "you got it
+// wrong", so confirming is withdrawn (back to interviewing, on the page) and
+// the model is asked what it got wrong. A longer answer is the correction
+// itself: the hold is dropped the same way, activity goes back to
+// interviewing, and the sentence goes on to be an ordinary turn, so the
+// model folds it in and either asks about what it left open or proposes
+// again -- read back once more, the same way.
 async function answerHeld(send, conv, text) {
   const held = conv.held;
   if (!held) return false;
@@ -944,17 +979,23 @@ async function answerHeld(send, conv, text) {
     return false;
   }
 
-  const answer = readAnswer(text);
+  // The escape phrase said as the answer to the read-back is Krane overriding
+  // it out loud, not answering it -- "stop asking" here means the same thing
+  // it means anywhere else in the interview, and reading it as a no or a
+  // correction would be the opposite of what he said.
+  const escaped = wantsToProceed(text);
+  const answer = escaped ? "yes" : readConfirmingAnswer(text);
   conv.held = null;
   if (answer !== "yes") {
     conv.interview = withdrawConfirming(conv.interview);
+    activity(send, "interviewing", { subject: conv.interview.repo || undefined });
     log(`read-back ${answer === "no" ? "denied" : "corrected"}: ${JSON.stringify(text)}`);
     if (answer !== "no") return false;
     await say(send, "What did I get wrong, sir?");
     return true;
   }
 
-  log(`read-back confirmed: ${held.spoken}`);
+  log(escaped ? "read-back confirmed by escape phrase" : `read-back confirmed: ${held.spoken}`);
   const session = {
     ...held.session,
     brief: composeBrief({
@@ -1376,9 +1417,12 @@ async function say(send, text, nextState, stillCurrent) {
 
 // What the page shows under the state label: a short gerund naming what Dante
 // is doing right now, plus whatever names the thing it is doing it to. `value`
-// is one of interviewing | proposing | starting | telling | interrupting |
-// stopping | reading | building | null (null clears the label). `subject`
-// names the session, repo, or primitive involved. `brief` rides only alongside
+// is one of interviewing | confirming | proposing | starting | telling |
+// interrupting | stopping | reading | building | null (null clears the
+// label). interviewing is the model asking about an open facet; confirming
+// is the machine reading the whole brief back for a yes -- a different phase
+// with its own label, not a kind of interviewing. `subject` names the
+// session, repo, or primitive involved. `brief` rides only alongside
 // "proposing", because the spoken sentence only summarises the brief and the
 // person is being asked to approve the full text, which the page can then show.
 function activity(send, value, extra = {}) {
@@ -1461,6 +1505,12 @@ async function resolveSession(send, roster, session, preamble) {
   const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
     number: session.number,
     sessionId: session.sessionId,
+    // Inert on this call whenever it matters least: resolveSession runs
+    // after a "yes" with number left undefined and a sessionId already in
+    // hand, and findTarget's own alias cross-check only fires on the number
+    // path. Passed anyway so all three findTarget call sites stay uniform
+    // rather than two of them remembering to pass it and one not.
+    alias: repoCrossCheckAlias(session.repo),
   });
   if (refusal) {
     await say(send, joinSpoken(preamble, refusal));
@@ -1681,7 +1731,15 @@ async function dispatchWatch(send, session, preamble, roster) {
 // it only forgets a promise Dante made to itself -- which is why verb=unwatch
 // needs no confirmation at all (see lib/confirm.js's CONFIRMED_VERBS).
 async function dispatchUnwatch(send, session, preamble) {
-  const { watch, refusal } = cancelTarget(watchers, session);
+  // repo= that names a real workspace is a repository, never a session name,
+  // and cancelTarget's name fallback (session.name ?? session.repo) exists
+  // only for the model putting a NAME in the wrong field. Resolved letters
+  // arrive here as aliases (see the resolveRepoRef block in the message
+  // handler), so "unwatch repo=B" with one live watch must fall through to
+  // the exactly-one-watch branch rather than refuse "I am not watching
+  // fitness, sir."
+  const target = repoCrossCheckAlias(session.repo) ? { ...session, repo: undefined } : session;
+  const { watch, refusal } = cancelTarget(watchers, target);
   if (refusal) {
     await say(send, refusal);
     return;
@@ -1721,6 +1779,13 @@ function recallable(roster) {
 // (lib/notes.js) so the conversation that follows can build on it and a
 // restart does not forget it. The note is written from what was just read,
 // never read from -- see lib/recall.js's own comment for the full rule.
+//
+// `preamble` is usually "" here, and deliberately: the chat turn that
+// dispatches a read blanks the model's sentence before calling in, because a
+// read is finished before a word of it is spoken and "let me read what jarvis
+// three is doing" fused onto the findings announces an action that has already
+// happened as one still pending. See the read branch of the chat handler for
+// when the sentence is kept anyway.
 async function dispatchRead(send, session, preamble, roster, conv) {
   const candidates = recallable(roster);
   // The number-then-name resolution, and the wording of each refusal, live in
@@ -1746,8 +1811,11 @@ async function dispatchRead(send, session, preamble, roster, conv) {
   activity(send, "reading", { subject: record.name });
   try {
     send({ type: "state", value: "thinking" });
+    // `running` goes along so the read model knows the "still working, sir"
+    // prefix below is coming and does not open its own answer the same way.
     const { text, reason } = await readSession({
       cwd: record.cwd, sessionId: record.sessionId, task: record.task, question,
+      running: record.running,
     });
 
     if (!text) {
@@ -2387,6 +2455,7 @@ wss.on("connection", (ws) => {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
         notes: notesForPrompt,
+        workspaces: workspacesForClient(memoryStore),
         // Names, not sessionIds -- the persona teaches the WATCHING line as
         // something read out by name, the same as every other machine-state
         // line, and the model never sees a sessionId anywhere else either.
@@ -2491,6 +2560,24 @@ wss.on("connection", (ws) => {
         // ever touches it -- so a truncated or mangled name= can be traced back
         // to whether the model wrote it wrong or the parser cut it short.
         log(`session tag raw=${JSON.stringify(spoken)}`);
+
+        // Resolved here, before anything branches on session.repo -- above
+        // even the interview check just below, which returns early and
+        // stores whatever session.repo holds into conv.interview.repo via
+        // noteInterview. A letter Krane said ("repo B") has to become the
+        // real alias before that store happens: conv.interview.repo is what
+        // the interviewing activity line's subject reads, and it is what the
+        // brief's own Where: line is composed from once the interview
+        // finishes (composeBrief, below and near dispatchSession) -- both
+        // would otherwise read back the letter itself rather than the
+        // repository it names. Run for every verb, not just start: a tell or
+        // a stop can carry "repo B" on its own tag just as easily, and
+        // vetCommand just below never touches .repo, so resolving before it
+        // costs nothing.
+        if (typeof session.repo === "string" && session.repo) {
+          session.repo = resolveRepoRef(memoryStore, session.repo);
+        }
+
         // The question IS the reply here: it is not confirmed and not
         // dispatched, because letting it reach dispatchSession would speak
         // dispatchSession's unknown-verb fallback ("I can start a session,
@@ -2552,40 +2639,50 @@ wss.on("connection", (ws) => {
 
         const fromInterview = conv.interview?.verb === "start" ? conv.interview.repo : "";
 
-        // Resolved once, here, before this session is ever described back as
-        // a confirmation sentence or an activity line -- both of those and the
-        // eventual dispatch must all name the same repository, and reading
-        // session.repo straight off the tag in three different places is how
-        // they used to disagree. An interview's own answer outranks the main
-        // repository, since it is the more specific thing actually said; a
-        // named repo is untouched either way.
+        // The main-repo default for a start with nothing named -- the only
+        // repo-related thing left to do here, now that resolveRepoRef has
+        // already run once, above, before this session was ever described
+        // back as a confirmation sentence or an activity line. That single
+        // resolve is also why fromInterview needs no resolving of its own:
+        // conv.interview.repo was written by noteInterview from this same
+        // session.repo on the earlier turn that asked the interview
+        // question, which had already been run through resolveRepoRef by
+        // the same block -- so a letter never reaches this point unresolved,
+        // whether it came fresh on this tag or carried forward from the
+        // interview. An interview's own answer outranks the main repository,
+        // since it is the more specific thing actually said; a named repo is
+        // untouched either way.
         if (session.verb === "start") {
           session.repo = session.repo?.trim() ? session.repo : (fromInterview || resolveRepoAlias(memoryStore, "") || session.repo);
         }
 
         const ownInterview = isLive(conv.interview) && matchesInterview(conv.interview, session) ? conv.interview : null;
 
-        // A start, tell or interrupt is never proposed until its facets have
-        // been read back and answered (readyToPropose, and the rule in
-        // docs/interview.md). A proposal's "Shall I, sir?" confirms the act,
-        // not the understanding behind it: a yes to "start a session in
-        // jarvis to fix the tests" says nothing about which tests the model
-        // has in mind, and that is the detail that used to reach a running
-        // session unchecked whenever the model decided the request was clear
-        // enough to skip the interview. So a tag that arrives unconfirmed --
-        // no interview at all, or one whose facets were never read back -- is
-        // held here, and the read-back is spoken from the model's own brief in
-        // place of the proposal. It is folded into the interview as a question
-        // the machine asked (spokenFor), so the model's next turn knows
-        // Krane's yes or no answers that question and not whatever it said
-        // last, and the tag itself is kept (conv.held) so that a yes lifts
-        // the hold on exactly what was read back rather than on whatever the
-        // model recomposes a turn later -- see answerHeld. The escape phrase
-        // is one way past this, because it is Krane saying so; a skill is the
-        // other, because its facets ARE the command line, and the proposal
-        // reads that line back exactly -- a read-back before it would be the
-        // same question asked twice. holdForReadBack is the rule; this is the
-        // wiring.
+        // A start, tell or interrupt is never proposed straight off the
+        // model's own tag: confirming is the machine's job, not the model's,
+        // and it runs exactly once per proposal. A proposal's "Shall I,
+        // sir?" confirms the act, not the understanding behind it -- a yes to
+        // "start a session in jarvis to fix the tests" says nothing about
+        // which tests the model has in mind -- and that used to be checked
+        // twice over, once by a read-back the model wrote into its own tag
+        // (confirming=/confirmed=) and once more by the machine for whatever
+        // that read-back left out, which is how the same understanding ended
+        // up read back to Krane in two similar-sounding questions. Now
+        // readyToPropose only ever says yes when Krane told the model
+        // outright to proceed, so every other start, tell or interrupt lands
+        // here and is held: the read-back is spoken from the model's own
+        // brief, covering all four facets in one question, in place of the
+        // proposal. It is folded into the interview as a question the
+        // machine asked (spokenFor), so the model's next turn knows Krane's
+        // yes, no or correction answers that question and not whatever it
+        // said last, and the tag itself is kept (conv.held) so that a yes
+        // lifts the hold on exactly what was read back rather than on
+        // whatever the model recomposes a turn later -- see answerHeld. The
+        // escape phrase is one way past this, because it is Krane saying so;
+        // a skill is the other, because its facets ARE the command line, and
+        // the proposal reads that line back exactly -- a read-back before it
+        // would be the same question asked twice. holdForReadBack is the
+        // rule; this is the wiring.
         if (holdForReadBack(session, ownInterview)) {
           // For a tell or an interrupt the session is resolved first, for the
           // same reason proposeSession resolves it before proposing: reading
@@ -2595,7 +2692,9 @@ wss.on("connection", (ws) => {
           // the words will actually reach.
           let name = "";
           if (session.verb !== "start") {
-            const { record, refusal } = findTarget(roster, session.name ?? session.repo, { number: session.number });
+            const { record, refusal } = findTarget(roster, session.name ?? session.repo, {
+              number: session.number, alias: repoCrossCheckAlias(session.repo),
+            });
             if (refusal) {
               log(`${session.verb} refused before read-back: ${refusal}`);
               dropAnswered(conv.unanswered, answering);
@@ -2604,18 +2703,38 @@ wss.on("connection", (ws) => {
             }
             name = record.name;
           }
-          const facets = unconfirmedFacets(ownInterview);
+          // Every facet, every time -- one read-back that covers the whole
+          // brief rather than only whatever the model left uncovered, which
+          // is what let a partial model-side read-back and this one land on
+          // the same facet twice.
+          const facets = FACETS;
           const question = readBack({ ...session, name }, facets);
-          conv.interview = noteInterview(
+          // Computed into locals rather than committed to conv straight away.
+          // say() can drop a clip as superseded (a newer utterance interrupts
+          // it before it plays), in which case it returns false and Krane
+          // never heard this question at all -- but conv.interview/conv.held
+          // used to be set unconditionally above, so his next "yes" (meant
+          // for whatever he actually said) would still be read by answerHeld
+          // as agreeing to a read-back nobody spoke. Waiting for say() to
+          // resolve true before assigning keeps the hold in sync with what
+          // was actually heard.
+          const nextInterview = noteInterview(
             ownInterview,
             { for: session.verb, repo: session.repo, name, confirming: facets.join(","), spokenFor: true },
             Date.now(),
             conv.unanswered.slice(0, answering),
           );
-          conv.held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
-          activity(send, "interviewing", { subject: conv.interview.repo || undefined });
-          log(`start held for confirmation (facets=${facets.join(",")}, asked=${conv.interview.asked}): ${JSON.stringify(question)}`);
+          const held = { session: { ...session, ...(name ? { name } : {}) }, spoken: question };
+          // activity and the log both wait for say() to resolve true, same
+          // reasoning as the comment above: a dropped clip means Krane never
+          // heard the question, so the page must not label itself
+          // "confirming" and the log must not claim a hold that never
+          // actually happened.
           if (await say(send, question, undefined, () => gate.isCurrent(token))) {
+            activity(send, "confirming", { subject: nextInterview.repo || undefined });
+            log(`confirming: ${session.verb} held (facets=${facets.join(",")}, asked=${nextInterview.asked}): ${JSON.stringify(question)}`);
+            conv.interview = nextInterview;
+            conv.held = held;
             dropAnswered(conv.unanswered, answering);
           }
           return;
@@ -2644,7 +2763,19 @@ wss.on("connection", (ws) => {
         if (needsConfirmation(session)) {
           await proposeSession(send, conv, session, roster);
         } else {
-          await dispatchSession(send, session, reply, roster, conv);
+          // A read's sentence is dropped too, but only when the turn answered
+          // a single sentence. The persona is told to say nothing for a read,
+          // because the findings are heard after the read is already done and
+          // "let me read what jarvis three is doing" then promises something
+          // finished -- but a model that says it anyway must not be heard, so
+          // the drop is enforced here. A merged turn is the exception: "what
+          // is jarvis three doing, and make the orb blue" gets its second
+          // sentence answered in that same prose, and dropAnswered above has
+          // already marked it answered, so blanking it there would lose the
+          // answer for good. The persona covers that case instead.
+          const sentence = session.verb === "read" && answering <= 1 ? "" : reply;
+          if (sentence !== reply) log(`read: dropped the model's sentence ${JSON.stringify(reply)}`);
+          await dispatchSession(send, session, sentence, roster, conv);
         }
       } else if (action) {
         dropAnswered(conv.unanswered, answering);
