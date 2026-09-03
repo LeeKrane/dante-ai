@@ -64,6 +64,7 @@ import {
   MAX_EVENTS,
   MAX_EVENT_NAME_CHARS,
   MAX_EVENT_DETAIL_CHARS,
+  MAX_EVENT_DO_THIS_FIRST_CHARS,
   recordEvent,
   getEvents,
   clearEvents,
@@ -1305,8 +1306,24 @@ test("a chain survives a save and a load", () => {
 test("recordEvent stamps an entry with the kind, name, detail and time given", () => {
   const store = emptyStore();
   const recorded = recordEvent(store, { kind: "complete", name: "jarvis-1", detail: "fixed the tests" }, T);
-  assert.deepEqual(recorded, { kind: "complete", name: "jarvis-1", detail: "fixed the tests", at: T });
+  assert.deepEqual(recorded, { kind: "complete", name: "jarvis-1", detail: "fixed the tests", doThisFirst: "", at: T });
   assert.deepEqual(getEvents(store), [recorded]);
+});
+
+test("recordEvent carries doThisFirst onto the stored entry, capped and cleaned the same as detail", () => {
+  const store = emptyStore();
+  const recorded = recordEvent(store, {
+    kind: "complete",
+    name: "jarvis-1",
+    doThisFirst: "y".repeat(MAX_EVENT_DO_THIS_FIRST_CHARS * 3),
+  }, T);
+  assert.equal(recorded.doThisFirst.length, MAX_EVENT_DO_THIS_FIRST_CHARS);
+});
+
+test("recordEvent with no doThisFirst records an empty one, not undefined", () => {
+  const store = emptyStore();
+  const recorded = recordEvent(store, { kind: "complete", name: "jarvis-1" }, T);
+  assert.equal(recorded.doThisFirst, "");
 });
 
 test("recordEvent refuses a kind that is not one of lib/notify.js's KINDS", () => {
@@ -1368,7 +1385,10 @@ test("the event log survives a save and a load", () => {
     const store = emptyStore();
     recordEvent(store, { kind: "complete", name: "jarvis-1", detail: "done" }, T);
     assert.equal(saveStore(store, path), true);
-    assert.deepEqual(getEvents(loadStore(path)), [{ kind: "complete", name: "jarvis-1", detail: "done", at: T }]);
+    assert.deepEqual(
+      getEvents(loadStore(path)),
+      [{ kind: "complete", name: "jarvis-1", detail: "done", doThisFirst: "", at: T }],
+    );
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

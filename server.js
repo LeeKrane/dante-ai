@@ -30,7 +30,7 @@ import {
   FACETS, composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
   wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
-import { readSession, summarizeSession } from "./lib/transcript.js";
+import { readSession, summarizeSession, verdictFor } from "./lib/transcript.js";
 import {
   WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, resumedAmong, unwatchVerdict, watchVerdict,
 } from "./lib/watch.js";
@@ -49,7 +49,7 @@ import {
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
-import { loadSessionKinds, buildName } from "./lib/sessions.js";
+import { loadSessionKinds, buildName, missingSkill, promptFor } from "./lib/sessions.js";
 import {
   MAX_SESSIONS, newSessionId, refuseStart, startSession, resolveStartedSession, stopSession, tellSession,
   createInFlight, daemonId,
@@ -299,8 +299,15 @@ async function reportWatch({ watch, change, record }) {
   const { text, reason } = await readSession({
     cwd: watch.cwd, sessionId: watch.sessionId, task: watch.task, question: WATCH_QUESTION,
   });
+  // Same gate reportComplete applies, on the kind carried onto the watch
+  // record when it was added (see dispatchWatch below) -- a watched
+  // session's transcript is exactly as attacker-reachable as any other, and
+  // watching it does not make its own prose trustworthy to repeat verbatim.
+  // verdictFor (lib/transcript.js) is the one place that gate and this read
+  // now live, shared with reportComplete below.
+  const doThisFirst = verdictFor({ kind: sessionKinds.get(watch.kindId), cwd: watch.cwd, sessionId: watch.sessionId });
   const spoken = describeFired({
-    name: watch.name, change, state: record?.state ?? record?.status, text, reason,
+    name: watch.name, change, state: record?.state ?? record?.status, text, reason, doThisFirst,
   });
   log(`watch fired (${change}): ${spoken}`);
   // Reachable only if the page closed during the read above: onRoster does
@@ -350,28 +357,51 @@ async function reportComplete(sessionId, context = {}) {
     sessionId,
     task: remembered.task,
   });
+
+  // Gated on the kind Dante actually started this session with, unlike the
+  // rest of this function's `remembered.*` reads: extractDoThisFirst lifts
+  // raw, unreviewed transcript prose into a sentence spoken with Dante's own
+  // authority, and a transcript holds whatever the session read off disk or
+  // off the web -- the most attacker-reachable text in this program (see the
+  // security half of SUMMARY_PERSONA in lib/transcript.js). speaksVerdict
+  // (lib/sessions.js) is what a kind opts into; a kind-less session, or one
+  // whose kind never asked the council for anything, gets "" here and this
+  // costs nothing beyond the Map lookup. verdictFor (lib/transcript.js) is
+  // where that gate and the read behind it now live, shared with reportWatch
+  // above -- this used to be duplicated, untested, inline here and there.
+  // It reads several messages deep, raw, in case the verdict was not the
+  // very last thing said, and is synchronous, so this adds no await for the
+  // comments below about ordering to worry about.
+  const doThisFirst = verdictFor({
+    kind: sessionKinds.get(remembered.kind), cwd: context.cwd || remembered.cwd, sessionId,
+  });
+
   const line = formatEvent({
     kind: "complete",
     name: remembered.name ?? context.name,
     durationMs,
     summary,
     detail: remembered.stoppedAt ? "stopped from here" : "",
+    doThisFirst,
   });
 
   // Recorded with the same words the log line above got -- whichever of summary
-  // or the "stopped from here" note formatEvent actually chose to say -- so the
-  // console line and the recap can never disagree about what happened here.
+  // or the "stopped from here" note formatEvent actually chose to say, and now
+  // doThisFirst too -- so the console line and the recap can never disagree
+  // about what happened here.
   recordEvent(memoryStore, {
     kind: "complete",
     name: remembered.name ?? context.name,
     detail: summary || (remembered.stoppedAt ? "stopped from here" : ""),
+    doThisFirst,
   });
   saveStore(memoryStore);
 
   log(`session complete: ${line}`);
   // The spoken form is shorter and only reaches anyone if a page is open and
-  // the floor comes free before it goes stale; the recap above already has the
-  // full detail regardless.
+  // the floor comes free before it goes stale; the recap above already has
+  // the full detail regardless -- doThisFirst included, now that it is on
+  // the recorded event too, not only on the spoken line below.
   //
   // Skipped when a watcher already spoke about this session, or is about to
   // -- `watched`, decided synchronously at the top of this function, before
@@ -385,6 +415,7 @@ async function reportComplete(sessionId, context = {}) {
       name: remembered.name ?? context.name,
       durationMs,
       summary,
+      doThisFirst,
     }));
   }
 
@@ -1737,6 +1768,7 @@ async function dispatchWatch(send, session, preamble, roster) {
     return;
   }
 
+  const rememberedForWatch = getSessionRecord(memoryStore, record.sessionId);
   watchers.add({
     sessionId: record.sessionId,
     name: record.name,
@@ -1744,8 +1776,14 @@ async function dispatchWatch(send, session, preamble, roster) {
     // The brief a start or tell held for this session, if any -- readSession
     // (via reportWatch) folds it into the question it asks the transcript,
     // the same way dispatchRead already does for verb=read.
-    task: getSessionRecord(memoryStore, record.sessionId)?.task ?? "",
+    task: rememberedForWatch?.task ?? "",
     state: record.state,
+    // Carried through so a fired watch can gate its own do-this-first line
+    // on speaksVerdict (lib/sessions.js) exactly the way reportComplete does
+    // -- see reportWatch. rememberedForWatch.kind is already null for a
+    // command= session (see beginSession's own rememberSession call), so
+    // this needs no separate check for the same case.
+    kindId: rememberedForWatch?.kind ?? null,
   }, Date.now());
   log(`watching ${record.name} (${record.sessionId})`);
   await say(send, joinSpoken(preamble, watchVerdict({ name: record.name })));
@@ -2063,6 +2101,34 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     { task, hint: commandName || kind?.nameHint?.({ task }) },
     (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
+
+  // A kind whose `prompt` hook opens with a slash command (brainstorm's
+  // /council-review) is refused here, before anything is spawned, when its
+  // declared `skill` is not among the skills loadCommands actually found on
+  // disk (lib/commands.js) -- the same allow-list vetCommand already checked
+  // a spoken command= against, at the message-tag stage, before this ever
+  // ran. Skipped when `command` is present: an explicit command REPLACES the
+  // kind's own prompt outright (see buildStartArgs in lib/spawn-session.js),
+  // so the kind's own skill never runs and there is nothing to refuse.
+  if (!command) {
+    const missing = missingSkill(kind, knownCommands);
+    if (missing) {
+      const error = `the ${missing} skill is not installed`;
+      log(`session start refused name=${name} kind=${kindId} ${error}`);
+      recordEvent(memoryStore, { kind: "failed", name, detail: error });
+      saveStore(memoryStore);
+      return { ok: false, name, error };
+    }
+  }
+
+  // The one case buildStartArgs's own silent choice (a command present wins
+  // over a brief) is worth a line about: a kind whose whole point is its own
+  // composed prompt just had that prompt thrown away in favour of whatever
+  // command= named instead.
+  if (command && kind?.prompt) {
+    log(`command ${JSON.stringify(command)} replaced ${kindId}'s own prompt for ${name}`);
+  }
+
   const sessionId = newSessionId();
 
   const started = await startSession({
@@ -2070,7 +2136,11 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     sessionId,
     cwd: workspace.path,
     task,
-    brief,
+    // A kind's own `prompt` hook, when it has one, replaces the brief
+    // entirely -- see promptFor's own comment in lib/sessions.js for why. A
+    // kind with no hook gets the brief back unchanged, so this is a no-op
+    // for every kind but the ones that ask for it.
+    brief: promptFor(kind, { task, brief, alias: workspace.alias }),
     command,
     systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
@@ -2119,7 +2189,17 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   // Its own bucket, not the artifacts list: artifacts answer "what did we build
   // lately", and ten sessions would push every build out of that answer.
   rememberSession(memoryStore, liveSessionId, {
-    name, alias: workspace.alias, cwd: workspace.path, task, kind: kindId ?? null,
+    name, alias: workspace.alias, cwd: workspace.path, task,
+    // Not kindId unconditionally: a command= present means buildStartArgs
+    // (lib/spawn-session.js) ran that command instead of the kind's own
+    // prompt -- see the log line above -- so a kind whose speaksVerdict is
+    // true (lib/sessions.js) never actually asked the council for anything
+    // here. Remembering null keeps reportComplete's and reportWatch's
+    // speaksVerdict gate closed for a session that ran an arbitrary command
+    // under a brainstorm-shaped kind; dispatchWatch's own kindId (see
+    // dispatchWatch below) reads this same stored field, so it follows the
+    // same rule for free.
+    kind: command ? null : (kindId ?? null),
     // daemonId(), not the record's `.id` read straight off it: everything the
     // roster carries came from the CLI, but a stored shortId is later handed
     // to `claude stop <id>` as an argument, and this is what makes sure it

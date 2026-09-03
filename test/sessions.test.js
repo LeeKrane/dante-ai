@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { withTempFiles } from "./helpers.js";
+import { MAX_BRIEF_CHARS } from "../lib/spawn-session.js";
 import {
   MAX_NAME_CHARS,
   buildName,
   loadSessionKinds,
+  missingSkill,
+  promptFor,
   slugify,
+  speaksVerdict,
   validateSessionKind,
 } from "../lib/sessions.js";
 
@@ -38,6 +42,7 @@ test("the shipped session kinds load", async () => {
   const kinds = await loadSessionKinds(SESSIONS);
   assert.ok(kinds.get("review"), "review should be registered");
   assert.ok(kinds.get("tests"), "tests should be registered");
+  assert.ok(kinds.get("brainstorm"), "brainstorm should be registered");
 });
 
 test("the template is an example rather than a live session kind", async () => {
@@ -67,6 +72,54 @@ test("a test-fixing session is told that deleting the assertion is not a fix", a
   const kinds = await loadSessionKinds(SESSIONS);
   const prompt = kinds.get("tests").systemPrompt({});
   assert.match(prompt, /deleting an assertion to make it pass is a failure/i);
+});
+
+test("a brainstorm session's prompt opens the council skill and carries the brief verbatim", async () => {
+  const kinds = await loadSessionKinds(SESSIONS);
+  const brief = "Goal: ship the widget.\nConstraints: no new deps.\nDone when: tests pass.";
+  const prompt = kinds.get("brainstorm").prompt({ task: "brainstorm the widget plan", brief });
+  assert.match(prompt, /^\/council-review\n/);
+  assert.ok(prompt.includes(brief), "the brief should appear in the prompt unchanged");
+  assert.match(prompt, /Rewrite the brief in the same Goal \/ Constraints \/ Done when shape/);
+});
+
+test("a brainstorm session falls back to the task when the interview left no brief", async () => {
+  const kinds = await loadSessionKinds(SESSIONS);
+  const prompt = kinds.get("brainstorm").prompt({ task: "brainstorm the widget plan", brief: "" });
+  assert.ok(prompt.includes("brainstorm the widget plan"));
+});
+
+test("a brainstorm session is told not to implement or commit, and names its repository", async () => {
+  const kinds = await loadSessionKinds(SESSIONS);
+  const prompt = kinds.get("brainstorm").systemPrompt({ task: "x", alias: "jarvis" });
+  assert.match(prompt, /jarvis/);
+  assert.match(prompt, /do not implement/i);
+  assert.match(prompt, /do not commit/i);
+});
+
+test("brainstorm drops the trigger that collides with review.mjs's own", async () => {
+  const kinds = await loadSessionKinds(SESSIONS);
+  const triggers = kinds.get("brainstorm").triggers;
+  assert.equal(triggers.includes("council review this"), false);
+  assert.deepEqual(triggers, ["brainstorm", "brainstorming", "brainstorming session", "debate this"]);
+});
+
+test("brainstorm is the one kind trusted to speak its own transcript as a verdict, and it names its skill", async () => {
+  const kinds = await loadSessionKinds(SESSIONS);
+  const brainstorm = kinds.get("brainstorm");
+  assert.equal(brainstorm.speaksVerdict, true);
+  assert.equal(brainstorm.skill, "council-review");
+});
+
+test("a brainstorm brief near the cap composes to at most MAX_BRIEF_CHARS, preamble intact, brief head preserved", async () => {
+  const kinds = await loadSessionKinds(SESSIONS);
+  const brief = "Goal: ship the widget. " + "x".repeat(MAX_BRIEF_CHARS);
+  const prompt = kinds.get("brainstorm").prompt({ task: "brainstorm the widget plan", brief, maxChars: MAX_BRIEF_CHARS });
+
+  assert.ok(prompt.length <= MAX_BRIEF_CHARS, `prompt was ${prompt.length} chars`);
+  assert.match(prompt, /^\/council-review\n/);
+  assert.match(prompt, /Rewrite the brief in the same Goal \/ Constraints \/ Done when shape/);
+  assert.ok(prompt.includes("Goal: ship the widget."), "the brief's own head should survive the trim");
 });
 
 // ---------------------------------------------------------------------------
@@ -118,6 +171,102 @@ test("a trigger that is not a phrase is refused", () => {
 
 test("a nameHint that is not callable is refused", () => {
   assert.throws(() => validateSessionKind(validKind({ nameHint: "review" }), "s.mjs"), /"nameHint"/);
+});
+
+test("a prompt hook must be a function when present, and a kind may leave it out entirely", () => {
+  assert.throws(() => validateSessionKind(validKind({ prompt: "/council-review" }), "s.mjs"), /"prompt"/);
+  assert.throws(() => validateSessionKind(validKind({ prompt: 42 }), "s.mjs"), /"prompt"/);
+  assert.equal(validateSessionKind(validKind({ prompt: ({ brief }) => brief }), "s.mjs"), true);
+  assert.equal(validateSessionKind(validKind(), "s.mjs"), true);
+});
+
+test("speaksVerdict must be a boolean when present", () => {
+  assert.throws(() => validateSessionKind(validKind({ speaksVerdict: "yes" }), "s.mjs"), /"speaksVerdict"/);
+  assert.throws(() => validateSessionKind(validKind({ speaksVerdict: 1 }), "s.mjs"), /"speaksVerdict"/);
+  assert.equal(validateSessionKind(validKind({ speaksVerdict: true }), "s.mjs"), true);
+  assert.equal(validateSessionKind(validKind({ speaksVerdict: false }), "s.mjs"), true);
+  assert.equal(validateSessionKind(validKind(), "s.mjs"), true);
+});
+
+test("skill must be a non-empty string when present", () => {
+  assert.throws(() => validateSessionKind(validKind({ skill: "" }), "s.mjs"), /"skill"/);
+  assert.throws(() => validateSessionKind(validKind({ skill: "  " }), "s.mjs"), /"skill"/);
+  assert.throws(() => validateSessionKind(validKind({ skill: 42 }), "s.mjs"), /"skill"/);
+  assert.equal(validateSessionKind(validKind({ skill: "council-review" }), "s.mjs"), true);
+});
+
+// ---------------------------------------------------------------------------
+// speaksVerdict
+// ---------------------------------------------------------------------------
+
+test("only a kind whose own field is true speaks its transcript as a verdict", () => {
+  assert.equal(speaksVerdict({ speaksVerdict: true }), true);
+  assert.equal(speaksVerdict({ speaksVerdict: false }), false);
+  assert.equal(speaksVerdict({}), false);
+  assert.equal(speaksVerdict(null), false);
+  assert.equal(speaksVerdict(undefined), false);
+  // A kind-less session (sessionKinds.get(null) or a stale kindId) is
+  // exactly the case that must default closed, not open: a Map miss hands
+  // this undefined, the same as a session started with no kind at all.
+  assert.equal(speaksVerdict(new Map().get("no-such-kind")), false);
+});
+
+// ---------------------------------------------------------------------------
+// missingSkill
+// ---------------------------------------------------------------------------
+
+test("a kind that names no skill has nothing missing", () => {
+  assert.equal(missingSkill({}, new Map()), null);
+  assert.equal(missingSkill(null, new Map()), null);
+});
+
+test("a skill the known map has is not missing", () => {
+  const known = new Map([["council-review", { name: "council-review", source: "/home/krane" }]]);
+  assert.equal(missingSkill({ skill: "council-review" }, known), null);
+});
+
+test("a skill matched case-insensitively against the known map is not missing", () => {
+  const known = new Map([["council-review", { name: "council-review", source: "/home/krane" }]]);
+  assert.equal(missingSkill({ skill: "Council-Review" }, known), null);
+});
+
+test("a skill nothing discovered is refused by name", () => {
+  assert.equal(missingSkill({ skill: "council-review" }, new Map()), "council-review");
+});
+
+test("a known that is not a Map is treated as no skills known, not silently guessed at", () => {
+  // loadCommands (lib/commands.js) always returns a Map, and beginSession
+  // (server.js) is this function's sole caller -- so this only ever fires on
+  // a programming error, never a real lookup. Refusing by name, the same
+  // answer an actually-empty Map gives, is the honest answer rather than a
+  // shape-sniffing guess.
+  assert.equal(missingSkill({ skill: "council-review" }, undefined), "council-review");
+  assert.equal(missingSkill({ skill: "council-review" }, null), "council-review");
+  assert.equal(missingSkill({ skill: "council-review" }, new Set(["council-review"])), "council-review");
+  assert.equal(missingSkill({ skill: "council-review" }, { has: () => true, get: () => true }), "council-review");
+});
+
+// ---------------------------------------------------------------------------
+// promptFor
+// ---------------------------------------------------------------------------
+
+test("a kind with no prompt hook leaves the brief exactly as it was handed in", () => {
+  const kind = { id: "sample", systemPrompt: () => "x" };
+  assert.equal(promptFor(kind, { task: "fix it", brief: "Goal: fix it.\nDone when: green." }), "Goal: fix it.\nDone when: green.");
+  assert.equal(promptFor(kind, { task: "fix it", brief: undefined }), undefined);
+  assert.equal(promptFor(null, { task: "fix it", brief: "a brief" }), "a brief");
+});
+
+test("a kind's own prompt hook replaces the brief entirely, not merely adds to it", () => {
+  const kind = { id: "sample", systemPrompt: () => "x", prompt: ({ task, brief }) => `/skill\n\n${brief || task}` };
+  assert.equal(promptFor(kind, { task: "fix it", brief: "the real brief" }), "/skill\n\nthe real brief");
+  assert.equal(promptFor(kind, { task: "fix it", brief: "" }), "/skill\n\nfix it");
+});
+
+test("the prompt hook is handed maxChars, defaulting to MAX_BRIEF_CHARS when the caller gives none", () => {
+  const kind = { id: "sample", systemPrompt: () => "x", prompt: ({ maxChars }) => String(maxChars) };
+  assert.equal(promptFor(kind, { task: "x", brief: "x" }), String(MAX_BRIEF_CHARS));
+  assert.equal(promptFor(kind, { task: "x", brief: "x", maxChars: 500 }), "500");
 });
 
 // ---------------------------------------------------------------------------

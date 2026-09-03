@@ -418,6 +418,29 @@ test("an idle watcher omits the state clause when the state is missing or not pr
   }
 });
 
+test("a fired watch appends the council's do-this-first line, exactly as formatSpoken would", () => {
+  const spoken = describeFired({
+    name: "jarvis-1",
+    change: "gone",
+    text: "It fixed the failing test.",
+    doThisFirst: "Restart the daemon before deploying anything else.",
+  });
+  assert.equal(
+    spoken,
+    "jarvis-1 has finished, sir. It fixed the failing test. " +
+      "The council says, do this first: Restart the daemon before deploying anything else. " +
+      "Ready for the next step, sir?",
+  );
+});
+
+test("no do-this-first line reads exactly as it did before that field existed", () => {
+  const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "It fixed the failing test.", doThisFirst: "" });
+  assert.equal(
+    spoken,
+    "jarvis-1 has finished, sir. It fixed the failing test. Ready for the next step, sir?",
+  );
+});
+
 test("empty text with reason no-transcript says nothing was left to read", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "", reason: "no-transcript" });
   assert.equal(spoken, "jarvis-1 has finished, sir. It left nothing I can read. Ready for the next step, sir?");

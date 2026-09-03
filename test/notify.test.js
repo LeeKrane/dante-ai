@@ -6,11 +6,13 @@ import {
   MAX_TASK_CHARS,
   MAX_RECAP_CHARS,
   MAX_RECAP_EVENTS,
+  doThisFirstClause,
   formatDuration,
   formatEvent,
   formatRecap,
   formatSpoken,
 } from "../lib/notify.js";
+import { MAX_DO_THIS_FIRST_CHARS } from "../lib/transcript.js";
 
 // ---------------------------------------------------------------------------
 // formatDuration
@@ -101,6 +103,26 @@ test("a nameless session is still reportable", () => {
   assert.equal(formatEvent({ kind: "complete" }), "a session - done");
 });
 
+test("a do-this-first line lands on the recap log too, as its own short clause", () => {
+  const line = formatEvent({
+    kind: "complete",
+    name: "jarvis-1",
+    summary: "improved the brief",
+    doThisFirst: "Add the missing null check in widget.js.",
+  });
+  assert.equal(
+    line,
+    "jarvis-1 - done - improved the brief Do this first: Add the missing null check in widget.js.",
+  );
+});
+
+test("no do-this-first line is exactly the line as it was before that field existed", () => {
+  assert.equal(
+    formatEvent({ kind: "complete", name: "jarvis-1", summary: "improved the brief", doThisFirst: "" }),
+    "jarvis-1 - done - improved the brief",
+  );
+});
+
 test("every field that came from somewhere else is capped and flattened", () => {
   const rlo = String.fromCharCode(0x202e);
   const line = formatEvent({
@@ -154,6 +176,62 @@ test("the spoken form always names the session, because that is what you answer"
 test("an event of no known kind is not spoken either", () => {
   assert.equal(formatSpoken({ kind: "exploded", name: "jarvis-1" }), "");
   assert.equal(formatSpoken(), "");
+});
+
+test("the council's do-this-first line is spoken as its own sentence when a completion carries one", () => {
+  const event = {
+    kind: "complete",
+    name: "jarvis-1",
+    durationMs: 480_000,
+    summary: "improved the brief",
+    doThisFirst: "Add the missing null check in widget.js before anything else.",
+  };
+  assert.equal(
+    formatSpoken(event),
+    "jarvis-1 finished in 8m, sir. improved the brief. " +
+      "The council says, do this first: Add the missing null check in widget.js before anything else.",
+  );
+});
+
+test("a completion with no do-this-first line is spoken exactly as it was before that field existed", () => {
+  assert.equal(
+    formatSpoken({ kind: "complete", name: "jarvis-1", durationMs: 480_000, summary: "improved the brief" }),
+    "jarvis-1 finished in 8m, sir. improved the brief.",
+  );
+  assert.equal(
+    formatSpoken({ kind: "complete", name: "jarvis-1", durationMs: 480_000, summary: "improved the brief", doThisFirst: "" }),
+    "jarvis-1 finished in 8m, sir. improved the brief.",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// doThisFirstClause
+// ---------------------------------------------------------------------------
+
+test("doThisFirstClause is the exact sentence formatSpoken appends, shared with lib/watch.js", () => {
+  assert.equal(
+    doThisFirstClause("Restart the daemon before deploying anything else."),
+    "The council says, do this first: Restart the daemon before deploying anything else.",
+  );
+});
+
+test("doThisFirstClause is empty for nothing to say", () => {
+  assert.equal(doThisFirstClause(""), "");
+  assert.equal(doThisFirstClause(undefined), "");
+  assert.equal(doThisFirstClause(null), "");
+});
+
+test("doThisFirstClause caps to lib/transcript.js's own MAX_DO_THIS_FIRST_CHARS, imported rather than re-typed", () => {
+  // This used to be a private 240 defined again in this file -- one of three
+  // copies of the same number (lib/memory.js carried a third). Importing it
+  // means there is exactly one cap left to get wrong, and this test pins
+  // that the import is actually wired in, not merely present.
+  const long = "x".repeat(MAX_DO_THIS_FIRST_CHARS + 50);
+  const clause = doThisFirstClause(long);
+  const stated = clause.slice("The council says, do this first: ".length);
+  // cleanText caps at MAX_DO_THIS_FIRST_CHARS characters of "x", and
+  // sentence() then adds the full stop this input has none of.
+  assert.equal(stated, `${"x".repeat(MAX_DO_THIS_FIRST_CHARS)}.`);
 });
 
 // ---------------------------------------------------------------------------
@@ -210,6 +288,21 @@ test("a completed event with nothing further to add is still a full sentence", (
   assert.equal(
     formatRecap([{ kind: "complete", name: "jarvis-1", at: now - 38_000 }], now),
     "jarvis-1 finished 38s ago, sir.",
+  );
+});
+
+test("a do-this-first line is its own short clause in the recap too", () => {
+  const now = Date.now();
+  assert.equal(
+    formatRecap(
+      [{
+        kind: "complete", name: "jarvis-1", detail: "fixed the timeout assertion", at: now - 38_000,
+        doThisFirst: "Restart the daemon before deploying anything else.",
+      }],
+      now,
+    ),
+    "jarvis-1 finished 38s ago, sir: fixed the timeout assertion. " +
+      "Do this first: Restart the daemon before deploying anything else.",
   );
 });
 

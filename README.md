@@ -309,14 +309,31 @@ bypassPermissions`, on any path: voice is a lossy channel, and a misheard
 sentence must not be able to remove every guardrail.
 
 `sessions/*.mjs` shapes a session the way `primitives/*.mjs` shapes a build —
-prompt and model only, no tool scope. Ships `review` and `tests`; copy
-`sessions/_template.mjs` to add one.
+prompt and model only, no tool scope. Ships `review`, `tests` and
+`brainstorm`; copy `sessions/_template.mjs` to add one. A kind can also
+supply a `prompt` hook that replaces the brief outright rather than only
+shaping the system prompt around it — the one thing that needs: `brainstorm`
+opens with `/council-review` on its own line, so the council skill expands
+and reads the interview's brief, below it, as its own input. "Brainstorm the
+widget plan in jarvis" runs it — the council debates the brief and rewrites
+it in the same Goal / Constraints / Done when shape, ready to hand to a build
+session. It is asked not to implement anything and not to commit, the same
+way any other session is asked to work carefully — not sandboxed against it,
+since a session kind names no tools and runs under your own permissions like
+every other one.
 
 ### It reports back
 
 Started, finished, and needs-attention events are spoken when the page is open,
 and every event — failures included — lands in the session recap, which you can
-ask Dante for.
+ask Dante for. A finished session gets one more sentence when its last message
+happened to carry a "Do This First" heading — the council verdict's one
+concrete next step, however the session got there — read out as "the council
+says, do this first: …" right after the ordinary "finished in N minutes," and
+noted in the session recap too. Only a session kind that opts into it (right
+now, just `brainstorm`) has its transcript trusted this way: a transcript can
+hold whatever the session read off disk or off the web, so an ordinary session
+finishing never has its own words repeated back as a verdict.
 
 *"Catch me up"* is how you read the recap after walking away. It comes back as
 one spoken paragraph rather than a list — anything still needing you leads, and

@@ -11,12 +11,16 @@ import {
   MAX_TRANSCRIPT_CHARS,
   buildReadPrompt,
   buildSummaryPrompt,
+  doThisFirstAmong,
+  extractDoThisFirst,
   extractText,
+  lastAssistantTexts,
   readSession,
   slugForCwd,
   summarizeSession,
   tailMessages,
   transcriptPath,
+  verdictFor,
 } from "../lib/transcript.js";
 
 // The record shape as Claude Code actually writes it, copied from a real
@@ -153,6 +157,281 @@ test("prose buried under megabytes of tool output is still found", () => {
   withTranscript(lines, (path) => {
     assert.deepEqual(tailMessages(path), ["the buried sentence"]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// lastAssistantTexts
+// ---------------------------------------------------------------------------
+
+test("a transcript that is not there has no last assistant messages", () => {
+  assert.deepEqual(lastAssistantTexts("/nope/does-not-exist.jsonl"), []);
+  assert.deepEqual(lastAssistantTexts(""), []);
+  assert.deepEqual(lastAssistantTexts(null), []);
+});
+
+test("the last assistant message comes back whole, newlines and all", () => {
+  withTranscript(
+    [assistantLine("first"), toolUseLine(), assistantLine("line one\n\nline two")],
+    (path) => {
+      assert.deepEqual(lastAssistantTexts(path, 1), ["line one\n\nline two"]);
+    },
+  );
+});
+
+test("a sidechain turn is skipped, same as extractText", () => {
+  withTranscript(
+    [assistantLine("real answer"), assistantLine("subagent noise", { isSidechain: true })],
+    (path) => {
+      assert.deepEqual(lastAssistantTexts(path, 1), ["real answer"]);
+    },
+  );
+});
+
+test("several messages come back newest first, up to the count asked for", () => {
+  withTranscript(
+    [assistantLine("oldest"), assistantLine("middle"), assistantLine("newest")],
+    (path) => {
+      assert.deepEqual(lastAssistantTexts(path, 2), ["newest", "middle"]);
+      assert.deepEqual(lastAssistantTexts(path, 5), ["newest", "middle", "oldest"]);
+    },
+  );
+});
+
+test("a council verdict past the spoken-summary cap is still read whole, from the file", () => {
+  // The bug this exists to fix: tailMessages runs a message through
+  // extractText's cleanText first, which caps at MAX_MESSAGE_CHARS (1200) and
+  // flattens every newline to a space. A council verdict is one assistant
+  // message of several thousand characters with its "### Do This First"
+  // heading near the end -- past that cap -- so the live path missed it
+  // entirely, and even if it had not, the collapsed text would have had no
+  // blank line left for extractDoThisFirst's paragraph boundary to find.
+  const padding = "The council weighed several options and explained its reasoning. ".repeat(60);
+  const verdict = [
+    "### Summary",
+    padding,
+    "",
+    "### Do This First",
+    "Fix the retry loop in builder.js before merging anything else.",
+    "",
+    "**How to verify:**",
+    "Run the builder tests and confirm the retry count.",
+  ].join("\n");
+  assert.ok(verdict.length > 3000, `fixture should be 3000+ chars, got ${verdict.length}`);
+  const headingIndex = verdict.indexOf("### Do This First");
+  assert.ok(headingIndex > MAX_MESSAGE_CHARS, "heading should sit past the 1200-char cap");
+
+  withTranscript([assistantLine(verdict)], (path) => {
+    // tailMessages is the old, broken path: it caps and flattens, so the
+    // heading is gone by the time extractDoThisFirst ever sees it.
+    const [capped] = tailMessages(path, 1);
+    assert.equal(extractDoThisFirst(capped), "");
+
+    // lastAssistantTexts reads the same file raw. The heading survives, and
+    // so does the blank line that ends its paragraph.
+    const [raw] = lastAssistantTexts(path, 1);
+    assert.equal(
+      extractDoThisFirst(raw),
+      "Fix the retry loop in builder.js before merging anything else.",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractDoThisFirst
+// ---------------------------------------------------------------------------
+
+test("the paragraph under a Do This First heading is what comes back", () => {
+  const text = [
+    "### Recommendation",
+    "Ship it with the cache change.",
+    "",
+    "### Do This First",
+    "Add the missing null check in widget.js before anything else.",
+    "",
+    "**How to verify:**",
+    "Run the widget tests.",
+  ].join("\n");
+  assert.equal(extractDoThisFirst(text), "Add the missing null check in widget.js before anything else.");
+});
+
+test("any heading depth is read, case-insensitively", () => {
+  assert.equal(extractDoThisFirst("## DO THIS FIRST\nRestart the daemon."), "Restart the daemon.");
+  assert.equal(extractDoThisFirst("# do this first\nRestart the daemon."), "Restart the daemon.");
+});
+
+test("a heading with no Do This First section returns nothing", () => {
+  assert.equal(extractDoThisFirst("### Recommendation\nShip it."), "");
+  assert.equal(extractDoThisFirst("Just an ordinary sentence with no headings at all."), "");
+  assert.equal(extractDoThisFirst(""), "");
+  assert.equal(extractDoThisFirst(null), "");
+  assert.equal(extractDoThisFirst(undefined), "");
+});
+
+test("an empty Do This First section returns nothing, not the next section", () => {
+  // DO_THIS_FIRST_HEADING's trailing whitespace used to be \s*, which
+  // reaches across a newline -- so this swallowed the blank line after an
+  // empty section and the boundary loop's zero-index skip then read straight
+  // through to the next heading's own text.
+  assert.equal(extractDoThisFirst("### Do This First\n\n### Recommendation\nShip it."), "");
+});
+
+test("trailing words on the heading's own line are dropped, not read as the body", () => {
+  assert.equal(
+    extractDoThisFirst("### Do This First (High Confidence)\nFix the retry loop."),
+    "Fix the retry loop.",
+  );
+});
+
+test("the inline colon form keeps its body on the heading's own line", () => {
+  assert.equal(extractDoThisFirst("### Do This First: restart the daemon"), "restart the daemon");
+});
+
+test("markdown emphasis is stripped so the line reads as plain speech", () => {
+  const text = "### Do This First\n**Fix** the `retry` loop in _builder.js_ before merging.";
+  assert.equal(extractDoThisFirst(text), "Fix the `retry` loop in builder.js before merging.");
+});
+
+test("a paragraph that runs on is collapsed to one line and capped", () => {
+  const text = `### Do This First\n${"word ".repeat(200)}`;
+  const result = extractDoThisFirst(text);
+  assert.equal(result.includes("\n"), false);
+  assert.ok(result.length <= 240, `expected at most 240 chars, got ${result.length}`);
+});
+
+test("a heading named mid-sentence, not at the start of a line, is not read as the section", () => {
+  const text = "Somewhere in this reply I mention a ### Do This First heading in a quote, " +
+    "but never actually give one.";
+  assert.equal(extractDoThisFirst(text), "");
+});
+
+test("an outline mention of the heading earlier in the text loses to the real section after it", () => {
+  const text = [
+    "### Do This First",
+    "(See the real recommendation further down for what to actually do first.)",
+    "",
+    "### Recommendation",
+    "Ship it.",
+    "",
+    "### Do This First",
+    "Restart the daemon before deploying anything else.",
+  ].join("\n");
+  assert.equal(extractDoThisFirst(text), "Restart the daemon before deploying anything else.");
+});
+
+test("a stray heading-shaped mention inside the paragraph does not truncate it", () => {
+  // NEXT_HEADING used to be unanchored, so "# 412" anywhere in the sentence --
+  // not just at the start of a line -- ended the paragraph right there.
+  const text = "### Do This First\nSee issue # 412 for background, then patch the retry loop.";
+  assert.equal(extractDoThisFirst(text), "See issue # 412 for background, then patch the retry loop.");
+});
+
+test("a paragraph that opens with a bold label is not mistaken for an empty one", () => {
+  // NEXT_BOLD_LABEL used to be unanchored too, so a paragraph's own first
+  // line -- "**Note:** ..." -- matched as if it were the boundary ending the
+  // paragraph, and the paragraph came back "" instead of what it actually said.
+  const text = "### Do This First\n**Note:** Restart the daemon before deploying anything else.";
+  assert.equal(extractDoThisFirst(text), "Note: Restart the daemon before deploying anything else.");
+});
+
+test("globs and snake_case identifiers keep their punctuation", () => {
+  assert.equal(
+    extractDoThisFirst("### Do This First\nRename MAX_TAIL_BYTES in lib/spawn_session.js."),
+    "Rename MAX_TAIL_BYTES in lib/spawn_session.js.",
+  );
+  assert.equal(
+    extractDoThisFirst("### Do This First\nDelete the *.tmp and *.log files."),
+    "Delete the *.tmp and *.log files.",
+  );
+});
+
+test("single-marker emphasis is only stripped when it hugs a real word", () => {
+  const text = "### Do This First\n**Fix** the _retry_ loop.";
+  assert.equal(extractDoThisFirst(text), "Fix the retry loop.");
+});
+
+// ---------------------------------------------------------------------------
+// doThisFirstAmong
+// ---------------------------------------------------------------------------
+
+test("nothing among no messages is nothing", () => {
+  assert.equal(doThisFirstAmong([]), "");
+  assert.equal(doThisFirstAmong(null), "");
+});
+
+test("the first message with a verdict wins, reading newest first", () => {
+  const texts = [
+    "### Do This First\nRestart the daemon.",
+    "no heading here at all",
+  ];
+  assert.equal(doThisFirstAmong(texts), "Restart the daemon.");
+});
+
+test("a verdict in an earlier message is still found when the newest message has none", () => {
+  // The scenario lastAssistantTexts exists for: the session stated its
+  // verdict, then made one more tool call, then closed with a heading-less
+  // rewritten brief. The newest message (index 0, since lastAssistantTexts
+  // hands these back newest first) has nothing; the one before it does.
+  const texts = [
+    "Here is the brief, rewritten:\n\nGoal: ship the widget.\nDone when: tests pass.",
+    "### Do This First\nFix the retry loop before merging.",
+    "Let me check the tests first.",
+  ];
+  assert.equal(doThisFirstAmong(texts), "Fix the retry loop before merging.");
+});
+
+// ---------------------------------------------------------------------------
+// verdictFor
+// ---------------------------------------------------------------------------
+
+test("a kind that never asked the council for a verdict gets nothing, and the transcript is never read", () => {
+  // reportComplete and reportWatch used to duplicate this gate-then-read
+  // inline; verdictFor is the one place it lives now. A kind whose
+  // speaksVerdict is not true must not pay for a transcript read at all.
+  let read = false;
+  const result = verdictFor(
+    { kind: { id: "plain" }, cwd: "/home/x", sessionId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+    { lastAssistantTexts: () => { read = true; return ["### Do This First\nRestart the daemon."]; } },
+  );
+  assert.equal(result, "");
+  assert.equal(read, false);
+});
+
+test("no kind at all -- a kind-less or unrecognised session -- gets nothing either", () => {
+  assert.equal(verdictFor({ kind: undefined, cwd: "/home/x", sessionId: "s" }), "");
+  assert.equal(verdictFor({}), "");
+});
+
+test("a kind that speaks its verdict reads the real transcript on disk and finds it", () => {
+  const home = mkdtempSync(join(tmpdir(), "dante-home-"));
+  try {
+    const cwd = "/home/someone/dev/proj";
+    const dir = join(home, ".claude", "projects", slugForCwd(cwd));
+    mkdirSync(dir, { recursive: true });
+    const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      assistantLine("### Do This First\nRestart the daemon before deploying anything else.") + "\n",
+    );
+    const result = verdictFor({ kind: { id: "brainstorm", speaksVerdict: true }, cwd, sessionId: id }, { home });
+    assert.equal(result, "Restart the daemon before deploying anything else.");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a kind that speaks its verdict but never gave one gets nothing back", () => {
+  const home = mkdtempSync(join(tmpdir(), "dante-home-"));
+  try {
+    const cwd = "/home/someone/dev/proj";
+    const dir = join(home, ".claude", "projects", slugForCwd(cwd));
+    mkdirSync(dir, { recursive: true });
+    const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    writeFileSync(join(dir, `${id}.jsonl`), assistantLine("Ship it, no heading here.") + "\n");
+    const result = verdictFor({ kind: { id: "brainstorm", speaksVerdict: true }, cwd, sessionId: id }, { home });
+    assert.equal(result, "");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
