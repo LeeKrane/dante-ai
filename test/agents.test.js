@@ -1035,9 +1035,21 @@ test("mentionedSessions is punctuation-insensitive, the same as matchSessions", 
   assert.deepEqual(mentionedSessions("what is Jarvis 3 doing", roster), ["jarvis-3"]);
 });
 
-test("mentionedSessions never matches a candidate whose name is only a substring of what was said", () => {
-  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
-  assert.deepEqual(mentionedSessions("what is jarvis-30 doing", roster), []);
+test("mentionedSessions finds a collided session by the shorthand matchSessions' prefix tier accepts", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "review-2" }));
+  assert.deepEqual(mentionedSessions("what did review decide", roster), ["review-2"]);
+});
+
+test("mentionedSessions still does not match jarvis-30 by prefix when jarvis-3 is what was actually said and both exist", () => {
+  // The full run "jarvis-3" is always tried before the shorter, vaguer
+  // "jarvis" prefix of it -- matchSessions' own exact tier resolves it to
+  // jarvis-3 alone, and that stops mentionedSessions from ever falling back
+  // to a shorter run that would have pulled in jarvis-30 too via prefix.
+  const roster = rosterOf(
+    session({ sessionId: "a", name: "jarvis-3" }),
+    session({ sessionId: "b", name: "jarvis-30" }),
+  );
+  assert.deepEqual(mentionedSessions("jarvis-3", roster), ["jarvis-3"]);
 });
 
 test("mentionedSessions returns nothing for an empty candidate list", () => {

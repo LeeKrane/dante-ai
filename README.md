@@ -140,10 +140,12 @@ session read, and the conversation that follows it for the next half hour —
 after that the topic goes stale and later chat is just chat again. Reading a
 session again replaces its earlier read rather than piling up — one section
 per distinct question, and the newest plain read-back if there was no
-question. What comes back: the two most recently updated notes ride along
-with every turn, and the session you name, or just read, always comes first,
-so *"what did it decide"* still has an answer after a restart even when
-something else was touched more recently. Capacity defaults to 50 MB or 500
+question. What comes back, two notes in all, every turn: the note for the
+session you just read and the one for any session you name come first, and
+the most recently updated notes fill whatever seats are left — so *"what did
+it decide"* still has an answer after a restart even when something else was
+touched more recently, though a fresher unrelated note can lose its seat to
+one you actually named. Capacity defaults to 50 MB or 500
 files, whichever comes first — the oldest-updated note is pruned first on
 every write, and the newest is never pruned even alone over the cap. Say
 *"keep your notes under a hundred megabytes"* and the model appends

@@ -37,7 +37,7 @@ import {
 import { recallableSessions } from "./lib/recall.js";
 import {
   DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, foldNotes, listNotes,
-  pruneNotes, recordDiscussion, sessionNoteSpec, writeSection,
+  pruneNotes, recordDiscussion, sessionNoteSpec, topicIsLive, writeSection,
 } from "./lib/notes.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
@@ -2375,9 +2375,12 @@ wss.on("connection", (ws) => {
   // time is the race this whole arrangement exists to avoid.
   // notes/topic/flag are this conversation's memory-notes state: `notes` is the
   // per-conversation tracker of notes touched (so a contradiction is only ever
-  // spoken once), `topic` is the note a session read most recently landed in
-  // (or null, once it goes stale -- see topicIsLive), and `flag` is a
-  // contradiction sentence waiting to be appended to the next thing spoken.
+  // spoken once), `topic` is the note a session read most recently landed in.
+  // It does NOT null itself once stale -- it is only ever nulled on socket
+  // close (see below) or replaced by a fresher read/discussion -- so every
+  // consumer (recordDiscussion, and the notes-fold hint) checks topicIsLive
+  // itself before trusting it. `flag` is a contradiction sentence waiting to
+  // be appended to the next thing spoken.
   const conv = {
     pending: null, proposal: null, interview: null, held: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve(),
     notes: createNoteTracker(), topic: null, flag: "",
@@ -2515,16 +2518,22 @@ wss.on("connection", (ws) => {
       // The hint is what keeps the note about the session this turn is
       // actually discussing from losing its seat to one that merely got
       // appended to more recently: conv.topic is the live read/discussion
-      // window (set by dispatchRead, refreshed by recordDiscussion), and
-      // mentionedSessions catches a session named by voice even outside that
-      // window -- both roster and recallable(roster) so a finished session
-      // can still be pinned by name, the same reach dispatchRead itself
-      // gets from recallable.
+      // window (set by dispatchRead, refreshed by recordDiscussion), gated
+      // through topicIsLive here so a read from hours ago cannot keep
+      // monopolizing a fold seat just because nobody has closed the socket
+      // since -- conv.topic itself is only ever nulled on close (see
+      // above), not on going stale. mentionedSessions catches a session
+      // named by voice even outside that window -- both roster and
+      // `recalled` (computed once here, reused by mergeTurns below) so a finished
+      // session can still be pinned by name, the same reach dispatchRead
+      // itself gets from recallable.
+      const now = Date.now();
+      const recalled = recallable(roster);
       const hint = {
-        topic: conv.topic?.topic ?? null,
-        names: mentionedSessions(conv.unanswered.join(" "), [...(roster ?? []), ...recallable(roster)]),
+        topic: topicIsLive(conv.topic, now) ? conv.topic.topic : null,
+        names: mentionedSessions(conv.unanswered.join(" "), [...(roster ?? []), ...recalled]),
       };
-      const { context: notesForPrompt, flag, topics, chars } = foldNotes(conv.notes, NOTES_DIR, Date.now(), hint);
+      const { context: notesForPrompt, flag, topics, chars } = foldNotes(conv.notes, NOTES_DIR, now, hint);
       conv.flag = flag;
       // Wiring only -- the numbers themselves come from lib/notes.js. This is
       // the number the trim in this branch was made to shrink; watching it
@@ -2533,7 +2542,7 @@ wss.on("connection", (ws) => {
       if (topics.length) log(`notes folded ${topics.length} note(s) ${chars} chars: ${topics.join(", ")}`);
 
       const asked = mergeTurns(conv.unanswered, {
-        roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
+        roster, recalled, aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
         notes: notesForPrompt,
         workspaces: workspacesForClient(memoryStore),
