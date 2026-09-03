@@ -137,13 +137,17 @@ repository's header there makes it the new main.
 (title, summary, a one-line description, created/updated timestamps, and any
 facts it holds) followed by dated sections, oldest first. What goes in: every
 session read, and the conversation that follows it for the next half hour —
-after that the topic goes stale and later chat is just chat again. What comes
-back: the four most recently updated notes ride along with every turn, so
-*"what did it decide"* still has an answer after a restart. Capacity defaults
-to 50 MB or 500 files, whichever comes first — the oldest-updated note is
-pruned first on every write, and the newest is never pruned even alone over
-the cap. Say *"keep your notes under a hundred megabytes"* and the model
-appends `[MEMORY:SET memory-max-mb=100]`; file count works the same way via
+after that the topic goes stale and later chat is just chat again. Reading a
+session again replaces its earlier read rather than piling up — one section
+per distinct question, and the newest plain read-back if there was no
+question. What comes back: the two most recently updated notes ride along
+with every turn, and the session you name, or just read, always comes first,
+so *"what did it decide"* still has an answer after a restart even when
+something else was touched more recently. Capacity defaults to 50 MB or 500
+files, whichever comes first — the oldest-updated note is pruned first on
+every write, and the newest is never pruned even alone over the cap. Say
+*"keep your notes under a hundred megabytes"* and the model appends
+`[MEMORY:SET memory-max-mb=100]`; file count works the same way via
 `memory-max-files`. When two notes about the same session disagree on a fact
 — a task that changed, a status that moved on — Dante says so once per
 conversation and goes with the newer.
