@@ -1045,6 +1045,15 @@ test("mentionedSessions returns nothing for an empty candidate list", () => {
   assert.deepEqual(mentionedSessions("what is jarvis-3 doing", null), []);
 });
 
+test("mentionedSessions finds a name spoken well past the 100-char clip normalizeName applies to a single name", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  const rambling =
+    "Right, before anything else this morning, and I appreciate this is a slightly rambling " +
+    "question, what on earth is jarvis-3 actually up to";
+  assert.ok(rambling.indexOf("jarvis-3") > 100, "the fixture must actually exercise the clip");
+  assert.deepEqual(mentionedSessions(rambling, roster), ["jarvis-3"]);
+});
+
 // ---------------------------------------------------------------------------
 // visibleSessions
 // ---------------------------------------------------------------------------

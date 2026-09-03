@@ -359,6 +359,25 @@ test("mergeSection matches the Asked line case- and whitespace-insensitively", (
   assert.match(second.sections[0].text, /Still building\.$/);
 });
 
+test("mergeSection leaves the earlier read intact when the new read's text cleans to nothing", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "   " });
+  // Unchanged, not merely equivalent -- there was no real replacement text,
+  // so nothing was removed and nothing was appended.
+  assert.equal(second, first);
+  assert.equal(second.sections.length, 1);
+  assert.equal(second.sections[0].text, "Asked: what is it doing\nBuilding X.");
+});
+
+test("mergeSection dedupes two reads that differ only by a leading newline, since both sides of the key are cleaned the same way", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "\nAsked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "\nAsked: what is it doing\nStill building." });
+  assert.equal(second.sections.length, 1);
+  assert.match(second.sections[0].text, /Still building\.$/);
+});
+
 // ---------------------------------------------------------------------------
 // sanitizeLimits -- fallback matrix
 // ---------------------------------------------------------------------------
@@ -615,15 +634,26 @@ test("notesContext includes the topic, relative time and summary for each note",
   assert.match(block, /NOTE jarvis-3 \(updated today\): Rebuild status\./);
 });
 
-test("notesContext orders newest first and caps at MAX_CONTEXT_NOTES", () => {
+test("notesContext keeps the order it is given and only caps at MAX_CONTEXT_NOTES, never re-sorting by updated itself", () => {
   const now = Date.now();
   const notes = [];
   for (let i = 0; i < MAX_CONTEXT_NOTES + 3; i++) {
-    notes.push({ topic: `topic-${i}`, updated: now - i * 1000, summary: `s${i}`, sections: [] });
+    // Deliberately in ASCENDING `updated` order -- the opposite of
+    // newest-first -- so this only passes if notesContext folds exactly the
+    // order it is handed. Ordering is recentNotes'/pickNotes' job now; a
+    // note re-sort here would keep the entries with the highest `updated`
+    // (the END of this array) instead of its first MAX_CONTEXT_NOTES, which
+    // is what a caller who already pinned a note (foldNotes with a hint)
+    // depends on.
+    notes.push({ topic: `topic-${i}`, updated: now - (MAX_CONTEXT_NOTES + 3 - i) * 1000, summary: `s${i}`, sections: [] });
   }
   const block = notesContext(notes, now);
-  // The newest (topic-0) appears, the oldest ones beyond the cap do not.
-  assert.match(block, /NOTE topic-0/);
+  // The caller's own first MAX_CONTEXT_NOTES entries survive...
+  assert.match(block, /NOTE topic-0\b/);
+  assert.match(block, new RegExp(`NOTE topic-${MAX_CONTEXT_NOTES - 1}\\b`));
+  // ...and the entries after the cut point do not, even though the very
+  // last one has the highest `updated` of all of them.
+  assert.doesNotMatch(block, new RegExp(`NOTE topic-${MAX_CONTEXT_NOTES}\\b`));
   assert.doesNotMatch(block, new RegExp(`NOTE topic-${MAX_CONTEXT_NOTES + 2}\\b`));
   const occurrences = block.match(/NOTE /g) ?? [];
   assert.equal(occurrences.length, MAX_CONTEXT_NOTES);
@@ -650,6 +680,27 @@ test("notesContext folds the newest read and the newest discussion whole, head-c
   // ...and the older sections of the same kind do not.
   assert.doesNotMatch(block, /what happened first/);
   assert.doesNotMatch(block, /stale exchange/);
+});
+
+test("notesContext spends the budget on the newest read before the newest discussion, even when the discussion sits chronologically between two reads", () => {
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 3000, kind: "read", text: "Asked: what happened first\nStale answer." },
+      // A discussion big enough to eat the whole budget on its own, sitting
+      // chronologically between the two reads -- the exact shape that used
+      // to have picked/at-order spend the budget on it first and starve
+      // the fresh read below to nothing.
+      { at: now - 2000, kind: "discussion", text: "d".repeat(900) },
+      { at: now - 1000, kind: "read", text: "Asked: what is happening now\nFresh answer." },
+    ],
+  };
+  const block = notesContext([note], now);
+  assert.match(block, /Asked: what is happening now/);
+  assert.match(block, /Fresh answer\./);
 });
 
 test("notesContext head-clips a read that alone exceeds MAX_CONTEXT_CHARS_PER_NOTE", () => {
@@ -1576,6 +1627,22 @@ test("foldNotes reports the topics it folded and the size of the block, in fold 
   });
 });
 
+test("foldNotes reports a hand-named file's topic slugged, never the raw basename bytes, since topics only ever leaves this module to be logged", () => {
+  withTempDir((dir) => {
+    const note = formatNote({
+      title: "T", summary: "s", about: "a", created: 1000, updated: 1000, facts: {},
+      sections: [{ at: 1000, kind: "note", text: "hello" }],
+    });
+    // A control character in the basename -- exactly the kind of byte
+    // topicSlug exists to strip out before anything derived from a topic
+    // reaches a log line, a filename, or a prompt.
+    writeFileSync(join(dir, "My Notes.md"), note);
+    const tracker = createNoteTracker();
+    const { topics } = foldNotes(tracker, dir, 1000);
+    assert.deepEqual(topics, ["my-notes"]);
+  });
+});
+
 test("foldNotes with a hint hands notesContext the pinned note first", () => {
   withTempDir((dir) => {
     writeSection(dir, "old-topic", { at: 1000, text: "old", summary: "the old one" });
@@ -1590,6 +1657,11 @@ test("foldNotes with a hint hands notesContext the pinned note first", () => {
     assert.match(context, /NOTE old-topic/);
     assert.match(context, /NOTE newest-topic/);
     assert.doesNotMatch(context, /NOTE middle-topic/);
+    // Pinned first in the PROMPT, not merely present -- notesContext no
+    // longer re-sorts (see the test above), so this only holds if foldNotes
+    // actually handed it pickNotes' order rather than some other list that
+    // happened to contain both topics.
+    assert.ok(context.indexOf("NOTE old-topic") < context.indexOf("NOTE newest-topic"));
   });
 });
 
