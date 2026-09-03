@@ -740,7 +740,11 @@ let announcements = [];
 // measured on one clock -- the one the person is standing next to.
 function receiveAnnouncement(msg) {
   announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now(), kind: msg.kind });
-  dbg(`announcement queued: ${msg.text}`);
+  // `reoffered` is the connect handler's own flag (server.js) for something
+  // still live from before this page connected, rather than fresh news --
+  // worth telling apart in the diagnostics panel even though both are queued
+  // and spoken the same way from here on.
+  dbg(msg.reoffered ? `announcement re-offered: ${msg.text}` : `announcement queued: ${msg.text}`);
   pumpAnnouncements();
 }
 

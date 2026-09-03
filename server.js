@@ -35,7 +35,7 @@ import {
   WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, resumedAmong, unwatchVerdict, watchEvent,
   watchVerdict,
 } from "./lib/watch.js";
-import { createPending } from "./lib/announcements.js";
+import { createPending, normalizeKind } from "./lib/announcements.js";
 import { recallableSessions } from "./lib/recall.js";
 import {
   DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, foldNotes, listNotes,
@@ -175,6 +175,15 @@ const rosterPoller = createRosterPoller({
     // the sense a watcher exists to report.
     const queuedIdle = idleAmong(roster, queuedSessionIds(memoryStore));
     const skip = new Set(queuedIdle.map((record) => record.sessionId));
+    // Queued ids alone only cover the tick the drain STARTS on: deliverQueued
+    // calls takeQueued (lib/memory.js), which deletes the queue entry
+    // synchronously, so from the very next tick the session is no longer
+    // "queued" even though tellSession can still be running against it for up
+    // to TELL_TIMEOUT_MS. `delivering`'s own in-flight ids (createInFlight,
+    // lib/spawn-session.js) are what is actually still true for the whole
+    // drain, so they are unioned in here too -- a watch stays skipped as long
+    // as the delivery does, not just for its first tick.
+    for (const id of delivering.ids()) skip.add(id);
     for (const record of queuedIdle) deliverQueued(record);
     // The finish times the poller stamped, written down so they survive a
     // restart (endedSeeds, below). Saved only when one is new or moved.
@@ -341,15 +350,21 @@ async function reportComplete(sessionId, context = {}) {
   // recap entry near the end of this function is ALSO skipped, not only the
   // spoken line the way it always was.
   const watchedChange = watchReported.get(sessionId) ?? null;
+  // Captured synchronously right beside watchedChange, before anything below
+  // awaits: a watch that has not fired yet but is still registered can only
+  // ever end one way from here -- reading this same session back and firing
+  // "gone" -- so it is exactly as good a reason to skip the recap entry
+  // below as an already-fired watchedChange of "idle" or "gone" is.
+  const pendingWatch = watchers.has(sessionId);
   // The delete runs unconditionally -- before the two early returns just
   // below it, and on every other exit path this function has -- so the map
   // can never grow for the life of the process. `watchedChange !== null`
   // catches a watcher that already fired for this session (idle, blocked or
-  // gone); `watchers.has` catches one still pending that will fire on the
+  // gone); `pendingWatch` catches one still pending that will fire on the
   // very next tick and read this same session back itself. Either way the
   // generic spoken "complete" line near the end of this function is skipped.
   watchReported.delete(sessionId);
-  const watched = watchedChange !== null || watchers.has(sessionId);
+  const watched = watchedChange !== null || pendingWatch;
 
   const remembered = getSessionRecord(memoryStore, sessionId);
   if (!remembered) return;
@@ -391,14 +406,18 @@ async function reportComplete(sessionId, context = {}) {
   // console line and the recap can never disagree about what happened here.
   //
   // Skipped entirely when a watcher already reported this session idle or
-  // gone: reportWatch already wrote its OWN recap entry for that exact
+  // gone, OR one is still pending (`pendingWatch`): either way reportWatch
+  // already has, or is about to write, its OWN recap entry for this exact
   // ending (watchEvent, in lib/watch.js), and a second "finished" entry here
-  // would have the recap read the same ending back twice. A blocked change is
-  // different -- the watcher's entry says the session is STILL blocked, and
-  // this one finishing afterwards is fresh news the recap has not carried
-  // yet, so it is written regardless; the same is true when nothing fired at
-  // all (`watchedChange` is null).
-  if (watchedChange !== "idle" && watchedChange !== "gone") {
+  // would have the recap read the same ending back twice -- a pending watch
+  // on an already-ended session can only ever fire "gone" next tick, so it
+  // is skipped now rather than left to race the same duplicate in on the
+  // SessionEnd hook's own direct call. A blocked change is different -- the
+  // watcher's entry says the session is STILL blocked, and this one
+  // finishing afterwards is fresh news the recap has not carried yet, so it
+  // is written regardless; the same is true when nothing fired and nothing
+  // is pending at all.
+  if (watchedChange !== "idle" && watchedChange !== "gone" && !pendingWatch) {
     recordEvent(memoryStore, {
       kind: "complete",
       name: remembered.name ?? context.name,
@@ -775,11 +794,16 @@ const pending = createPending({
 function announce(text, { kind = "other", sessionId } = {}) {
   const line = typeof text === "string" ? text.trim() : "";
   if (!line) return false;
-  if (!voice && kind === "other") return false;
+  // Run through normalizeKind (lib/announcements.js) so ANNOUNCE_KINDS is
+  // actually enforced on the wire, not just documented and tested against a
+  // set nothing here consulted: an unrecognized kind falls back to "other"
+  // before it is checked or stored, rather than reaching the page as-is.
+  const normalized = normalizeKind(kind);
+  if (!voice && normalized === "other") return false;
 
-  const offered = pending.offer(line, { kind, sessionId });
+  const offered = pending.offer(line, { kind: normalized, sessionId });
   if (!offered) return false;
-  if (voice) voice({ type: "announce", id: offered.id, text: line, kind, sessionId });
+  if (voice) voice({ type: "announce", id: offered.id, text: line, kind: normalized, sessionId });
   return Boolean(voice);
 }
 

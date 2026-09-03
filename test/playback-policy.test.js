@@ -202,6 +202,13 @@ test("a blocked report survives a conversation long enough to drop everything el
   assert.equal(result.stale[0].id, "old");
 });
 
+test("an entry that is not an announcement is dropped without being handed back as stale", () => {
+  const result = takeAnnouncement([null, undefined, announcement("a")], { state: "idle" }, NOW);
+  assert.equal(result.speak.id, "a");
+  assert.equal(result.dropped, 2);
+  assert.deepEqual(result.stale, []);
+});
+
 test("an entry with no timestamp cannot go stale, so it is not kept", () => {
   const result = takeAnnouncement([{ id: "x", text: "x" }], { state: "idle" }, NOW);
   assert.equal(result.speak, null);

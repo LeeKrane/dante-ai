@@ -141,11 +141,19 @@ export function takeAnnouncement(queue, floor = {}, now = Date.now(), ttlMs = AN
   const list = Array.isArray(queue) ? queue : [];
   const live = [];
   const stale = [];
+  let droppedFalsy = 0;
   for (const item of list) {
-    if (item && retainAnnouncement(item, now, ttlMs)) live.push(item);
+    // A falsy entry is not "a stale announcement" -- there is nothing there
+    // for a cue to play for -- so it is only counted, never handed back in
+    // `stale` for a caller to iterate as if it were one.
+    if (!item) {
+      droppedFalsy++;
+      continue;
+    }
+    if (retainAnnouncement(item, now, ttlMs)) live.push(item);
     else stale.push(item);
   }
-  const dropped = stale.length;
+  const dropped = stale.length + droppedFalsy;
 
   if (!floorIsFree(floor)) return { speak: null, queue: live, dropped, stale };
   const [next, ...rest] = live;

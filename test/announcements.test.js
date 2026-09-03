@@ -57,6 +57,17 @@ test("the oldest entry is evicted first at the cap, whatever kind it carries", (
   assert.equal(pending.take(a.id, NOW), null);
 });
 
+test("with no cap given the map still stops at ten", () => {
+  // No `max` in this options object at all -- proving the default kicks in
+  // rather than `entries.size > undefined`, which is always false and would
+  // let this grow forever.
+  const pending = createPending({ ttlMs: 1_000_000, now: () => NOW });
+  const first = pending.offer("0");
+  for (let i = 1; i < 15; i++) pending.offer(String(i));
+  assert.equal(pending.live(NOW).length, 10);
+  assert.equal(pending.take(first.id, NOW), null);
+});
+
 test("a recap clears every line and says how many it cleared", () => {
   const pending = createPending({ ttlMs: 1000, max: 5, now: () => NOW });
   pending.offer("a");

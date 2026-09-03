@@ -234,11 +234,11 @@ as the rest. It watches exactly the one session you named, and fires exactly
 once: the moment that session stops working — finishes, goes idle, or gets
 blocked on a permission prompt — Dante reads its transcript back, the same
 way a *read* does, and says what it produced and what state it's in now.
-That read-back lands in the recap log too, so it's not lost if nobody's
-there to hear it spoken. Then the watch is gone; it never fires twice for
-the same ending. *"Never mind, stop watching that"* cancels one
-at once, with no confirmation needed — a watch touches no process, so
-cancelling one is the same kind of thing as reading one is. Watching a
+That read-back lands in the recap log too, once it fires. Then the watch
+is gone; it never fires twice for the same ending. *"Never mind, stop
+watching that"* cancels one at once, with no confirmation needed — a
+watch touches no process, so cancelling one is the same kind of thing as
+reading one is. Watching a
 session that isn't currently working is refused outright: it would never
 cross the line a watcher fires on, and confirming it would be a promise
 nothing could keep. Watches exist only in memory, five at a time, and do
