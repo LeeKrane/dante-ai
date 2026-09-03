@@ -1565,6 +1565,17 @@ test("foldNotes on an empty directory returns an empty context and an empty flag
   });
 });
 
+test("foldNotes reports the topics it folded and the size of the block, in fold order", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "old-topic", { at: 1000, text: "old" });
+    writeSection(dir, "newest-topic", { at: 2000, text: "newest" });
+    const tracker = createNoteTracker();
+    const { context, topics, chars } = foldNotes(tracker, dir, 2000, { topic: "old-topic" });
+    assert.deepEqual(topics, ["old-topic", "newest-topic"]);
+    assert.equal(chars, context.length);
+  });
+});
+
 test("foldNotes with a hint hands notesContext the pinned note first", () => {
   withTempDir((dir) => {
     writeSection(dir, "old-topic", { at: 1000, text: "old", summary: "the old one" });

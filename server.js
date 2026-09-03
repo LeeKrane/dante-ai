@@ -2524,8 +2524,13 @@ wss.on("connection", (ws) => {
         topic: conv.topic?.topic ?? null,
         names: mentionedSessions(conv.unanswered.join(" "), [...(roster ?? []), ...recallable(roster)]),
       };
-      const { context: notesForPrompt, flag } = foldNotes(conv.notes, NOTES_DIR, Date.now(), hint);
+      const { context: notesForPrompt, flag, topics, chars } = foldNotes(conv.notes, NOTES_DIR, Date.now(), hint);
       conv.flag = flag;
+      // Wiring only -- the numbers themselves come from lib/notes.js. This is
+      // the number the trim in this branch was made to shrink; watching it
+      // in production is how the next tuning decision gets made on real
+      // turns instead of a guess.
+      if (topics.length) log(`notes folded ${topics.length} note(s) ${chars} chars: ${topics.join(", ")}`);
 
       const asked = mergeTurns(conv.unanswered, {
         roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
