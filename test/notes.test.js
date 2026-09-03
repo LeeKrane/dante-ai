@@ -285,6 +285,30 @@ test("appendSection drops the oldest sections once the note exceeds MAX_NOTE_BYT
   assert.equal(newest.at, 1000 + 19); // the just-appended section always survives
 });
 
+test("appendSection drops exactly the sections the byte cap requires, measured once, and the result formats to the same bytes the old per-iteration loop produced", () => {
+  let note = makeNote({ sections: [] });
+  const bigText = "x".repeat(MAX_SECTION_CHARS);
+  const all = [];
+
+  for (let i = 0; i < 20; i++) {
+    const section = { at: 1000 + i, kind: "read", text: bigText };
+    all.push(section);
+    note = appendSection(note, section);
+  }
+
+  assert.ok(Buffer.byteLength(formatNote(note), "utf8") <= MAX_NOTE_BYTES);
+
+  // The sections kept are exactly the newest `note.sections.length` of the
+  // 20 appended -- adding back the one just before them (the last one the
+  // arithmetic dropped) must push the note back over the cap, or the loop
+  // measured wrong and dropped one too many.
+  const droppedCount = all.length - note.sections.length;
+  assert.ok(droppedCount > 0);
+  const lastDropped = all[droppedCount - 1];
+  const withOneMore = { ...note, sections: [lastDropped, ...note.sections] };
+  assert.ok(Buffer.byteLength(formatNote(withOneMore), "utf8") > MAX_NOTE_BYTES);
+});
+
 // ---------------------------------------------------------------------------
 // sanitizeLimits -- fallback matrix
 // ---------------------------------------------------------------------------
