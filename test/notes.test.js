@@ -25,6 +25,7 @@ import {
   formatNote,
   parseNote,
   appendSection,
+  mergeSection,
   sanitizeLimits,
   planPruning,
   findContradictions,
@@ -307,6 +308,54 @@ test("appendSection drops exactly the sections the byte cap requires, measured o
   const lastDropped = all[droppedCount - 1];
   const withOneMore = { ...note, sections: [lastDropped, ...note.sections] };
   assert.ok(Buffer.byteLength(formatNote(withOneMore), "utf8") > MAX_NOTE_BYTES);
+});
+
+// ---------------------------------------------------------------------------
+// mergeSection -- one read section per distinct question
+// ---------------------------------------------------------------------------
+
+test("reading the same session twice with the same question yields exactly one read section, carrying the newer text and time", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked: what is it doing\nStill building X." });
+  assert.equal(second.sections.length, 1);
+  assert.equal(second.sections[0].at, 2000);
+  assert.equal(second.sections[0].text, "Asked: what is it doing\nStill building X.");
+});
+
+test("reading the same session with two different questions keeps one read section per question", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked: is it done yet\nNot yet." });
+  assert.equal(second.sections.length, 2);
+  assert.ok(second.sections.some((s) => s.text.startsWith("Asked: what is it doing")));
+  assert.ok(second.sections.some((s) => s.text.startsWith("Asked: is it done yet")));
+});
+
+test("a read with no question replaces the previous question-less read but leaves questioned reads alone", () => {
+  const note = makeNote({ sections: [] });
+  const withQuestion = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const first = mergeSection(withQuestion, { at: 2000, kind: "read", text: "Reading it back." });
+  const second = mergeSection(first, { at: 3000, kind: "read", text: "Reading it back again." });
+  assert.equal(second.sections.length, 2);
+  assert.ok(second.sections.some((s) => s.text === "Asked: what is it doing\nBuilding X."));
+  assert.ok(second.sections.some((s) => s.text === "Reading it back again."));
+  assert.ok(!second.sections.some((s) => s.text === "Reading it back."));
+});
+
+test("mergeSection never dedupes discussion sections", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "discussion", text: "Krane: hi\nDante: hello" });
+  const second = mergeSection(first, { at: 2000, kind: "discussion", text: "Krane: hi\nDante: hello" });
+  assert.equal(second.sections.length, 2);
+});
+
+test("mergeSection matches the Asked line case- and whitespace-insensitively", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: What is it doing?\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked:   what   is it doing  \nStill building." });
+  assert.equal(second.sections.length, 1);
+  assert.match(second.sections[0].text, /Still building\.$/);
 });
 
 // ---------------------------------------------------------------------------
