@@ -173,8 +173,8 @@ function setCaption(text, who) { capEl.textContent = text; capEl.dataset.who = w
 // every error the caption showed -- so a person can step back through them.
 // Interim transcription is not a finished line and writes the caption directly
 // through setCaption above; every finished line goes through record() instead,
-// which remembers it and then paints it. All the rules (which way the cursor
-// moves, what snaps the view back to newest) are in history-policy.js.
+// which remembers it and then paints it. The rules (which way the cursor
+// moves, that a new line always pulls the view back) are in history-policy.js.
 let timeline = createHistory();
 
 function renderHistory() {
@@ -187,17 +187,21 @@ function renderHistory() {
   olderBtn.style.visibility = v.canOlder ? "" : "hidden";
   newerBtn.style.visibility = v.canNewer ? "" : "hidden";
   whenEl.textContent = v.live ? "" : `${formatTime(v.entry.at)} · ${v.index} / ${v.total}`;
+  return v;
 }
 
-function record(who, text, { demandsAttention = false } = {}) {
-  timeline = append(timeline, { who, text, at: Date.now(), demandsAttention });
+function record(who, text) {
+  timeline = append(timeline, { who, text, at: Date.now() });
   renderHistory();
 }
 
+// Not while the talk key is down. The keyboard path is already gated in
+// historyStep; this covers a mouse click on the arrows mid-hold, which would
+// otherwise step away from the line the release is about to record over.
 function stepHistory(direction) {
+  if (holding) return;
   timeline = direction === "older" ? stepOlder(timeline) : stepNewer(timeline);
-  renderHistory();
-  const v = view(timeline);
+  const v = renderHistory();
   dbg(`history: ${v.live ? "live" : `${v.index}/${v.total}`}`);
 }
 // An empty tab has nothing to step to, so the buttons start hidden.
@@ -244,7 +248,7 @@ function toggleVisibility(target) {
     // The row under the caption is part of the caption: hiding the line
     // hides the way to step through it.
     capEl.classList.toggle("hidden");
-    navEl?.classList.toggle("hidden", capEl.classList.contains("hidden"));
+    navEl.classList.toggle("hidden", capEl.classList.contains("hidden"));
   }
   else if (target === "interface") {
     document.body.classList.toggle("interface-hidden");
@@ -466,15 +470,13 @@ ws.onclose = () => {
   // any other and a socket that closes mid-clip would leave the element waiting
   // for bytes forever, with the orb speaking and the Stop button still offered.
   stopPlayback();
-  record("error", "connection closed — restart the server and refresh", { demandsAttention: true });
+  record("error", "connection closed — restart the server and refresh");
 };
 ws.onerror = () => dbg("ws: error");
 ws.onmessage = async (ev) => {
   let msg; try { msg = JSON.parse(ev.data); } catch { return; }
   if (msg.type === "state") setState(msg.value);
   else if (msg.type === "reply_text") {
-    // A reply that lands while an older line is being read does not yank the
-    // view; the newer button lights instead. The clip is heard either way.
     record("dante", msg.text);
     dbg(`reply: ${msg.text}`);
   }
@@ -491,9 +493,11 @@ ws.onmessage = async (ev) => {
   }
   else if (msg.type === "ask") {
     // A build needs a detail Dante doesn't have yet; the question is spoken as
-    // well, so the caption just mirrors it. A question needs answering, so it
-    // is one of the lines that pulls the view back to newest.
-    record("dante", msg.text, { demandsAttention: true });
+    // well, so the caption just mirrors it. Not recorded here: the spoken
+    // version arrives as the very next reply_text, fused to its "of course,
+    // sir", and that is the line worth stepping back to. Recording both put
+    // the same question in the timeline twice.
+    setCaption(msg.text, "dante");
     // Whatever is said next answers this question rather than starting a new
     // request, which is how the HUD tells the two apart.
     awaitingAnswer = true;
@@ -519,7 +523,7 @@ ws.onmessage = async (ev) => {
     dbg(`srv ${msg.stage || ""}: ${msg.msg || ""}${timing}`);
   }
   else if (msg.type === "error") {
-    record("error", "⚠ " + msg.message, { demandsAttention: true });
+    record("error", "⚠ " + msg.message);
     dbg(`srv ERROR: ${msg.message}`);
     // Before setState, so the HUD knows how this ended by the time it settles. A
     // build that failed must never retire wearing the styling of one that worked.
@@ -537,7 +541,7 @@ ws.onmessage = async (ev) => {
     try {
       await startClip(msg);
     } catch (e) {
-      record("error", "⚠ audio: " + (e.message || e), { demandsAttention: true });
+      record("error", "⚠ audio: " + (e.message || e));
       dbg(`audio start failed: ${e.message || e}`);
       level = 0;
       setState("idle");
@@ -548,7 +552,7 @@ ws.onmessage = async (ev) => {
     try {
       await endClip(msg);
     } catch (e) {
-      record("error", "⚠ audio: " + (e.message || e), { demandsAttention: true });
+      record("error", "⚠ audio: " + (e.message || e));
       dbg(`audio decode failed: ${e.message || e}`);
       level = 0;
       setState("idle");
@@ -851,7 +855,7 @@ if (SR) {
       holding = false;
       listening = false;
       micBtn.classList.remove("pressed");
-      record("error", "microphone blocked — allow it in the browser's site settings", { demandsAttention: true });
+      record("error", "microphone blocked — allow it in the browser's site settings");
       setState("idle");
     }
   };
@@ -884,12 +888,12 @@ if (SR) {
       ws.send(JSON.stringify({ type: "say", text }));
     } else {
       dbg("release → nothing captured");
-      record("error", "No transcript captured — hold the button while speaking. Speech recognition works best in Google Chrome.", { demandsAttention: true });
+      record("error", "No transcript captured — hold the button while speaking. Speech recognition works best in Google Chrome.");
       if (state === "listening") setState("idle");
     }
   };
 } else {
-  record("error", "This browser has no speech recognition — open the app in Google Chrome.", { demandsAttention: true });
+  record("error", "This browser has no speech recognition — open the app in Google Chrome.");
   dbg("no Web Speech API in this browser");
 }
 
@@ -942,8 +946,12 @@ window.addEventListener("keydown", (e) => {
     micBtn.classList.add("pressed");
     startListening();
   } else if (!e.repeat) {
-    // The volume slider is the one control that answers arrow keys itself.
-    const step = document.activeElement?.tagName === "INPUT" ? null : historyStep(e.key, holding);
+    // The volume slider answers arrow keys itself, and an arrow with text
+    // selected in the caption or the log collapses the selection, as it does
+    // everywhere else: neither is a step.
+    const modified = e.altKey || e.ctrlKey || e.metaKey || e.shiftKey;
+    const claimed = document.activeElement?.tagName === "INPUT" || !window.getSelection()?.isCollapsed;
+    const step = claimed ? null : historyStep(e.key, holding, modified);
     if (step) {
       e.preventDefault();
       stepHistory(step);
@@ -954,8 +962,8 @@ window.addEventListener("keydown", (e) => {
 });
 // Blur first, for the same reason the keys panel does: a button left focused
 // would take the next Space as a click, and Space is push-to-talk.
-olderBtn?.addEventListener("click", () => { olderBtn.blur(); stepHistory("older"); });
-newerBtn?.addEventListener("click", () => { newerBtn.blur(); stepHistory("newer"); });
+olderBtn.addEventListener("click", () => { olderBtn.blur(); stepHistory("older"); });
+newerBtn.addEventListener("click", () => { newerBtn.blur(); stepHistory("newer"); });
 window.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListening(); } });
 
 // Silence without starting a turn. Unlike the record button this one DOES apply

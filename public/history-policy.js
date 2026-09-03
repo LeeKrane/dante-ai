@@ -12,6 +12,14 @@
 // per utterance, and none of those rewrites is a thing anyone will step back
 // to. The tab records the text it sent on release instead.
 //
+// Every new line pulls the view back to newest. A gentler rule -- let a plain
+// reply land quietly while someone reads an older line, snap only for a
+// question or an error -- was tried and dropped: every spoken line reaches
+// the tab as the same reply_text, so the tab cannot tell "Allow?" from an
+// answer, and a question it did not pull into view is a question that goes
+// unanswered. Being pulled away is recoverable with one press; missing a
+// question is not.
+//
 // State is a plain object and every function returns a new one, so app.js can
 // treat it like the other policy modules. `cursor` is null when the view is
 // live (showing the newest entry as it arrives) and an index into `entries`
@@ -23,23 +31,11 @@ export function createHistory() {
   return { entries: [], cursor: null };
 }
 
-// A plain reply that arrives while someone is reading an older line does not
-// yank them: it is appended and the newer button lights. An entry that demands
-// attention -- a clarifying question, which needs answering, or an error,
-// which is the line you step back to diagnose -- always snaps the view to
-// newest, whatever was being read.
-export function append(state, { who, text, at, demandsAttention = false } = {}) {
+export function append(state, { who, text, at } = {}) {
   if (typeof text !== "string" || !text.trim()) return state;
-  const entries = [...state.entries, { who, text, at, demandsAttention: Boolean(demandsAttention) }];
-  let cursor = state.cursor;
-  if (entries.length > HISTORY_CAP) {
-    entries.shift();
-    // The dropped entry sat at index 0, so everything a cursor pointed at moved
-    // down one. A cursor on the dropped entry itself lands on the new oldest.
-    if (cursor !== null) cursor = Math.max(0, cursor - 1);
-  }
-  if (cursor !== null && demandsAttention) cursor = null;
-  return { entries, cursor };
+  const entries = [...state.entries, { who, text, at }];
+  if (entries.length > HISTORY_CAP) entries.shift();
+  return { entries, cursor: null };
 }
 
 export function stepOlder(state) {
@@ -68,7 +64,7 @@ export function view(state) {
   const entry = entries[shown] || null;
   return {
     live,
-    entry: entry ? { who: entry.who, text: entry.text, at: entry.at } : null,
+    entry,
     canOlder: shown > 0,
     canNewer: !live,
     index: entry ? shown + 1 : 0,
@@ -78,9 +74,10 @@ export function view(state) {
 
 // Mirrors getVisibilityToggle: nothing while the talk key is down, so a stray
 // arrow mid-sentence does not move the view the interim text is about to
-// overwrite anyway.
-export function historyStep(key, holding) {
-  if (holding) return null;
+// overwrite anyway. A modified arrow is the browser's (Alt+Left is Back) or
+// the text's (Shift+Left extends a selection), never a step.
+export function historyStep(key, holding, modified = false) {
+  if (holding || modified) return null;
   if (key === "ArrowLeft") return "older";
   if (key === "ArrowRight") return "newer";
   return null;

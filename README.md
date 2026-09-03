@@ -440,10 +440,9 @@ where there are no keys, tapping those is how the panels are toggled.
 
 The arrows step one line at a time -- what you said, what Dante said, a question
 it asked, an error -- with the time under each. The view returns to the newest
-line the moment Space is pressed, and when Dante asks a question or something
-goes wrong; a plain reply that arrives while you are reading an older line lights
-the → button instead of pulling you away. On a phone the two arrows sit under the
-caption.
+line the moment Space is pressed and whenever a new line arrives, so a question
+Dante asks while you are reading something older is never missed. On a phone
+the two arrows sit under the caption.
 
 ## How it's put together
 

@@ -16,7 +16,7 @@ const AT = 1_700_000_000_000;
 
 function said(...lines) {
   let state = createHistory();
-  for (const [who, text, extra] of lines) state = append(state, { who, text, at: AT, ...extra });
+  for (const [who, text] of lines) state = append(state, { who, text, at: AT });
   return state;
 }
 
@@ -40,31 +40,14 @@ test("appending while live keeps the view live and shows the new entry", () => {
   });
 });
 
-test("appending a plain reply while stepped back leaves the cursor where it was and lights newer", () => {
-  let state = stepOlder(said(["you", "one"], ["dante", "two"]));
-  state = append(state, { who: "dante", text: "three", at: AT });
-  assert.deepEqual(view(state), {
-    live: false,
-    entry: { who: "you", text: "one", at: AT },
-    canOlder: false,
-    canNewer: true,
-    index: 1,
-    total: 3,
-  });
-});
-
-test("appending an ask while stepped back snaps to newest", () => {
-  let state = stepOlder(said(["you", "one"], ["dante", "two"]));
-  state = append(state, { who: "dante", text: "which folder, sir?", at: AT, demandsAttention: true });
-  assert.equal(view(state).live, true);
-  assert.equal(shown(state), "which folder, sir?");
-});
-
-test("appending an error while stepped back snaps to newest", () => {
-  let state = stepOlder(said(["you", "one"], ["dante", "two"]));
-  state = append(state, { who: "error", text: "No transcript captured", at: AT, demandsAttention: true });
-  assert.equal(view(state).live, true);
-  assert.equal(shown(state), "No transcript captured");
+test("any new line while stepped back pulls the view to newest, whoever said it", () => {
+  const back = stepOlder(said(["you", "one"], ["dante", "two"]));
+  for (const [who, text] of [["dante", "three"], ["you", "four"], ["error", "No transcript captured"]]) {
+    const state = append(back, { who, text, at: AT });
+    assert.equal(view(state).live, true, `${who} line should snap`);
+    assert.equal(shown(state), text);
+    assert.equal(view(state).canNewer, false);
+  }
 });
 
 test("an empty or non-string text is not recorded", () => {
@@ -78,7 +61,6 @@ test("an empty or non-string text is not recorded", () => {
 
 test("stepping older from live shows the entry before the newest", () => {
   const state = stepOlder(said(["you", "one"], ["dante", "two"], ["you", "three"]));
-  assert.equal(shown(state), "two");
   assert.deepEqual(view(state), {
     live: false,
     entry: { who: "dante", text: "two", at: AT },
@@ -135,35 +117,25 @@ test("a single entry offers neither button", () => {
   assert.equal(stepOlder(state), state);
 });
 
-test("the cap drops the oldest entry and a cursor keeps pointing at the same text", () => {
+test("the cap drops the oldest entry and keeps the newest", () => {
   let state = createHistory();
-  for (let i = 1; i <= HISTORY_CAP; i++) state = append(state, { who: "you", text: `line ${i}`, at: AT });
-  state = stepOlder(stepOlder(state));
-  assert.equal(shown(state), `line ${HISTORY_CAP - 2}`);
-  state = append(state, { who: "dante", text: "one more", at: AT });
+  for (let i = 1; i <= HISTORY_CAP + 1; i++) state = append(state, { who: "you", text: `line ${i}`, at: AT });
   assert.equal(view(state).total, HISTORY_CAP);
-  assert.equal(shown(state), `line ${HISTORY_CAP - 2}`);
-  assert.equal(view(state).index, HISTORY_CAP - 3);
-  assert.equal(view(snapToNewest(state)).entry.text, "one more");
-});
-
-test("a cursor on the oldest entry when the cap drops it moves to the new oldest", () => {
-  let state = createHistory();
-  for (let i = 1; i <= HISTORY_CAP; i++) state = append(state, { who: "you", text: `line ${i}`, at: AT });
+  assert.equal(shown(state), `line ${HISTORY_CAP + 1}`);
   for (let i = 0; i < HISTORY_CAP; i++) state = stepOlder(state);
-  assert.equal(shown(state), "line 1");
-  state = append(state, { who: "dante", text: "one more", at: AT });
   assert.equal(shown(state), "line 2");
   assert.equal(view(state).canOlder, false);
 });
 
-test("arrow keys map to steps only while the talk key is up", () => {
+test("arrow keys map to steps only while the talk key is up and no modifier is held", () => {
   assert.equal(historyStep("ArrowLeft", false), "older");
   assert.equal(historyStep("ArrowRight", false), "newer");
   assert.equal(historyStep("ArrowUp", false), null);
   assert.equal(historyStep("t", false), null);
   assert.equal(historyStep("ArrowLeft", true), null);
   assert.equal(historyStep("ArrowRight", true), null);
+  assert.equal(historyStep("ArrowLeft", false, true), null);
+  assert.equal(historyStep("ArrowRight", false, true), null);
 });
 
 test("formatTime zero-pads hours and minutes", () => {
