@@ -43,8 +43,8 @@ import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning,
-  visibleSessions,
+  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, mentionedSessions, orderRoster,
+  ownRunning, visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
@@ -2511,7 +2511,20 @@ wss.on("connection", (ws) => {
       // assignment, not a join: conv.flag is always "" here, since the outer
       // finally below clears it unconditionally at the end of every turn,
       // spoken or not.
-      const { context: notesForPrompt, flag } = foldNotes(conv.notes, NOTES_DIR);
+      //
+      // The hint is what keeps the note about the session this turn is
+      // actually discussing from losing its seat to one that merely got
+      // appended to more recently: conv.topic is the live read/discussion
+      // window (set by dispatchRead, refreshed by recordDiscussion), and
+      // mentionedSessions catches a session named by voice even outside that
+      // window -- both roster and recallable(roster) so a finished session
+      // can still be pinned by name, the same reach dispatchRead itself
+      // gets from recallable.
+      const hint = {
+        topic: conv.topic?.topic ?? null,
+        names: mentionedSessions(conv.unanswered.join(" "), [...(roster ?? []), ...recallable(roster)]),
+      };
+      const { context: notesForPrompt, flag } = foldNotes(conv.notes, NOTES_DIR, Date.now(), hint);
       conv.flag = flag;
 
       const asked = mergeTurns(conv.unanswered, {

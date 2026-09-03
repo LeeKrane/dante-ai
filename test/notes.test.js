@@ -42,6 +42,7 @@ import {
   saveNote,
   writeSection,
   recentNotes,
+  pickNotes,
   foldNotes,
   recordDiscussion,
 } from "../lib/notes.js";
@@ -1267,6 +1268,48 @@ test("recentNotes on a missing directory returns an empty array rather than thro
 });
 
 // ---------------------------------------------------------------------------
+// pickNotes -- pinning the note a turn is actually about
+// ---------------------------------------------------------------------------
+
+// A listNotes-shaped entry, minimal: pickNotes only ever reads topic,
+// updated and subject.
+function entry(topic, updated, subject = "") {
+  return { topic, updated, subject };
+}
+
+test("pickNotes folds the live topic first even when three other notes were updated after it", () => {
+  const entries = [
+    entry("jarvis-3-a1b2c3d4", 1000),
+    entry("newer-a", 4000),
+    entry("newer-b", 3000),
+    entry("newer-c", 2000),
+  ];
+  const picked = pickNotes(entries, { topic: "jarvis-3-a1b2c3d4" }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["jarvis-3-a1b2c3d4", "newer-a"]);
+});
+
+test("pickNotes folds a note whose subject was named in the turn ahead of a newer unrelated note", () => {
+  const entries = [
+    entry("a-topic", 1000, "a-subject"),
+    entry("b-topic", 3000, "b-subject"),
+  ];
+  const picked = pickNotes(entries, { names: ["a-subject"] }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["a-topic", "b-topic"]);
+});
+
+test("pickNotes without a hint is the plain newest-first order", () => {
+  const entries = [entry("older", 1000), entry("newer", 2000)];
+  assert.deepEqual(pickNotes(entries, null).map((e) => e.topic), ["newer", "older"]);
+  assert.deepEqual(pickNotes(entries, {}).map((e) => e.topic), ["newer", "older"]);
+});
+
+test("pickNotes never returns the same topic twice when the live topic is also the named one", () => {
+  const entries = [entry("a-topic", 1000, "a-subject"), entry("b-topic", 2000, "b-subject")];
+  const picked = pickNotes(entries, { topic: "a-topic", names: ["a-subject"] }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["a-topic", "b-topic"]);
+});
+
+// ---------------------------------------------------------------------------
 // A forged "## <date> · <kind>" boundary inside section text must not be
 // able to split a section in two, corrupt an `at`, or brick the note on its
 // next write.
@@ -1519,6 +1562,23 @@ test("foldNotes on an empty directory returns an empty context and an empty flag
     const { context, flag } = foldNotes(tracker, dir, 1000);
     assert.equal(context, "");
     assert.equal(flag, "");
+  });
+});
+
+test("foldNotes with a hint hands notesContext the pinned note first", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "old-topic", { at: 1000, text: "old", summary: "the old one" });
+    writeSection(dir, "middle-topic", { at: 2000, text: "middle", summary: "the middle one" });
+    writeSection(dir, "newest-topic", { at: 3000, text: "newest", summary: "the newest one" });
+    const tracker = createNoteTracker();
+    // Without the hint, MAX_CONTEXT_NOTES 2 folds newest-topic and
+    // middle-topic, bumping old-topic out entirely -- with it, old-topic
+    // keeps its seat and middle-topic (neither pinned nor newest) is the one
+    // left out instead.
+    const { context } = foldNotes(tracker, dir, 3000, { topic: "old-topic" });
+    assert.match(context, /NOTE old-topic/);
+    assert.match(context, /NOTE newest-topic/);
+    assert.doesNotMatch(context, /NOTE middle-topic/);
   });
 });
 

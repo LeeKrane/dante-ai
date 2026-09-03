@@ -22,6 +22,7 @@ import {
   idleAmong,
   isWorking,
   matchSessions,
+  mentionedSessions,
   matchStarted,
   diffRoster,
   listAgents,
@@ -1018,6 +1019,30 @@ test("a name that merely shares a word is not a match", () => {
   const roster = rosterOf(session({ sessionId: "a", name: "review" }));
   assert.deepEqual(matchSessions(roster, "review-the-changes"), []);
   assert.deepEqual(matchSessions(roster, "code review please"), []);
+});
+
+// ---------------------------------------------------------------------------
+// mentionedSessions
+// ---------------------------------------------------------------------------
+
+test("mentionedSessions finds a candidate named exactly in the text", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions is punctuation-insensitive, the same as matchSessions", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is Jarvis 3 doing", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions never matches a candidate whose name is only a substring of what was said", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is jarvis-30 doing", roster), []);
+});
+
+test("mentionedSessions returns nothing for an empty candidate list", () => {
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", []), []);
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", null), []);
 });
 
 // ---------------------------------------------------------------------------
