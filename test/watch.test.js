@@ -10,10 +10,12 @@ import {
   refuseWatch,
   resumedAmong,
   unwatchVerdict,
+  watchEvent,
   watchVerdict,
   watchingLine,
 } from "../lib/watch.js";
 import { MAX_READ_CHARS } from "../lib/transcript.js";
+import { MAX_DETAIL_CHARS } from "../lib/notify.js";
 
 const working = (over = {}) => ({
   sessionId: "s1", name: "jarvis-1", cwd: "/repo", state: "working", ...over,
@@ -67,14 +69,28 @@ test("a full watch list refuses one more, and cancelling frees a slot", () => {
   assert.equal(refuseWatch(working({ sessionId: "sN", name: "session-new" }), watchers), null);
 });
 
-test("the checks run in order: an already-watched session is refused as already-watched, even if it later went idle", () => {
-  // watchers.has() is checked before isWorking() -- so a session that is
-  // both already watched and no longer working still gets the
-  // already-watching sentence, not the nothing-to-wait-for one.
+test("the checks run in order: an already-watched session is refused as already-watched, whatever state it is now in", () => {
+  // watchers.has() is checked before isWorking() and before the blocked
+  // check below it -- so a session that is already watched and either no
+  // longer working or freshly blocked still gets the already-watching
+  // sentence, not one of the reasons further down the list.
   const watchers = createWatchers();
   const idle = working({ state: "done" });
   watchers.add(idle, Date.now());
   assert.equal(refuseWatch(idle, watchers), "I am already watching jarvis-1, sir.");
+  assert.equal(
+    refuseWatch(working({ state: "blocked" }), watchers),
+    "I am already watching jarvis-1, sir.",
+  );
+});
+
+test("a session already blocked refuses a watch, so a fresh transition is not confused with an old one", () => {
+  const watchers = createWatchers();
+  const blocked = working({ state: "blocked" });
+  assert.equal(
+    refuseWatch(blocked, watchers),
+    "jarvis-1 is already blocked, sir, waiting on a permission prompt.",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -232,6 +248,35 @@ test("several watches fire independently in one tick", () => {
   assert.equal(watchers.has("s3"), true);
 });
 
+test("a session with a tell waiting has not stopped working so its watch keeps waiting", () => {
+  const watchers = createWatchers();
+  watchers.add(working(), Date.now());
+  const roster = [working({ state: "done" })];
+  const fired = watchers.tick(roster, Date.now(), { skip: new Set(["s1"]) });
+  assert.deepEqual(fired, []);
+  assert.equal(watchers.has("s1"), true);
+});
+
+test("a skipped watch fires on the next tick once the queue is empty", () => {
+  const watchers = createWatchers();
+  watchers.add(working(), Date.now());
+  const roster = [working({ state: "done" })];
+  assert.deepEqual(watchers.tick(roster, Date.now(), { skip: new Set(["s1"]) }), []);
+  const fired = watchers.tick(roster, Date.now());
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "idle");
+  assert.equal(watchers.has("s1"), false);
+});
+
+test("a skip list naming nothing on the roster changes no outcome", () => {
+  const watchers = createWatchers();
+  watchers.add(working(), Date.now());
+  const roster = [working({ state: "done" })];
+  const fired = watchers.tick(roster, Date.now(), { skip: new Set(["unrelated-id"]) });
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "idle");
+});
+
 // ---------------------------------------------------------------------------
 // resumedAmong
 // ---------------------------------------------------------------------------
@@ -334,6 +379,15 @@ test("cancelTarget with no name and nothing watched refuses plainly", () => {
   assert.equal(refusal, "I am not watching anything, sir.");
 });
 
+test("both which-one failures use the same words", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ sessionId: "s1", name: "jarvis-1-fix-tests" }), Date.now());
+  watchers.add(working({ sessionId: "s2", name: "jarvis-1-landing-page" }), Date.now());
+  const byAmbiguousName = cancelTarget(watchers, { name: "jarvis-1" }).refusal;
+  const byNoNameGiven = cancelTarget(watchers, {}).refusal;
+  assert.equal(byAmbiguousName, byNoNameGiven);
+});
+
 test("cancelTarget with no name and several watches asks which one", () => {
   const watchers = createWatchers();
   watchers.add(working({ sessionId: "s1", name: "one" }), Date.now());
@@ -383,54 +437,40 @@ test("unwatchVerdict names the session that is no longer being watched", () => {
 // describeFired
 // ---------------------------------------------------------------------------
 
-test("a gone watcher reads the transcript back and asks for the next step", () => {
+test("a gone watcher reads the transcript back and stops there, without asking for an instruction", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "It fixed the failing test." });
-  assert.equal(
-    spoken,
-    "jarvis-1 has finished, sir. It fixed the failing test. Ready for the next step, sir?",
-  );
+  assert.equal(spoken, "jarvis-1 has finished, sir. It fixed the failing test.");
 });
 
 test("a blocked watcher says it is waiting on a permission prompt", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "blocked", text: "It wants to run npm install." });
   assert.equal(
     spoken,
-    "jarvis-1 is blocked, sir, waiting on a permission prompt. It wants to run npm install. Ready for the next step, sir?",
+    "jarvis-1 is blocked, sir, waiting on a permission prompt. It wants to run npm install.",
   );
 });
 
 test("an idle watcher names the new state when it is a plain, known word", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "idle", state: "done", text: "It shipped the feature." });
-  assert.equal(
-    spoken,
-    "jarvis-1 has stopped working, sir; it is done now. It shipped the feature. Ready for the next step, sir?",
-  );
+  assert.equal(spoken, "jarvis-1 has stopped working, sir; it is done now. It shipped the feature.");
 });
 
 test("an idle watcher omits the state clause when the state is missing or not printable", () => {
   for (const state of [undefined, null, "", "Some Weird State!!", "x".repeat(30)]) {
     const spoken = describeFired({ name: "jarvis-1", change: "idle", state, text: "It did the thing." });
-    assert.equal(
-      spoken,
-      "jarvis-1 has stopped working, sir. It did the thing. Ready for the next step, sir?",
-      String(state),
-    );
+    assert.equal(spoken, "jarvis-1 has stopped working, sir. It did the thing.", String(state));
   }
 });
 
 test("empty text with reason no-transcript says nothing was left to read", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "", reason: "no-transcript" });
-  assert.equal(spoken, "jarvis-1 has finished, sir. It left nothing I can read. Ready for the next step, sir?");
+  assert.equal(spoken, "jarvis-1 has finished, sir. It left nothing I can read.");
 });
 
 test("empty text with any other reason says the read failed, never a generic state line", () => {
   for (const reason of ["failed", "", undefined, "something-unexpected"]) {
     const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "", reason });
-    assert.equal(
-      spoken,
-      "jarvis-1 has finished, sir. I could not read what it produced. Ready for the next step, sir?",
-      String(reason),
-    );
+    assert.equal(spoken, "jarvis-1 has finished, sir. I could not read what it produced.", String(reason));
   }
 });
 
@@ -440,7 +480,7 @@ test("unprintable characters are stripped from the name and the text", () => {
     change: "gone",
     text: "It did‏ the thing.",
   });
-  assert.equal(spoken, "jarvis-1 has finished, sir. It did the thing. Ready for the next step, sir?");
+  assert.equal(spoken, "jarvis-1 has finished, sir. It did the thing.");
 });
 
 test("the text is capped at MAX_READ_CHARS", () => {
@@ -452,7 +492,39 @@ test("the text is capped at MAX_READ_CHARS", () => {
 
 test("a nameless fired watch still reads as a sentence", () => {
   const spoken = describeFired({ name: null, change: "gone", text: "Done." });
-  assert.equal(spoken, "that session has finished, sir. Done. Ready for the next step, sir?");
+  assert.equal(spoken, "that session has finished, sir. Done.");
+});
+
+// ---------------------------------------------------------------------------
+// watchEvent
+// ---------------------------------------------------------------------------
+
+test("the spoken report and the recap entry are built from one read-back, so they cannot drift", () => {
+  const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "It fixed the failing test." });
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text: "It fixed the failing test." });
+  assert.equal(spoken, `jarvis-1 has finished, sir. ${event.detail}`);
+});
+
+test("a blocked change is recorded as needs-attention, and a finished one as complete", () => {
+  assert.equal(
+    watchEvent({ name: "jarvis-1", change: "blocked", text: "It wants npm install." }).kind,
+    "needs-attention",
+  );
+  assert.equal(watchEvent({ name: "jarvis-1", change: "idle", text: "It shipped." }).kind, "complete");
+  assert.equal(watchEvent({ name: "jarvis-1", change: "gone", text: "It shipped." }).kind, "complete");
+});
+
+test("a long read-back is shortened to whole sentences before the recap's own cap ever cuts it", () => {
+  const text = "It fixed the failing test. It also updated the README. It ran the full suite one more time to be sure.";
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "It fixed the failing test. It also updated the README.");
+  assert.equal(event.detail.length <= MAX_DETAIL_CHARS, true);
+});
+
+test("a read-back with no sentence break is still cut to the recap's limit", () => {
+  const text = "x".repeat(MAX_DETAIL_CHARS + 50);
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "x".repeat(MAX_DETAIL_CHARS));
 });
 
 // ---------------------------------------------------------------------------

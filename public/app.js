@@ -739,7 +739,7 @@ let announcements = [];
 // `at` is stamped on arrival rather than taken from the server, so staleness is
 // measured on one clock -- the one the person is standing next to.
 function receiveAnnouncement(msg) {
-  announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now() });
+  announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now(), kind: msg.kind });
   dbg(`announcement queued: ${msg.text}`);
   pumpAnnouncements();
 }

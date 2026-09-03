@@ -233,9 +233,10 @@ to whoever is listening then, so it goes through the same *"Shall I, sir?"*
 as the rest. It watches exactly the one session you named, and fires exactly
 once: the moment that session stops working — finishes, goes idle, or gets
 blocked on a permission prompt — Dante reads its transcript back, the same
-way a *read* does, and says what it produced, what state it's in now, and
-*"Ready for the next step, sir?"* Then the watch is gone; it never fires
-twice for the same ending. *"Never mind, stop watching that"* cancels one
+way a *read* does, and says what it produced and what state it's in now.
+That read-back lands in the recap log too, so it's not lost if nobody's
+there to hear it spoken. Then the watch is gone; it never fires twice for
+the same ending. *"Never mind, stop watching that"* cancels one
 at once, with no confirmation needed — a watch touches no process, so
 cancelling one is the same kind of thing as reading one is. Watching a
 session that isn't currently working is refused outright: it would never
