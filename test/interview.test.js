@@ -18,6 +18,7 @@ import {
   parseBrief,
   readBack,
   readyToPropose,
+  stripInterviewPreamble,
   unconfirmedFacets,
   wantsToProceed,
   withdrawConfirming,
@@ -710,6 +711,82 @@ test("cleanBrief is empty for anything that is not a string", () => {
   assert.equal(cleanBrief(undefined), "");
   assert.equal(cleanBrief(null), "");
   assert.equal(cleanBrief(42), "");
+});
+
+// ---------------------------------------------------------------------------
+// stripInterviewPreamble
+// ---------------------------------------------------------------------------
+
+test("a leading announcement of the interview is dropped and the questions behind it are kept verbatim", () => {
+  const reply =
+    'Before I interview, sir: should repos be lettered A, B, C or should they follow repository names? ' +
+    "And should numbering persist across restarts or reset each session?";
+  assert.equal(
+    stripInterviewPreamble(reply),
+    "should repos be lettered A, B, C or should they follow repository names? " +
+      "And should numbering persist across restarts or reset each session?",
+  );
+});
+
+test("a reply that is only the announcement becomes nothing to speak", () => {
+  assert.equal(stripInterviewPreamble("Before I interview, sir:"), "");
+});
+
+test("a plain question is returned unchanged", () => {
+  assert.equal(stripInterviewPreamble("What is the goal, sir?"), "What is the goal, sir?");
+});
+
+test("a lead-in that does not mention the interview is left alone", () => {
+  const reply = "Before I ask, sir, one thing: is this the main repository?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a clause with a question mark before the colon is left alone", () => {
+  const reply = "Really, before I interview, sir? one moment: is this the main repository?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a clause of exactly eighty characters is stripped", () => {
+  const clause = `Before I interview you, sir, at needlessly great length about this ${"x".repeat(13)}`;
+  assert.equal(clause.length, 80, "the clause under test must be exactly eighty characters");
+  const reply = `${clause}: is this the main repository?`;
+  assert.equal(stripInterviewPreamble(reply), "is this the main repository?");
+});
+
+test("a clause of eighty-one characters is left alone", () => {
+  const clause = `Before I interview you, sir, at needlessly great length about this ${"x".repeat(14)}`;
+  assert.equal(clause.length, 81, "the clause under test must be exactly eighty-one characters");
+  const reply = `${clause}: is this the main repository?`;
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a colon inside the question itself is not where the strip stops", () => {
+  const reply = "Before I interview, sir: which repo: jarvis or dante?";
+  assert.equal(stripInterviewPreamble(reply), "which repo: jarvis or dante?");
+});
+
+test("a real question that names the interview and uses a colon list is left alone", () => {
+  const reply = "Which interview style: short or long?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a read-back opener that never mentions the interview is left alone", () => {
+  // lib/interview.js's own readBack() opens with "Before I propose, sir, let
+  // me check I have this right: ..." -- a colon-terminated leading clause,
+  // same shape as the bug, but it never says "interview" so it is untouched
+  // for that reason alone.
+  const reply = "Before I propose, sir, let me check I have this right: is this the main repository?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a non-string reply is nothing to speak", () => {
+  assert.equal(stripInterviewPreamble(undefined), "");
+  assert.equal(stripInterviewPreamble(null), "");
+  assert.equal(stripInterviewPreamble(42), "");
+});
+
+test("a lower-case interviewing announcement is dropped too", () => {
+  assert.equal(stripInterviewPreamble("before I start interviewing, sir: what is the goal?"), "what is the goal?");
 });
 
 // ---------------------------------------------------------------------------

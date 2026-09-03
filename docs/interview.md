@@ -4,7 +4,10 @@ A one-line spoken request is rarely a brief a session can work from. Before Dant
 starts, tells or interrupts a session, two separate things happen. First, the
 interview: it checks the request against four things a good brief needs, and asks
 about whichever of them the request genuinely leaves open — a request that already
-states all four gets no interview question at all. Second, confirming: once
+states all four gets no interview question at all. The first question it does ask
+opens the interview and is never announced or prefaced — the reply is the
+question, nothing before it; the machine drops a leading "before I interview"
+clause if the model writes one anyway. Second, confirming: once
 interviewing is done, the machine — not the model — reads back what it understood
 of all four facets in one question and waits for a yes, every single time, even
 when the request left nothing open for the interview to ask about. This document is
