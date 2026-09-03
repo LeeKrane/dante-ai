@@ -628,7 +628,30 @@ test("notesContext orders newest first and caps at MAX_CONTEXT_NOTES", () => {
   assert.equal(occurrences.length, MAX_CONTEXT_NOTES);
 });
 
-test("notesContext clips the body tail to MAX_CONTEXT_CHARS_PER_NOTE", () => {
+test("notesContext folds the newest read and the newest discussion whole, head-clipped to MAX_CONTEXT_CHARS_PER_NOTE together", () => {
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 3000, kind: "read", text: "Asked: what happened first\nStale answer." },
+      { at: now - 2000, kind: "discussion", text: "Krane: stale exchange\nDante: stale reply" },
+      { at: now - 1000, kind: "read", text: "Asked: what is happening now\nFresh answer." },
+      { at: now, kind: "discussion", text: "Krane: what did it decide\nDante: it went with option two" },
+    ],
+  };
+  const block = notesContext([note], now);
+
+  // The newest of each kind survives...
+  assert.match(block, /Asked: what is happening now/);
+  assert.match(block, /Krane: what did it decide/);
+  // ...and the older sections of the same kind do not.
+  assert.doesNotMatch(block, /what happened first/);
+  assert.doesNotMatch(block, /stale exchange/);
+});
+
+test("notesContext head-clips a read that alone exceeds MAX_CONTEXT_CHARS_PER_NOTE", () => {
   const now = Date.now();
   const longBody = "x".repeat(MAX_CONTEXT_CHARS_PER_NOTE + 500);
   const block = notesContext(
@@ -638,6 +661,16 @@ test("notesContext clips the body tail to MAX_CONTEXT_CHARS_PER_NOTE", () => {
   const xRun = block.match(/x+/);
   assert.ok(xRun);
   assert.equal(xRun[0].length, MAX_CONTEXT_CHARS_PER_NOTE);
+});
+
+test("notesContext folds nothing but the header for a note with no read or discussion section", () => {
+  const now = Date.now();
+  const block = notesContext(
+    [{ topic: "jarvis-3", updated: now, summary: "s", sections: [{ at: now, kind: "note", text: "irrelevant" }] }],
+    now,
+  );
+  assert.match(block, /NOTE jarvis-3 \(updated today\): s$/m);
+  assert.doesNotMatch(block, /irrelevant/);
 });
 
 // ---------------------------------------------------------------------------
