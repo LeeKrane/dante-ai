@@ -137,13 +137,19 @@ repository's header there makes it the new main.
 (title, summary, a one-line description, created/updated timestamps, and any
 facts it holds) followed by dated sections, oldest first. What goes in: every
 session read, and the conversation that follows it for the next half hour —
-after that the topic goes stale and later chat is just chat again. What comes
-back: the four most recently updated notes ride along with every turn, so
-*"what did it decide"* still has an answer after a restart. Capacity defaults
-to 50 MB or 500 files, whichever comes first — the oldest-updated note is
-pruned first on every write, and the newest is never pruned even alone over
-the cap. Say *"keep your notes under a hundred megabytes"* and the model
-appends `[MEMORY:SET memory-max-mb=100]`; file count works the same way via
+after that the topic goes stale and later chat is just chat again. Reading a
+session again replaces its earlier read rather than piling up — one section
+per distinct question, and the newest plain read-back if there was no
+question. What comes back, two notes in all, every turn: the note for the
+session you just read and the one for any session you name come first, and
+the most recently updated notes fill whatever seats are left — so *"what did
+it decide"* still has an answer after a restart even when something else was
+touched more recently, though a fresher unrelated note can lose its seat to
+one you actually named. Capacity defaults to 50 MB or 500
+files, whichever comes first — the oldest-updated note is pruned first on
+every write, and the newest is never pruned even alone over the cap. Say
+*"keep your notes under a hundred megabytes"* and the model appends
+`[MEMORY:SET memory-max-mb=100]`; file count works the same way via
 `memory-max-files`. When two notes about the same session disagree on a fact
 — a task that changed, a status that moved on — Dante says so once per
 conversation and goes with the newer.
@@ -428,6 +434,7 @@ Claude Code will still use a tool you leave off the list, which is why
 | Key | Does |
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
+| **← / →** | step back and forward through this tab's messages, timestamped; gone when the tab closes |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
 | **s** | sessions panel (grouped by repository, main starred first; what is running, where, for how long; on by default) |
 | **t** | the caption line |
@@ -437,6 +444,12 @@ Toggles are ignored while Space is held, so a stray key mid-sentence can't blank
 the screen. If part of the UI "disappeared," press the key again. All four are
 also on screen as switches under the controls, lit while on -- on a phone,
 where there are no keys, tapping those is how the panels are toggled.
+
+The arrows step one line at a time -- what you said, what Dante said, a question
+it asked, an error -- with the time under each. The view returns to the newest
+line the moment Space is pressed and whenever a new line arrives, so a question
+Dante asks while you are reading something older is never missed. On a phone
+the two arrows sit under the caption.
 
 ## How it's put together
 

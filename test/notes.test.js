@@ -25,6 +25,7 @@ import {
   formatNote,
   parseNote,
   appendSection,
+  mergeSection,
   sanitizeLimits,
   planPruning,
   findContradictions,
@@ -41,6 +42,7 @@ import {
   saveNote,
   writeSection,
   recentNotes,
+  pickNotes,
   foldNotes,
   recordDiscussion,
 } from "../lib/notes.js";
@@ -283,6 +285,114 @@ test("appendSection drops the oldest sections once the note exceeds MAX_NOTE_BYT
   assert.ok(note.sections.length < 20); // some were dropped
   const newest = note.sections[note.sections.length - 1];
   assert.equal(newest.at, 1000 + 19); // the just-appended section always survives
+});
+
+test("appendSection drops exactly the sections the byte cap requires, measured once, and the result formats to the same bytes the old per-iteration loop produced", () => {
+  let note = makeNote({ sections: [] });
+  const bigText = "x".repeat(MAX_SECTION_CHARS);
+  const all = [];
+
+  for (let i = 0; i < 20; i++) {
+    const section = { at: 1000 + i, kind: "read", text: bigText };
+    all.push(section);
+    note = appendSection(note, section);
+  }
+
+  assert.ok(Buffer.byteLength(formatNote(note), "utf8") <= MAX_NOTE_BYTES);
+
+  // The sections kept are exactly the newest `note.sections.length` of the
+  // 20 appended -- adding back the one just before them (the last one the
+  // arithmetic dropped) must push the note back over the cap, or the loop
+  // measured wrong and dropped one too many.
+  const droppedCount = all.length - note.sections.length;
+  assert.ok(droppedCount > 0);
+  const lastDropped = all[droppedCount - 1];
+  const withOneMore = { ...note, sections: [lastDropped, ...note.sections] };
+  assert.ok(Buffer.byteLength(formatNote(withOneMore), "utf8") > MAX_NOTE_BYTES);
+});
+
+// ---------------------------------------------------------------------------
+// mergeSection -- one read section per distinct question
+// ---------------------------------------------------------------------------
+
+test("reading the same session twice with the same question yields exactly one read section, carrying the newer text and time", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked: what is it doing\nStill building X." });
+  assert.equal(second.sections.length, 1);
+  assert.equal(second.sections[0].at, 2000);
+  assert.equal(second.sections[0].text, "Asked: what is it doing\nStill building X.");
+});
+
+test("reading the same session with two different questions keeps one read section per question", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked: is it done yet\nNot yet." });
+  assert.equal(second.sections.length, 2);
+  assert.ok(second.sections.some((s) => s.text.startsWith("Asked: what is it doing")));
+  assert.ok(second.sections.some((s) => s.text.startsWith("Asked: is it done yet")));
+});
+
+test("a read with no question replaces the previous question-less read but leaves questioned reads alone", () => {
+  const note = makeNote({ sections: [] });
+  const withQuestion = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const first = mergeSection(withQuestion, { at: 2000, kind: "read", text: "Reading it back." });
+  const second = mergeSection(first, { at: 3000, kind: "read", text: "Reading it back again." });
+  assert.equal(second.sections.length, 2);
+  assert.ok(second.sections.some((s) => s.text === "Asked: what is it doing\nBuilding X."));
+  assert.ok(second.sections.some((s) => s.text === "Reading it back again."));
+  assert.ok(!second.sections.some((s) => s.text === "Reading it back."));
+});
+
+test("mergeSection never dedupes discussion sections", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "discussion", text: "Krane: hi\nDante: hello" });
+  const second = mergeSection(first, { at: 2000, kind: "discussion", text: "Krane: hi\nDante: hello" });
+  assert.equal(second.sections.length, 2);
+});
+
+test("mergeSection matches the Asked line case- and whitespace-insensitively", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: What is it doing?\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked:   what   is it doing  \nStill building." });
+  assert.equal(second.sections.length, 1);
+  assert.match(second.sections[0].text, /Still building\.$/);
+});
+
+test("mergeSection leaves the earlier read intact when the new read's text cleans to nothing", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "   " });
+  // Unchanged, not merely equivalent -- there was no real replacement text,
+  // so nothing was removed and nothing was appended.
+  assert.equal(second, first);
+  assert.equal(second.sections.length, 1);
+  assert.equal(second.sections[0].text, "Asked: what is it doing\nBuilding X.");
+});
+
+test("mergeSection dedupes two reads that differ only by a leading newline, since both sides of the key are cleaned the same way", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "\nAsked: what is it doing\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "\nAsked: what is it doing\nStill building." });
+  assert.equal(second.sections.length, 1);
+  assert.match(second.sections[0].text, /Still building\.$/);
+});
+
+test("a plain read-back and a question that itself normalizes to the word 'read' coexist as two sections, not one", () => {
+  const note = makeNote({ sections: [] });
+  const plain = mergeSection(note, { at: 1000, kind: "read", text: "Reading it back, plain." });
+  const questioned = mergeSection(plain, { at: 2000, kind: "read", text: "Asked: Read?\nYes, still reading." });
+  assert.equal(questioned.sections.length, 2);
+  assert.ok(questioned.sections.some((s) => s.text === "Reading it back, plain."));
+  assert.ok(questioned.sections.some((s) => s.text === "Asked: Read?\nYes, still reading."));
+});
+
+test("readSectionKey re-trims after stripping trailing punctuation, so a question with a space before its question mark dedupes against one without", () => {
+  const note = makeNote({ sections: [] });
+  const first = mergeSection(note, { at: 1000, kind: "read", text: "Asked: what is it doing ?\nBuilding X." });
+  const second = mergeSection(first, { at: 2000, kind: "read", text: "Asked: what is it doing?\nStill building." });
+  assert.equal(second.sections.length, 1);
+  assert.match(second.sections[0].text, /Still building\.$/);
 });
 
 // ---------------------------------------------------------------------------
@@ -541,21 +651,79 @@ test("notesContext includes the topic, relative time and summary for each note",
   assert.match(block, /NOTE jarvis-3 \(updated today\): Rebuild status\./);
 });
 
-test("notesContext orders newest first and caps at MAX_CONTEXT_NOTES", () => {
+test("notesContext keeps the order it is given and only caps at MAX_CONTEXT_NOTES, never re-sorting by updated itself", () => {
   const now = Date.now();
   const notes = [];
   for (let i = 0; i < MAX_CONTEXT_NOTES + 3; i++) {
-    notes.push({ topic: `topic-${i}`, updated: now - i * 1000, summary: `s${i}`, sections: [] });
+    // Deliberately in ASCENDING `updated` order -- the opposite of
+    // newest-first -- so this only passes if notesContext folds exactly the
+    // order it is handed. Ordering is recentNotes'/pickNotes' job now; a
+    // note re-sort here would keep the entries with the highest `updated`
+    // (the END of this array) instead of its first MAX_CONTEXT_NOTES, which
+    // is what a caller who already pinned a note (foldNotes with a hint)
+    // depends on.
+    notes.push({ topic: `topic-${i}`, updated: now - (MAX_CONTEXT_NOTES + 3 - i) * 1000, summary: `s${i}`, sections: [] });
   }
   const block = notesContext(notes, now);
-  // The newest (topic-0) appears, the oldest ones beyond the cap do not.
-  assert.match(block, /NOTE topic-0/);
+  // The caller's own first MAX_CONTEXT_NOTES entries survive...
+  assert.match(block, /NOTE topic-0\b/);
+  assert.match(block, new RegExp(`NOTE topic-${MAX_CONTEXT_NOTES - 1}\\b`));
+  // ...and the entries after the cut point do not, even though the very
+  // last one has the highest `updated` of all of them.
+  assert.doesNotMatch(block, new RegExp(`NOTE topic-${MAX_CONTEXT_NOTES}\\b`));
   assert.doesNotMatch(block, new RegExp(`NOTE topic-${MAX_CONTEXT_NOTES + 2}\\b`));
   const occurrences = block.match(/NOTE /g) ?? [];
   assert.equal(occurrences.length, MAX_CONTEXT_NOTES);
 });
 
-test("notesContext clips the body tail to MAX_CONTEXT_CHARS_PER_NOTE", () => {
+test("notesContext folds the newest read and the newest discussion whole, plus an older read that still fits, but never an older discussion", () => {
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 3000, kind: "read", text: "Asked: what happened first\nStale answer." },
+      { at: now - 2000, kind: "discussion", text: "Krane: stale exchange\nDante: stale reply" },
+      { at: now - 1000, kind: "read", text: "Asked: what is happening now\nFresh answer." },
+      { at: now, kind: "discussion", text: "Krane: what did it decide\nDante: it went with option two" },
+    ],
+  };
+  const block = notesContext([note], now);
+
+  // The newest of each kind survives, in front...
+  assert.match(block, /Asked: what is happening now/);
+  assert.match(block, /Krane: what did it decide/);
+  // ...an older READ still fits and rides along after them (a second
+  // distinct question's answer is not left to rot on disk unread)...
+  assert.match(block, /what happened first/);
+  // ...but only the newest DISCUSSION ever folds -- an older one is
+  // genuinely dropped, not merely deprioritized the way an older read is.
+  assert.doesNotMatch(block, /stale exchange/);
+});
+
+test("notesContext spends the budget on the newest read before the newest discussion, even when the discussion sits chronologically between two reads", () => {
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 3000, kind: "read", text: "Asked: what happened first\nStale answer." },
+      // A discussion big enough to eat the whole budget on its own, sitting
+      // chronologically between the two reads -- the exact shape that used
+      // to have picked/at-order spend the budget on it first and starve
+      // the fresh read below to nothing.
+      { at: now - 2000, kind: "discussion", text: "d".repeat(900) },
+      { at: now - 1000, kind: "read", text: "Asked: what is happening now\nFresh answer." },
+    ],
+  };
+  const block = notesContext([note], now);
+  assert.match(block, /Asked: what is happening now/);
+  assert.match(block, /Fresh answer\./);
+});
+
+test("notesContext head-clips a read that alone exceeds MAX_CONTEXT_CHARS_PER_NOTE", () => {
   const now = Date.now();
   const longBody = "x".repeat(MAX_CONTEXT_CHARS_PER_NOTE + 500);
   const block = notesContext(
@@ -565,6 +733,70 @@ test("notesContext clips the body tail to MAX_CONTEXT_CHARS_PER_NOTE", () => {
   const xRun = block.match(/x+/);
   assert.ok(xRun);
   assert.equal(xRun[0].length, MAX_CONTEXT_CHARS_PER_NOTE);
+});
+
+test("notesContext charges the newline joining two clips against the budget, so a section that cannot fully fit is excluded outright rather than left as an orphaned trailing newline", () => {
+  // Verified computationally (exhaustive search over clip-length pairs) that
+  // the un-charged join byte never actually loses real content once
+  // cleanBody's own final slice(0, MAX) runs -- what it produces instead is
+  // a spurious trailing "\n" when the section that DID get a sliver of
+  // leftover budget is small enough that the final slice removes all of it,
+  // orphaning the newline that joined it. This pins the honest failure mode.
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 1000, kind: "read", text: "r".repeat(MAX_CONTEXT_CHARS_PER_NOTE - 1) },
+      { at: now, kind: "discussion", text: "Z" },
+    ],
+  };
+  const block = notesContext([note], now);
+  assert.doesNotMatch(block, /Z/);
+  assert.doesNotMatch(block, /\n\n\n/); // no orphaned newline ahead of the block separator
+});
+
+test("notesContext folds an older read too when the newest read leaves room, so a second distinct question's answer still reaches the prompt", () => {
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 2000, kind: "read", text: "Asked: what is it building\nA landing page." },
+      { at: now - 1000, kind: "read", text: "Asked: is it done yet\nNot yet." },
+    ],
+  };
+  const block = notesContext([note], now);
+  assert.match(block, /Asked: what is it building/);
+  assert.match(block, /Asked: is it done yet/);
+});
+
+test("notesContext folds the newest read alone when it already fills the whole budget, leaving no room for an older read", () => {
+  const now = Date.now();
+  const note = {
+    topic: "jarvis-3",
+    updated: now,
+    summary: "s",
+    sections: [
+      { at: now - 2000, kind: "read", text: "Asked: what is it building\nA landing page." },
+      { at: now - 1000, kind: "read", text: "Asked: is it done yet\n" + "x".repeat(MAX_CONTEXT_CHARS_PER_NOTE) },
+    ],
+  };
+  const block = notesContext([note], now);
+  assert.match(block, /Asked: is it done yet/);
+  assert.doesNotMatch(block, /what is it building/);
+});
+
+test("notesContext folds nothing but the header for a note with no read or discussion section", () => {
+  const now = Date.now();
+  const block = notesContext(
+    [{ topic: "jarvis-3", updated: now, summary: "s", sections: [{ at: now, kind: "note", text: "irrelevant" }] }],
+    now,
+  );
+  assert.match(block, /NOTE jarvis-3 \(updated today\): s$/m);
+  assert.doesNotMatch(block, /irrelevant/);
 });
 
 // ---------------------------------------------------------------------------
@@ -952,6 +1184,26 @@ test("writeSection returns null when the underlying save fails", () => {
   });
 });
 
+test("writeSection returns null and leaves the file byte-identical when a whitespace-only read adds nothing", () => {
+  withTempDir((dir) => {
+    const first = writeSection(dir, "jarvis-3", { at: 1000, kind: "read", text: "Asked: what is it doing\nBuilding X." });
+    assert.ok(first);
+    const path = join(dir, "jarvis-3.md");
+    const before = readFileSync(path, "utf8");
+
+    // A whitespace-only read cleans to nothing -- mergeSection returns the
+    // note unchanged, and writeSection must not turn that into a save: not
+    // just because it would be a no-op write, but because saving anyway
+    // would rewrite the note under its OLD `updated`, forfeiting saveNote's
+    // "the newest note is never pruned" exemption for this file.
+    const second = writeSection(dir, "jarvis-3", { at: 2000, kind: "read", text: "   " });
+    assert.equal(second, null);
+
+    const after = readFileSync(path, "utf8");
+    assert.equal(after, before);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Persistence across a simulated restart: write with one `dir`, read back
 // from the same `dir` in a second, independent call.
@@ -1158,6 +1410,73 @@ test("recentNotes defaults to MAX_CONTEXT_NOTES when n is not given", () => {
 
 test("recentNotes on a missing directory returns an empty array rather than throwing", () => {
   assert.deepEqual(recentNotes(join(DEFAULT_DIR, "does-not-exist-at-all")), []);
+});
+
+// ---------------------------------------------------------------------------
+// pickNotes -- pinning the note a turn is actually about
+// ---------------------------------------------------------------------------
+
+// A listNotes-shaped entry, minimal: pickNotes only ever reads topic,
+// updated and subject.
+function entry(topic, updated, subject = "") {
+  return { topic, updated, subject };
+}
+
+test("pickNotes folds the live topic first even when three other notes were updated after it", () => {
+  const entries = [
+    entry("jarvis-3-a1b2c3d4", 1000),
+    entry("newer-a", 4000),
+    entry("newer-b", 3000),
+    entry("newer-c", 2000),
+  ];
+  const picked = pickNotes(entries, { topic: "jarvis-3-a1b2c3d4" }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["jarvis-3-a1b2c3d4", "newer-a"]);
+});
+
+test("pickNotes folds a note whose subject was named in the turn ahead of a newer unrelated note", () => {
+  const entries = [
+    entry("a-topic", 1000, "a-subject"),
+    entry("b-topic", 3000, "b-subject"),
+  ];
+  const picked = pickNotes(entries, { names: ["a-subject"] }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["a-topic", "b-topic"]);
+});
+
+test("pickNotes without a hint is the plain newest-first order", () => {
+  const entries = [entry("older", 1000), entry("newer", 2000)];
+  assert.deepEqual(pickNotes(entries, null).map((e) => e.topic), ["newer", "older"]);
+  assert.deepEqual(pickNotes(entries, {}).map((e) => e.topic), ["newer", "older"]);
+});
+
+test("pickNotes with a hint whose topic is explicitly null falls back to plain recency, the same as no hint at all", () => {
+  // server.js now passes `topic: null` (rather than omitting the hint)
+  // whenever conv.topic exists but has gone stale (topicIsLive says no) --
+  // this is what that wiring change depends on: a null topic must never be
+  // treated as "pin nothing found," which would still be correct, but must
+  // also never accidentally pin an entry whose OWN topic happens to be the
+  // string "null" or similar; it simply has no live topic to seat.
+  const entries = [entry("older", 1000), entry("newer", 2000)];
+  assert.deepEqual(pickNotes(entries, { topic: null, names: [] }).map((e) => e.topic), ["newer", "older"]);
+});
+
+test("pickNotes never returns the same topic twice when the live topic is also the named one", () => {
+  const entries = [entry("a-topic", 1000, "a-subject"), entry("b-topic", 2000, "b-subject")];
+  const picked = pickNotes(entries, { topic: "a-topic", names: ["a-subject"] }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["a-topic", "b-topic"]);
+});
+
+test("pickNotes seats a live topic and a named session ahead of a fresher unrelated note", () => {
+  // A is the live topic, B is named, C is neither but was updated more
+  // recently than both -- both seats go to A and B on purpose, per the
+  // README: the session read/named comes first, recency only fills what's
+  // left over. C loses its seat even though it is the freshest note here.
+  const entries = [
+    entry("a-topic", 1000, "a-subject"),
+    entry("b-topic", 2000, "b-subject"),
+    entry("c-topic", 3000, "c-subject"),
+  ];
+  const picked = pickNotes(entries, { topic: "a-topic", names: ["b-subject"] }, 2);
+  assert.deepEqual(picked.map((e) => e.topic), ["a-topic", "b-topic"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -1413,6 +1732,65 @@ test("foldNotes on an empty directory returns an empty context and an empty flag
     const { context, flag } = foldNotes(tracker, dir, 1000);
     assert.equal(context, "");
     assert.equal(flag, "");
+  });
+});
+
+test("foldNotes reports the topics it folded and the size of the block, in fold order", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "old-topic", { at: 1000, text: "old" });
+    writeSection(dir, "newest-topic", { at: 2000, text: "newest" });
+    const tracker = createNoteTracker();
+    const { context, topics, chars } = foldNotes(tracker, dir, 2000, { topic: "old-topic" });
+    assert.deepEqual(topics, ["old-topic", "newest-topic"]);
+    assert.equal(chars, context.length);
+  });
+});
+
+test("foldNotes reports a hand-named file's topic slugged, never the raw basename bytes, since topics only ever leaves this module to be logged", () => {
+  withTempDir((dir) => {
+    const note = formatNote({
+      title: "T", summary: "s", about: "a", created: 1000, updated: 1000, facts: {},
+      sections: [{ at: 1000, kind: "note", text: "hello" }],
+    });
+    // A control character in the basename -- exactly the kind of byte
+    // topicSlug exists to strip out before anything derived from a topic
+    // reaches a log line, a filename, or a prompt.
+    writeFileSync(join(dir, "My Notes.md"), note);
+    const tracker = createNoteTracker();
+    const { topics } = foldNotes(tracker, dir, 1000);
+    assert.deepEqual(topics, ["my-notes"]);
+  });
+});
+
+test("foldNotes with a hint hands notesContext the pinned note first", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "old-topic", { at: 1000, text: "old", summary: "the old one" });
+    writeSection(dir, "middle-topic", { at: 2000, text: "middle", summary: "the middle one" });
+    writeSection(dir, "newest-topic", { at: 3000, text: "newest", summary: "the newest one" });
+    const tracker = createNoteTracker();
+    // Without the hint, MAX_CONTEXT_NOTES 2 folds newest-topic and
+    // middle-topic, bumping old-topic out entirely -- with it, old-topic
+    // keeps its seat and middle-topic (neither pinned nor newest) is the one
+    // left out instead.
+    const { context } = foldNotes(tracker, dir, 3000, { topic: "old-topic" });
+    assert.match(context, /NOTE old-topic/);
+    assert.match(context, /NOTE newest-topic/);
+    assert.doesNotMatch(context, /NOTE middle-topic/);
+    // Pinned first in the PROMPT, not merely present -- notesContext no
+    // longer re-sorts (see the test above), so this only holds if foldNotes
+    // actually handed it pickNotes' order rather than some other list that
+    // happened to contain both topics.
+    assert.ok(context.indexOf("NOTE old-topic") < context.indexOf("NOTE newest-topic"));
+  });
+});
+
+test("foldNotes with a hint whose topic is null falls back to plain recency, the same shape server.js sends once conv.topic has gone stale", () => {
+  withTempDir((dir) => {
+    writeSection(dir, "old-topic", { at: 1000, text: "old" });
+    writeSection(dir, "newest-topic", { at: 2000, text: "newest" });
+    const tracker = createNoteTracker();
+    const { topics } = foldNotes(tracker, dir, 2000, { topic: null, names: [] });
+    assert.deepEqual(topics, ["newest-topic", "old-topic"]);
   });
 });
 
