@@ -137,13 +137,19 @@ repository's header there makes it the new main.
 (title, summary, a one-line description, created/updated timestamps, and any
 facts it holds) followed by dated sections, oldest first. What goes in: every
 session read, and the conversation that follows it for the next half hour —
-after that the topic goes stale and later chat is just chat again. What comes
-back: the four most recently updated notes ride along with every turn, so
-*"what did it decide"* still has an answer after a restart. Capacity defaults
-to 50 MB or 500 files, whichever comes first — the oldest-updated note is
-pruned first on every write, and the newest is never pruned even alone over
-the cap. Say *"keep your notes under a hundred megabytes"* and the model
-appends `[MEMORY:SET memory-max-mb=100]`; file count works the same way via
+after that the topic goes stale and later chat is just chat again. Reading a
+session again replaces its earlier read rather than piling up — one section
+per distinct question, and the newest plain read-back if there was no
+question. What comes back, two notes in all, every turn: the note for the
+session you just read and the one for any session you name come first, and
+the most recently updated notes fill whatever seats are left — so *"what did
+it decide"* still has an answer after a restart even when something else was
+touched more recently, though a fresher unrelated note can lose its seat to
+one you actually named. Capacity defaults to 50 MB or 500
+files, whichever comes first — the oldest-updated note is pruned first on
+every write, and the newest is never pruned even alone over the cap. Say
+*"keep your notes under a hundred megabytes"* and the model appends
+`[MEMORY:SET memory-max-mb=100]`; file count works the same way via
 `memory-max-files`. When two notes about the same session disagree on a fact
 — a task that changed, a status that moved on — Dante says so once per
 conversation and goes with the newer.
@@ -451,18 +457,30 @@ the two arrows sit under the caption.
 | `server.js` | static files, WebSocket, dispatch. Wiring only — logic lives in `lib/`. |
 | `lib/brain.js` | **the seam.** The warm CLI, the persona, `ask` / `askResilient`. |
 | `lib/agents.js` | the session roster: `claude agents --json`, parsed and said out loud. |
+| `lib/transcript.js` | reading a session's own `.jsonl` off disk and summarizing what it actually did. |
+| `lib/recall.js` | which sessions can still be read once they've fallen off the roster. |
 | `lib/memory.js` | the store — preferences, summaries, artifacts, workspace aliases. |
 | `lib/notes.js` | the second half of memory — one Markdown file per topic, weighted and pruned. |
 | `lib/turns.js` | what one call carries: merged interruptions, the roster, the turn gate. |
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
+| `lib/module-dir.js` | the shared loader behind `lib/registry.js` and `lib/sessions.js` — every `*.mjs` in a directory into a keyed Map. |
 | `lib/spawn-session.js` | starting, telling and stopping a real session. |
+| `lib/interview.js` | asking one question at a time before a session gets proposed — the goal/where/constraints/done facets. |
+| `lib/confirm.js` | turning a parsed tag into a spoken proposal, and turning yes/no back into an action. |
+| `lib/commands.js` | vetting a spoken skill name against `/`-commands before it reaches a running session. |
 | `lib/run-cli.js` | one child-process runner for every verb that spawns the CLI and waits: deadline, two-step kill, capped pipes. |
 | `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
+| `lib/approval.js` + `hooks/dante-approve.mjs` | the PreToolUse hook that asks out loud before an outside-repo write or a publishing git op, and blocks for your answer. |
+| `lib/hooks.js` + `hooks/dante-notify.mjs` | the fast path for "something happened in a session" — hook events, deduplicated against the roster poller. |
+| `lib/notify.js` | the wording of an event, recap and spoken forms, in one pure place. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
 | `lib/action.js`, `outcome.js`, `verdict.js`, `progress.js`, `tts.js`, `config.js` | tags, build success detection, what a session command may claim afterwards, readable progress, speech, config. |
 | `claude-settings.json` | small and load-bearing — hooks off, thinking off. A build gets a throwaway copy with path deny rules merged on. |
+
+`recap` ("catch me up") is dispatched as its own session verb too, alongside
+start/tell/interrupt/stop/read.
 
 `npm test` — `node --test`, no network and no keys needed.
 
@@ -568,6 +586,9 @@ any primitive, and `denyRules()` names credentials, shell startup files and
 this app's own source, never the repository a build was pointed at. So "does
 not write to the repo it reads" is enforced by the system prompt alone, which
 is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
+
+What silently does not hold, and which CLI internals this leans on, is kept in
+[docs/known-limitations.md](docs/known-limitations.md).
 
 ## When something breaks
 

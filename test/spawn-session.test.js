@@ -15,7 +15,10 @@ import {
   MAX_REPLY_CHARS,
   buildTellArgs,
   createInFlight,
+  daemonId,
+  parseStartedId,
   refuseStart,
+  resolveStartedSession,
   startSession,
   stopSession,
   tellSession,
@@ -186,6 +189,51 @@ test("a follow-up keeps its line breaks too, for the same reason a start brief d
 });
 
 // ---------------------------------------------------------------------------
+// parseStartedId
+// ---------------------------------------------------------------------------
+
+// Byte-exact, ANSI codes included, from a live probe against CLI 2.1.258.
+const BACKGROUNDED_STDOUT = [
+  "backgrounded · \x1b[36m034b047b\x1b[39m · dante-probe-1",
+  "\x1b[2m  claude agents             list sessions\x1b[22m",
+  "\x1b[2m  claude attach 034b047b    open in this terminal\x1b[22m",
+  "\x1b[2m  claude logs 034b047b      show recent output\x1b[22m",
+  "\x1b[2m  claude stop 034b047b      stop this session\x1b[22m",
+].join("\n");
+
+test("the id comes off the backgrounded line, colour codes and all", () => {
+  assert.equal(parseStartedId(BACKGROUNDED_STDOUT), "034b047b");
+});
+
+test("a later line naming the same id is not what gets matched", () => {
+  // Every line below the first repeats "034b047b" in a sentence of its own
+  // ("claude stop 034b047b ..."); only the "backgrounded" line is a
+  // confirmation, and this pins that the match is anchored on it rather than
+  // on the first id-shaped token anywhere in the output.
+  const onlyTrailingLines = BACKGROUNDED_STDOUT.split("\n").slice(1).join("\n");
+  assert.equal(parseStartedId(onlyTrailingLines), null);
+});
+
+test("no backgrounded line is nothing to read", () => {
+  assert.equal(parseStartedId(""), null);
+  assert.equal(parseStartedId("something else entirely\n"), null);
+  assert.equal(parseStartedId(undefined), null);
+  assert.equal(parseStartedId(null), null);
+});
+
+test("an id that would be read as a flag is refused rather than trimmed", () => {
+  assert.equal(parseStartedId("backgrounded · -bad · dante-probe-1"), null);
+});
+
+test("a cursor-hide escape ahead of the backgrounded line does not defeat the match", () => {
+  // A busy build has been seen to emit a "hide cursor" CSI sequence before its
+  // first real line -- a private-marker ("?") and a final byte other than the
+  // colour codes' "m", which is exactly what the narrower ANSI pattern this
+  // replaced would have missed.
+  assert.equal(parseStartedId("\x1b[?25l" + BACKGROUNDED_STDOUT), "034b047b");
+});
+
+// ---------------------------------------------------------------------------
 // startSession — against a real fake CLI on disk
 // ---------------------------------------------------------------------------
 
@@ -200,6 +248,13 @@ before(async () => {
   // A background agent detaches and leaves the parent alone, which from here
   // looks like a clean exit.
   fake.detaches = await writeFake("claude-detaches.cjs", 'console.log("started");');
+
+  // The real CLI's own confirmation, byte-exact, so startSession is proven
+  // against the actual thing rather than a paraphrase of it.
+  fake.backgrounds = await writeFake(
+    "claude-backgrounds.cjs",
+    `process.stdout.write(${JSON.stringify(BACKGROUNDED_STDOUT + "\n")});`,
+  );
 
   // Refuses outright: an unknown flag, a model that does not exist, a login
   // that expired. All of them look like this.
@@ -264,6 +319,18 @@ test("a session that started is reported started, by name and id", async () => {
   assert.equal(result.sessionId, ID);
 });
 
+test("a CLI that prints the real confirmation hands back the daemon's own id", async () => {
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: fake.backgrounds });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortId, "034b047b");
+});
+
+test("a CLI that prints nothing recognisable yields no shortId, not a crash", async () => {
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: fake.detaches });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortId, null);
+});
+
 test("a session still running when the window closes is a session that started", async () => {
   // The ordinary successful case. Waiting for it to finish would defeat the
   // entire point of starting one by voice.
@@ -277,6 +344,25 @@ test("a CLI that refuses says why, in words rather than a stack", async () => {
   assert.match(result.error, /unknown option/);
 });
 
+test("a multibyte character split across two stderr chunks is not mangled", async () => {
+  // Without setEncoding("utf8"), each chunk decodes as UTF-8 on its own the
+  // moment it is concatenated onto the string -- and a multibyte sequence cut
+  // in half by the pipe becomes two invalid halves, each read back as a
+  // replacement character, not the character that was actually written.
+  const splitMultibyte = await writeFake(
+    "claude-splits-multibyte.cjs",
+    [
+      'const part1 = Buffer.concat([Buffer.from("stderr with a check "), Buffer.from([0xe2, 0x9c])]);',
+      'const part2 = Buffer.concat([Buffer.from([0x93]), Buffer.from(" mark")]);',
+      "process.stderr.write(part1);",
+      'setTimeout(() => { process.stderr.write(part2); process.exitCode = 1; }, 20);',
+    ].join("\n"),
+  );
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: splitMultibyte });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /check ✓ mark/);
+});
+
 test("a CLI that is not installed is a refusal, not a crash", async () => {
   const result = await startSession({ ...spec(), cwd: workspace }, { bin: join(workspace, "nope") });
   assert.equal(result.ok, false);
@@ -286,6 +372,31 @@ test("a CLI that is not installed is a refusal, not a crash", async () => {
 test("a session without a workspace to run in is refused before anything spawns", async () => {
   assert.equal((await startSession(spec(), { bin: fake.detaches })).ok, false);
   assert.equal((await startSession({ ...spec(), cwd: "" }, { bin: fake.detaches })).ok, false);
+});
+
+test("startSession reports the moment it was actually asked for", async () => {
+  // Read just before spawn, not before argument building or after anything
+  // async -- server.js hands this straight to resolveStartedSession as
+  // `since`, and that bound is only worth having if it names the true spawn
+  // moment.
+  const before = Date.now();
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: fake.detaches });
+  const after = Date.now();
+  assert.ok(Number.isFinite(result.startedAtMs));
+  assert.ok(
+    result.startedAtMs >= before && result.startedAtMs <= after,
+    `${before} <= ${result.startedAtMs} <= ${after}`,
+  );
+});
+
+test("a spawn that throws synchronously resolves the same shape a slower failure gets", async () => {
+  // A cwd with a null byte is one of the few things that makes node's own
+  // spawn() throw before a child process ever exists, rather than failing
+  // later on an "error" event the way a missing binary does.
+  const result = await startSession({ ...spec(), cwd: workspace + "\u0000bad" }, { bin: fake.detaches });
+  assert.equal(result.ok, false);
+  assert.equal(result.shortId, null);
+  assert.ok(Number.isFinite(result.startedAtMs));
 });
 
 test("an unstartable request never reaches a child process", async () => {
@@ -311,6 +422,110 @@ test("the session runs in the repository it was asked for, with the arguments it
   } finally {
     if (previous === undefined) delete process.env.RECORD_TO;
     else process.env.RECORD_TO = previous;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// resolveStartedSession
+// ---------------------------------------------------------------------------
+
+// A roster record shaped the way parseRoster would produce one -- only the
+// fields matchStarted and this poller actually look at.
+function rosterRecord(overrides = {}) {
+  return {
+    sessionId: "3b139d5b-d998-4168-9a8c-6afae89909b8",
+    id: "3b139d5b",
+    name: "dante-probe-1",
+    kind: "background",
+    startedAt: 1_000_000,
+    ...overrides,
+  };
+}
+
+test("the record shows up on a later poll, not the first", async () => {
+  // The gap resolveStartedSession exists to close: the daemon has the id
+  // before `claude agents --json` necessarily lists it.
+  let calls = 0;
+  const list = async () => {
+    calls += 1;
+    return calls < 3 ? [] : [rosterRecord()];
+  };
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, delayMs: 1 },
+  );
+  assert.equal(calls, 3);
+  assert.equal(result.sessionId, "3b139d5b-d998-4168-9a8c-6afae89909b8");
+  assert.equal(result.record.id, "3b139d5b");
+});
+
+test("giving up after every attempt is a miss, not a crash", async () => {
+  const list = async () => [];
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 2, delayMs: 1 },
+  );
+  assert.equal(result, null);
+});
+
+test("a roster read that throws is treated as one more empty attempt", async () => {
+  const list = async () => {
+    throw new Error("the CLI is not installed");
+  };
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 2, delayMs: 1 },
+  );
+  assert.equal(result, null);
+});
+
+test("a matched record with no usable sessionId is nothing found yet, not a false positive", async () => {
+  // matchStarted's own shortId path returns whatever record carries that id,
+  // sessionId included or not -- this is the check that stands between an
+  // id-only match and handing back an id nothing downstream could resume,
+  // queue against or chain off of.
+  const list = async () => [rosterRecord({ sessionId: "" })];
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 2, delayMs: 1 },
+  );
+  assert.equal(result, null);
+});
+
+test("the overall deadline bounds the wait regardless of how slow list is", async () => {
+  // attempts and delayMs describe the *intended* pacing, but a real CLI under
+  // load can make each call itself slower than delayMs -- and without a bound
+  // of its own, a caller waiting on this would be waiting on attempts * (list's
+  // own time), not attempts * delayMs.
+  let calls = 0;
+  const list = async () => {
+    calls += 1;
+    await new Promise((done) => setTimeout(done, 40));
+    return [];
+  };
+  const start = Date.now();
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 100, delayMs: 5, deadlineMs: 100 },
+  );
+  const elapsed = Date.now() - start;
+  assert.equal(result, null);
+  // Left unbounded this would run up toward 100 * 45ms -- well over four
+  // seconds. A generous multiple of the deadline still catches a regression
+  // without being flaky on a loaded machine.
+  assert.ok(elapsed < 500, `took ${elapsed}ms for ${calls} calls`);
+});
+
+// ---------------------------------------------------------------------------
+// daemonId
+// ---------------------------------------------------------------------------
+
+test("a roster id that looks like a flag is not handed to the CLI as one", () => {
+  // stopSession's own coverage of this is indirect, by way of a refused stop;
+  // this pins the shape check itself.
+  assert.equal(daemonId({ id: "3b139d5b" }), "3b139d5b");
+  for (const id of ["-", "--all", "", " ", "3ee7 f1c2", null, undefined, 42]) {
+    assert.equal(daemonId({ id }), null, JSON.stringify(id));
   }
 });
 

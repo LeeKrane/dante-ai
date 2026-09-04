@@ -1,3 +1,9 @@
+> **Archived.** This is the original design proposal (August 2026). It was superseded by
+> [docs/memory-and-orchestration-plan.md](../memory-and-orchestration-plan.md) Stages 0–20, which
+> shipped. Code sketches here are not what ships — in particular the `saveStore` sketch writes
+> twice, where `lib/memory.js` writes a temp file once and renames it into place atomically. Read
+> the code, not this.
+
 # Dante: Memory Layer + Multi-Step Orchestration — Implementation Guide
 
 ## 0. What these two features unlock

@@ -37,21 +37,22 @@ import {
 import { recallableSessions } from "./lib/recall.js";
 import {
   DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, foldNotes, listNotes,
-  pruneNotes, recordDiscussion, sessionNoteSpec, writeSection,
+  pruneNotes, recordDiscussion, sessionNoteSpec, topicIsLive, writeSection,
 } from "./lib/notes.js";
 import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, orderRoster, ownRunning,
-  visibleSessions,
+  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, mentionedSessions, orderRoster,
+  ownRunning, visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
 import { loadSessionKinds, buildName } from "./lib/sessions.js";
 import {
-  MAX_SESSIONS, newSessionId, refuseStart, startSession, stopSession, tellSession, createInFlight,
+  MAX_SESSIONS, newSessionId, refuseStart, startSession, resolveStartedSession, stopSession, tellSession,
+  createInFlight, daemonId,
 } from "./lib/spawn-session.js";
 import { planDelivery, sendToSession } from "./lib/peer.js";
 import { loadCommands, vetCommand } from "./lib/commands.js";
@@ -2082,19 +2083,58 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     return { ok: false, name, error: started.error };
   }
 
+  // `sessionId` above is only ever provisional: --bg ignores --session-id and
+  // mints its own (see the comment on UUID in lib/spawn-session.js), so it is
+  // not the id this session will actually answer to. The roster is what
+  // knows that id, and resolveStartedSession is what finds the record on it
+  // -- matched on the short id parseStartedId read off stdout, or by name
+  // when that read came back empty. That record's own sessionId, not the
+  // uuid above, is the key everything downstream has to agree with the
+  // roster on: ownRunning counts against it, dispatchStop writes a stoppedAt
+  // against it, and a chain fires off it.
+  //
+  // `list: () => rosterPoller.fresh()` rather than bare listAgents: a start
+  // that spawned its own `claude agents --json` on every poll of this wait
+  // would be a second, uncoordinated source of roster reads racing the
+  // poller's own — fresh() is the poller's own de-duplicated read (see
+  // createRosterPoller in lib/agents.js), so a start costs at most one
+  // listing beyond whatever the poller was already about to do. `cwd` and
+  // `since` are what let matchStarted's name fallback tell this session
+  // apart from an older, unrelated one sharing its name — see matchStarted's
+  // own comment for why both bounds matter.
+  const resolved = await resolveStartedSession(
+    { shortId: started.shortId, name, cwd: workspace.path, since: started.startedAtMs },
+    { list: () => rosterPoller.fresh(), deadlineMs: 5000 },
+  );
+  const liveSessionId = resolved?.sessionId ?? sessionId;
+  if (!resolved) {
+    // Not a failed start -- the session is running either way -- but nothing
+    // keyed on its real id will ever find it: ownRunning will not count it
+    // against the cap, dispatchStop will not be able to record a stop for
+    // it, and a chain on it will never fire. Worth a log line, not a spoken
+    // error, since there is nothing here for a person to act on.
+    log(`session started name=${name} id=${sessionId} but could not be matched on the roster -- cap, queue and chain will not track it`);
+  }
+
   // Its own bucket, not the artifacts list: artifacts answer "what did we build
   // lately", and ten sessions would push every build out of that answer.
-  rememberSession(memoryStore, sessionId, {
+  rememberSession(memoryStore, liveSessionId, {
     name, alias: workspace.alias, cwd: workspace.path, task, kind: kindId ?? null,
+    // daemonId(), not the record's `.id` read straight off it: everything the
+    // roster carries came from the CLI, but a stored shortId is later handed
+    // to `claude stop <id>` as an argument, and this is what makes sure it
+    // still looks like an id rather than something that would be read as a
+    // flag by the time that happens.
+    shortId: daemonId(resolved?.record) ?? started.shortId ?? null,
   });
   // What to do once it finishes, if anything was asked for. Recorded now rather
   // than looked up later: by the time it ends, the turn that asked is long over.
-  if (then) chainAfter(memoryStore, sessionId, { task: then, alias: workspace.alias, depth });
+  if (then) chainAfter(memoryStore, liveSessionId, { task: then, alias: workspace.alias, depth });
   recordEvent(memoryStore, { kind: "started", name, detail: task });
   saveStore(memoryStore);
-  log(`session started name=${name} id=${sessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
+  log(`session started name=${name} id=${liveSessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
 
-  return { ok: true, name, sessionId };
+  return { ok: true, name, sessionId: liveSessionId };
 }
 
 async function dispatchAction(send, conv, action, preamble = "") {
@@ -2335,9 +2375,12 @@ wss.on("connection", (ws) => {
   // time is the race this whole arrangement exists to avoid.
   // notes/topic/flag are this conversation's memory-notes state: `notes` is the
   // per-conversation tracker of notes touched (so a contradiction is only ever
-  // spoken once), `topic` is the note a session read most recently landed in
-  // (or null, once it goes stale -- see topicIsLive), and `flag` is a
-  // contradiction sentence waiting to be appended to the next thing spoken.
+  // spoken once), `topic` is the note a session read most recently landed in.
+  // It does NOT null itself once stale -- it is only ever nulled on socket
+  // close (see below) or replaced by a fresher read/discussion -- so every
+  // consumer (recordDiscussion, and the notes-fold hint) checks topicIsLive
+  // itself before trusting it. `flag` is a contradiction sentence waiting to
+  // be appended to the next thing spoken.
   const conv = {
     pending: null, proposal: null, interview: null, held: null, turns: 0, unanswered: [], abort: null, settled: Promise.resolve(),
     notes: createNoteTracker(), topic: null, flag: "",
@@ -2471,11 +2514,35 @@ wss.on("connection", (ws) => {
       // assignment, not a join: conv.flag is always "" here, since the outer
       // finally below clears it unconditionally at the end of every turn,
       // spoken or not.
-      const { context: notesForPrompt, flag } = foldNotes(conv.notes, NOTES_DIR);
+      //
+      // The hint is what keeps the note about the session this turn is
+      // actually discussing from losing its seat to one that merely got
+      // appended to more recently: conv.topic is the live read/discussion
+      // window (set by dispatchRead, refreshed by recordDiscussion), gated
+      // through topicIsLive here so a read from hours ago cannot keep
+      // monopolizing a fold seat just because nobody has closed the socket
+      // since -- conv.topic itself is only ever nulled on close (see
+      // above), not on going stale. mentionedSessions catches a session
+      // named by voice even outside that window -- both roster and
+      // `recalled` (computed once here, reused by mergeTurns below) so a finished
+      // session can still be pinned by name, the same reach dispatchRead
+      // itself gets from recallable.
+      const now = Date.now();
+      const recalled = recallable(roster);
+      const hint = {
+        topic: topicIsLive(conv.topic, now) ? conv.topic.topic : null,
+        names: mentionedSessions(conv.unanswered.join(" "), [...(roster ?? []), ...recalled]),
+      };
+      const { context: notesForPrompt, flag, topics, chars } = foldNotes(conv.notes, NOTES_DIR, now, hint);
       conv.flag = flag;
+      // Wiring only -- the numbers themselves come from lib/notes.js. This is
+      // the number the trim in this branch was made to shrink; watching it
+      // in production is how the next tuning decision gets made on real
+      // turns instead of a guess.
+      if (topics.length) log(`notes folded ${topics.length} note(s) ${chars} chars: ${topics.join(", ")}`);
 
       const asked = mergeTurns(conv.unanswered, {
-        roster, recalled: recallable(roster), aliases: workspacePaths(memoryStore),
+        roster, recalled, aliases: workspacePaths(memoryStore),
         interview: interviewBlock(conv.interview),
         notes: notesForPrompt,
         workspaces: workspacesForClient(memoryStore),
