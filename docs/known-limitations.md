@@ -71,11 +71,12 @@ version it was checked against.
 | The `backgrounded · <id> · <name>` stdout line from `claude --bg` | `parseStartedId`, `lib/spawn-session.js:194` | 2.1.257 and 2.1.258 (`lib/spawn-session.js:79`) | Returns `null`; falls back to name match, then to the provisional uuid (Section 1) | Run a real `--bg` start and read the first stdout line by eye |
 | `claude stop <id>`: settles the daemon's lease so the worker is not resumed; exit 0 on success or on an already-gone session, exit 1 with a reason for an unknown id | `stopViaDaemon`, `lib/spawn-session.js:674` | Live 2026-09-01, against a SIGTERM that got resumed after ~10s instead of stopping (`lib/spawn-session.js:556-565`) | A good stop reports failure, or a SIGTERMed session reappears under a new pid | Stop a live session both ways and watch the roster for ~15s after |
 
-The roadmap's "Next" section (`docs/roadmap.md:675`) proposes `npm run
+The old roadmap (`docs/roadmap.md`, deleted in commit 4724861) proposed `npm run
 smoke` — exec the actually-installed CLI and assert the roster lists what
 was started — precisely because a fake CLI in the test suite cannot catch
-any of the five rows above drifting. That test does not exist yet; until it
-does, re-verifying this table means doing by hand what it describes.
+any of the five rows above drifting. That test does not exist yet and no plan
+under `docs/roadmap/` includes it; until it does, re-verifying this table
+means doing by hand what it describes.
 
 ## 3. Front-end
 
@@ -102,10 +103,13 @@ no visual cue; nothing on screen shows one is pending until it plays.
 
 `MAX_BUILDS` (`server.js:1283`) is `1`: a second request queues or is
 refused rather than running alongside the first. The deny layer in
-`lib/builder.js` and its cleanup were never designed for a concurrent build
-— see the roadmap's "Not planned" note on multi-user and concurrent builds
-(`docs/roadmap.md`) for why that is deliberate. `builds/` is never rotated
-or pruned; every build's throwaway directory accumulates on disk.
+`lib/builder.js` and its cleanup were never designed for a concurrent build.
+That is deliberate: the old roadmap ruled out multi-user and concurrent builds,
+and the council review of 2026-09-02 (`docs/feature-candidates.md`, rejected
+items 31 to 33 in its history) reaffirmed it, because the approval and
+deny-layer design leans on every session running under the owner's own login.
+`builds/` is never rotated or pruned; every build's throwaway directory
+accumulates on disk.
 
 ## 5. Interview and proposals
 

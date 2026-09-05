@@ -424,7 +424,8 @@ is exactly when you need them working. The answer is read by a strict word list
 and **never goes through the model**: routing it through one would let a
 prompt-injected tool description argue for its own approval.
 
-`docs/roadmap.md` is where this goes next.
+What may come next is listed in `docs/feature-candidates.md`, and `docs/roadmap/` holds an
+implementation plan for each entry there.
 
 ## Make it yours
 
