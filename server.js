@@ -2623,13 +2623,12 @@ wss.on("connection", (ws) => {
   // older still-open one can be sitting on the same still-pending news), and
   // a second chime for news already sounded once is exactly the double this
   // guards against (see cueFor's own comment, public/attention-policy.js).
-  // `sessions` already counts this very connection (set just above, when
-  // `remembered` is truthy), so size <= 1 means nothing else is open and no
-  // other tab could have chimed for this yet.
+  // Count live sockets (the only open tab) rather than remembered sessions,
+  // so another tab browser process counts even if it has no stored project session.
   for (const entry of pending.live(Date.now())) {
     send({
       type: "announce", id: entry.id, text: entry.text, kind: entry.kind, sessionId: entry.sessionId,
-      reoffered: true, cue: sessions.size <= 1,
+      reoffered: true, cue: [...wss.clients].filter((c) => c.readyState === 1).length <= 1,
     });
   }
 

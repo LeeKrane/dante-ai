@@ -72,6 +72,15 @@ test("a re-offered line another tab may also hold does not chime twice", () => {
   assert.equal(cueFor({ ...audible, speak: { kind: "watch-blocked", cue: false }, stale: [], owed: true }), true);
 });
 
+test("a re-offered line that goes stale does not ring either", () => {
+  // A re-offered item with cue: false in the stale array should not trigger
+  // owesCue, because the double-cue guard applies to both speak and stale.
+  assert.equal(cueFor({ ...audible, speak: null, stale: [{ kind: "watch-blocked", cue: false }] }), false);
+  assert.equal(cueFor({ ...audible, speak: null, stale: [{ kind: "watch-idle", cue: false }] }), false);
+  // But a stale item without the cue: false flag still rings on its own.
+  assert.equal(cueFor({ ...audible, speak: null, stale: [{ kind: "watch-idle" }] }), true);
+});
+
 test("a second cue within the minute is one too many", () => {
   const recent = { ...audible, lastCueAt: NOW - 1000, speak: { kind: "watch-blocked" } };
   assert.equal(cueFor(recent), false);

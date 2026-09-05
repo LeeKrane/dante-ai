@@ -90,13 +90,14 @@ export function owesCue(stale) {
 // socket may still hold and may already have chimed for once, and a second
 // chime for the same news the instant this tab reconnects is exactly the
 // double this exists to prevent (see app.js's receiveAnnouncement, which
-// carries the wire's `cue` onto the queued item unchanged). `stale` and
-// `owed` are untouched by this -- an item swept as stale or a tone owed from
-// an earlier pump still rings regardless, because neither one is a re-offer.
+// carries the wire's `cue` onto the queued item unchanged). A re-offered
+// item with cue: false that goes stale still keeps silent, because the
+// double-cue guard applies to both speak and stale. Other stale items and
+// tones owed from an earlier pump still ring on their merits.
 export function cueFor({ speak, stale, owed, lastCueAt, now, audioReady, cooldownMs = CUE_COOLDOWN_MS } = {}) {
   if (!audioReady) return false;
   if (Number.isFinite(lastCueAt) && Number.isFinite(now) && now - lastCueAt < cooldownMs) return false;
-  return (speak?.kind === "watch-blocked" && speak.cue !== false) || owesCue(stale) || Boolean(owed);
+  return (speak?.kind === "watch-blocked" && speak.cue !== false) || owesCue((Array.isArray(stale) ? stale : []).filter((i) => i?.cue !== false)) || Boolean(owed);
 }
 
 // attentionPending(queue) -> whether anything still queued is a watcher's own
