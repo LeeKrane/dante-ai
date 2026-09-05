@@ -56,6 +56,22 @@ test("a page never allowed to make a sound makes none", () => {
   assert.equal(cueFor({ ...audible, audioReady: false, speak: { kind: "watch-blocked" } }), false);
 });
 
+test("a re-offered line another tab may also hold does not chime twice", () => {
+  // speak.cue === false is the connect-time re-offer's own flag (server.js's
+  // connect handler, carried onto the queued item by app.js's
+  // receiveAnnouncement) -- it means another socket was open when this page
+  // reconnected and may already hold, and have chimed for, this exact entry.
+  assert.equal(cueFor({ ...audible, speak: { kind: "watch-blocked", cue: false }, stale: [] }), false);
+  // Without the flag (an ordinary fresh blocked report, or a re-offer with
+  // nothing else open to have chimed for it already) the cue still rings.
+  assert.equal(cueFor({ ...audible, speak: { kind: "watch-blocked", cue: true }, stale: [] }), true);
+  assert.equal(cueFor({ ...audible, speak: { kind: "watch-blocked" }, stale: [] }), true);
+  // A false cue on `speak` only takes `speak` itself out of the running --
+  // stale and owed still ring on their own merits.
+  assert.equal(cueFor({ ...audible, speak: { kind: "watch-blocked", cue: false }, stale: [{ kind: "watch-idle" }] }), true);
+  assert.equal(cueFor({ ...audible, speak: { kind: "watch-blocked", cue: false }, stale: [], owed: true }), true);
+});
+
 test("a second cue within the minute is one too many", () => {
   const recent = { ...audible, lastCueAt: NOW - 1000, speak: { kind: "watch-blocked" } };
   assert.equal(cueFor(recent), false);

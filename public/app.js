@@ -893,7 +893,16 @@ const openNotifications = new Map();
 // `at` is stamped on arrival rather than taken from the server, so staleness is
 // measured on one clock -- the one the person is standing next to.
 function receiveAnnouncement(msg) {
-  announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now(), kind: msg.kind });
+  // `cue` defaults true -- an ordinary fresh announcement never sets the wire
+  // field at all -- and is false only for a re-offer the server knows
+  // another socket might already hold and have chimed for once (server.js's
+  // connect handler, `cue: sessions.size <= 1`). Carried onto the queued item
+  // itself so cueFor (public/attention-policy.js) can tell the two apart
+  // whenever this item is the one about to be spoken.
+  announcements = queueAnnouncement(
+    announcements,
+    { id: msg.id, text: msg.text, at: Date.now(), kind: msg.kind, cue: msg.cue !== false },
+  );
   // `reoffered` is the connect handler's own flag (server.js) for something
   // still live from before this page connected, rather than fresh news --
   // worth telling apart in the diagnostics panel even though both are queued
@@ -940,6 +949,19 @@ function receiveClearAnnouncements() {
   // that ran while this tab was hidden leaves the title reading "• Dante"
   // with nothing left in the queue to explain it.
   document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // A recap just said everything this cue would have been ringing for --
+  // left set, the next pump that finds the floor free would sound a cue for
+  // news that has already been spoken in full.
+  cueOwed = false;
+  // Same reasoning, for the Web Notifications this page posted on its own
+  // behalf: a recap just covered whatever a blocked watch's notification was
+  // standing in for, so every open one is stale the instant it lands, not
+  // only the ones the visibilitychange listener below would eventually
+  // close.
+  if (openNotifications.size > 0) {
+    for (const n of openNotifications.values()) n.close();
+    openNotifications.clear();
+  }
 }
 
 // Called wherever the floor might have just been given up: a clip ending or

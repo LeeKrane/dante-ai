@@ -82,11 +82,14 @@ function rowFromRecord(record, now) {
     // its row ever becomes a ghost.
     watched: Boolean(record.watched),
     // Whether a watch has fired for this session recently enough that
-    // server.js still has it in recentlyFired -- server.js sets firedAt on a
-    // still-listed record only after a BLOCKED fire (the one change that
-    // leaves the session on the roster); a ghost row carries no firedAt of
-    // its own at all, and reads false here, because condition() above already
-    // says "finished" for it without any help from this field.
+    // server.js still has it in recentlyFired -- but server.js's own
+    // rosterForClient only ever puts a number here for a BLOCKED fire, never
+    // an idle or gone one, even though all three leave an entry in
+    // recentlyFired and idle (like blocked) leaves the session listed too: an
+    // idle session needs no further attention, so lighting this dot for one
+    // would say the opposite of what is true. A ghost row carries no firedAt
+    // of its own at all, and reads false here, because condition() above
+    // already says "finished" for it without any help from this field.
     reported: Number.isFinite(record.firedAt),
   };
 }

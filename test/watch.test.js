@@ -15,6 +15,7 @@ import {
   unwatchVerdict,
   watchCoverage,
   watchEvent,
+  watchSkip,
   watchVerdict,
   watchingLine,
 } from "../lib/watch.js";
@@ -309,6 +310,46 @@ test("a session that vanished while a tell was in flight still fires gone; the s
   assert.equal(fired.length, 1);
   assert.equal(fired[0].change, "gone");
   assert.equal(watchers.has("s1"), false);
+});
+
+test("a permission prompt raised by the tell being delivered is still reported, skip or no skip", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ state: "working" }));
+  const roster = [working({ state: "blocked" })];
+  // skip names this exact session -- the same one the tell is being
+  // delivered to -- and the block must still fire: skip exists to hold back
+  // an "idle" report the delivery is about to undo, and a fresh permission
+  // prompt raised by that very delivery is not that, and must not sit
+  // unreported for the rest of the drain.
+  const fired = watchers.tick(roster, Date.now(), { skip: new Set(["s1"]) });
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "blocked");
+  assert.equal(watchers.has("s1"), false);
+});
+
+// ---------------------------------------------------------------------------
+// watchSkip
+// ---------------------------------------------------------------------------
+
+test("watchSkip unions idle sessions with a queued tell and whatever is still in flight", () => {
+  const roster = [working({ sessionId: "s1", state: "done" }), working({ sessionId: "s2", state: "working" })];
+  assert.deepEqual([...watchSkip(roster, new Set(["s1"]), [])], ["s1"]);
+  assert.deepEqual([...watchSkip(roster, new Set(), ["s2"])].sort(), ["s2"]);
+  assert.deepEqual([...watchSkip(roster, new Set(["s1"]), ["s2"])].sort(), ["s1", "s2"]);
+});
+
+test("a session still mid-delivery stays skipped after its queue entry has been drained", () => {
+  const roster = [working({ sessionId: "s1", state: "done" })];
+  // takeQueued deletes the queue entry synchronously the moment a drain
+  // starts, so queuedIds no longer names s1 from the very next tick even
+  // though tellSession can still be running against it -- inFlightIds is
+  // what keeps the watch skipped for the rest of the drain.
+  assert.deepEqual([...watchSkip(roster, new Set(), ["s1"])], ["s1"]);
+});
+
+test("a working session named by a queued id is not skipped -- it has not stopped working yet", () => {
+  const roster = [working({ sessionId: "s1", state: "working" })];
+  assert.deepEqual([...watchSkip(roster, new Set(["s1"]), [])], []);
 });
 
 // ---------------------------------------------------------------------------
@@ -666,12 +707,14 @@ test("a fired record older than the window is forgotten", () => {
   assert.deepEqual(ghostRecords(recentlyFired, [], NOW, GHOST_MS), []);
 });
 
-test("a fire nobody has looked at in a minute and a half is forgotten, and the map it came from is left alone", () => {
+test("a fire for a session that has left the roster is forgotten after the window; one still listed is kept", () => {
   const recentlyFired = new Map([
-    ["old", fired({ firedAt: NOW - GHOST_MS - 1 })],
+    ["gone", fired({ firedAt: NOW - GHOST_MS - 1 })],
     ["fresh", fired({ firedAt: NOW - 1000 })],
+    ["stillListed", fired({ firedAt: NOW - GHOST_MS - 1 })],
   ]);
-  const pruned = pruneFired(recentlyFired, NOW, GHOST_MS);
-  assert.deepEqual([...pruned.keys()], ["fresh"]);
-  assert.deepEqual([...recentlyFired.keys()], ["old", "fresh"]);
+  const roster = [{ sessionId: "stillListed", state: "blocked" }];
+  const pruned = pruneFired(recentlyFired, roster, NOW, GHOST_MS);
+  assert.deepEqual([...pruned.keys()].sort(), ["fresh", "stillListed"]);
+  assert.deepEqual([...recentlyFired.keys()], ["gone", "fresh", "stillListed"]);
 });

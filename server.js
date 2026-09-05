@@ -33,7 +33,7 @@ import {
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import {
   GHOST_MS, WATCH_QUESTION, cancelTarget, createWatchers, describeFired, ghostRecords, pruneFired, refuseWatch,
-  resumedAmong, unwatchVerdict, watchCoverage, watchEvent, watchVerdict,
+  resumedAmong, unwatchVerdict, watchCoverage, watchEvent, watchSkip, watchVerdict,
 } from "./lib/watch.js";
 import { createPending, neverStale, normalizeKind } from "./lib/announcements.js";
 import { recallableSessions } from "./lib/recall.js";
@@ -169,21 +169,21 @@ const rosterPoller = createRosterPoller({
   // not one is.
   onRoster: (roster) => {
     // Computed once and reused below: the same sessions a queued tell is
-    // about to be delivered to are the ones a watch must leave untouched
-    // this tick (see the comment on tick's `skip` in lib/watch.js) -- a
-    // session about to go straight back to work is not "stopped working" in
-    // the sense a watcher exists to report.
-    const queuedIdle = idleAmong(roster, queuedSessionIds(memoryStore));
-    const skip = new Set(queuedIdle.map((record) => record.sessionId));
-    // Queued ids alone only cover the tick the drain STARTS on: deliverQueued
-    // calls takeQueued (lib/memory.js), which deletes the queue entry
-    // synchronously, so from the very next tick the session is no longer
-    // "queued" even though tellSession can still be running against it for up
-    // to TELL_TIMEOUT_MS. `delivering`'s own in-flight ids (createInFlight,
-    // lib/spawn-session.js) are what is actually still true for the whole
-    // drain, so they are unioned in here too -- a watch stays skipped as long
-    // as the delivery does, not just for its first tick.
-    for (const id of delivering.ids()) skip.add(id);
+    // about to be delivered to are the ones a watch must leave its idle
+    // branch untouched for this tick (see the comment on tick's `skip` in
+    // lib/watch.js) -- a session about to go straight back to work is not
+    // "stopped working" in the sense a watcher exists to report.
+    const queuedIds = queuedSessionIds(memoryStore);
+    const queuedIdle = idleAmong(roster, queuedIds);
+    // watchSkip (lib/watch.js) owns the union this used to build by hand
+    // here: idle sessions with a queued tell, plus `delivering`'s own
+    // in-flight ids (createInFlight, lib/spawn-session.js) -- queued ids
+    // alone only cover the tick the drain STARTS on, since deliverQueued's
+    // call to takeQueued (lib/memory.js) deletes the queue entry
+    // synchronously, so a session is no longer "queued" from the very next
+    // tick even though tellSession can still be running against it for up to
+    // TELL_TIMEOUT_MS.
+    const skip = watchSkip(roster, queuedIds, delivering.ids());
     for (const record of queuedIdle) deliverQueued(record);
     // The finish times the poller stamped, written down so they survive a
     // restart (endedSeeds, below). Saved only when one is new or moved.
@@ -205,7 +205,14 @@ const rosterPoller = createRosterPoller({
     // again, so the mark comes off here. Swept before the tick below, though
     // the order does not matter -- a watch fires only on a session that is
     // not working, which is exactly the one this sweep leaves alone.
-    for (const sessionId of resumedAmong(watchReported, roster)) watchReported.delete(sessionId);
+    // recentlyFired is swept in the same breath, on the same ids, and for the
+    // same reason: the session went back to work, so whatever dot or ghost
+    // row that entry was drawing (rosterForClient/ghostRecords) is exactly as
+    // stale as the generic report it stood beside.
+    for (const sessionId of resumedAmong(watchReported, roster)) {
+      watchReported.delete(sessionId);
+      recentlyFired.delete(sessionId);
+    }
     //
     // Still gated on a page being open: firing costs a real read-back
     // (readSession, then up to ~25 s of Haiku summarizing it via reportWatch
@@ -218,34 +225,23 @@ const rosterPoller = createRosterPoller({
     // fresh as it can be.
     // Pruned every tick, whether or not a page is open -- cheap, pure, and the
     // only thing that ever keeps this map from growing for the life of the
-    // process (see pruneFired's own comment, lib/watch.js).
-    recentlyFired = pruneFired(recentlyFired, Date.now(), GHOST_MS);
+    // process (see pruneFired's own comment, lib/watch.js). `roster` is
+    // passed through so a sessionId still listed is kept regardless of age --
+    // only a fire whose session has actually left the roster ages out on the
+    // ghostMs clock.
+    recentlyFired = pruneFired(recentlyFired, roster, Date.now(), GHOST_MS);
     if (!voice) return;
     const fires = watchers.tick(roster, Date.now(), { skip });
-    for (const fired of fires) {
-      watchReported.set(fired.watch.sessionId, fired.change);
-      // Filled beside watchReported, not instead of it: watchReported is what
-      // reportComplete/reportAttention read to decide whether the generic
-      // line still needs saying; recentlyFired is what rosterForClient reads
-      // to draw a ghost row once the session leaves the roster outright (a
-      // blocked fire never does, so its row never becomes a ghost -- see
-      // ghostRecords' own comment on why a still-listed sessionId is skipped
-      // there). Both are marked here, synchronously, for the same reason: the
-      // firing has already happened by the time reportWatch's own await
-      // settles, and nothing downstream should have to wait on it to know
-      // that.
-      recentlyFired.set(fired.watch.sessionId, {
-        name: fired.watch.name, alias: fired.watch.alias, startedAt: fired.watch.startedAt, firedAt: Date.now(),
-      });
-      reportWatch(fired).catch((e) => log("watch report failed:", e.message || e));
-    }
-    // A BLOCKED fire changes nothing diffRoster (lib/agents.js) treats as
-    // worth an event -- isWorking() counts blocked as still working, so the
-    // session's state looks unchanged to it -- which means onEvents never
-    // runs this tick and its own unconditional broadcastRoster call never
-    // happens either. Called explicitly here so a page still gets the
-    // "reported" dot for a fire that just went out.
-    if (fires.length > 0) broadcastRoster(roster);
+    // fireWatch (below) owns the four things a firing does -- mark
+    // watchReported, mark recentlyFired, kick off reportWatch, and broadcast
+    // the roster -- so this loop and reportComplete's own pending-watch
+    // branch can never drift on what "firing" means. A BLOCKED fire changes
+    // nothing diffRoster (lib/agents.js) treats as worth an event on its own
+    // -- isWorking() counts blocked as still working, so the session's state
+    // looks unchanged to it, and onEvents never runs this tick -- which is
+    // why fireWatch's own broadcast is what gives a page the "reported" dot
+    // for a fire that just went out, not onEvents' unconditional one.
+    for (const fired of fires) fireWatch(fired.watch, fired.change, fired.record, roster);
   },
 
   onEvents: (events, roster) => {
@@ -352,21 +348,66 @@ const watchReported = new Map();
 // the one it was handed.
 let recentlyFired = new Map();
 
+// fireWatch(watch, change, record, roster) -> the four things that happen the
+// instant a watcher fires, wherever it fires from: onRoster's own tick loop,
+// above, and reportComplete's pending-watch branch, below, for a watch still
+// PENDING when the session's process exited. One function so the two callers
+// can never drift on what "firing" means. watchReported is marked
+// synchronously so reportComplete/reportAttention never repeat the generic
+// line about this ending; recentlyFired is marked synchronously too, keyed
+// beside it, and now carries the `change` it fired with -- rosterForClient
+// reads that to decide whether the "reported" dot belongs on a still-listed
+// record (blocked only; see rosterForClient's own comment) -- so ghostRecords
+// (lib/watch.js) can still synthesise a "finished" row for GHOST_MS once a
+// gone fire removes the session from the roster outright. reportWatch is not
+// awaited, for the same reason a poller tick or the SessionEnd hook that
+// called reportComplete must not be held open by a read-back call and the
+// announcement behind it. broadcastRoster is skipped when `roster` is not an
+// array -- the hook path can call this before any poller tick has ever run,
+// and rosterForClient(null) would render an empty panel, worse than sending
+// nothing.
+function fireWatch(watch, change, record, roster) {
+  watchReported.set(watch.sessionId, change);
+  recentlyFired.set(watch.sessionId, {
+    name: watch.name, alias: watch.alias, startedAt: watch.startedAt, firedAt: Date.now(), change,
+  });
+  reportWatch({ watch, change, record }).catch((e) => log("watch report failed:", e.message || e));
+  if (Array.isArray(roster)) broadcastRoster(roster);
+}
+
 // A watcher fires at most once, and this is what "firing" means: read the
 // session back the same way verb=read does -- that answer is the actual
 // point of a watch, not merely noticing the session stopped -- record it in
-// the recap log, and speak it. Not awaited by either caller (onRoster above,
-// or reportComplete below for a watch that was still pending when the
-// session's process exited), for the same reason a poller tick must not be
-// held open by a read-back call and the announcement behind it. watchReported
-// is already marked for this sessionId by the caller before reportWatch is
-// even invoked -- not here, and not only for "gone" -- so that a
-// reportComplete racing in from the SessionEnd hook, which can resolve
-// before this function's own await does, still finds the mark in place.
+// the recap log, and speak it. Not awaited by either caller (fireWatch,
+// above, called from onRoster or from reportComplete below for a watch that
+// was still pending when the session's process exited), for the same reason
+// a poller tick must not be held open by a read-back call and the
+// announcement behind it. watchReported is already marked for this sessionId
+// by fireWatch before this function is even invoked -- not here, and not
+// only for "gone" -- so that a reportComplete racing in from the SessionEnd
+// hook, which can resolve before this function's own await does, still finds
+// the mark in place.
 async function reportWatch({ watch, change, record }) {
-  const { text, reason } = await readSession({
-    cwd: watch.cwd, sessionId: watch.sessionId, task: watch.task, question: WATCH_QUESTION,
-  });
+  let text, reason;
+  try {
+    ({ text, reason } = await readSession({
+      cwd: watch.cwd, sessionId: watch.sessionId, task: watch.task, question: WATCH_QUESTION,
+    }));
+  } catch (err) {
+    // readSession does not throw in practice -- it catches its own ask()
+    // failure and returns { text: "", reason: "failed" } instead -- but the
+    // two lookups it makes before that try (transcriptPath, tailMessages) are
+    // not inside it, and a filesystem error there would otherwise propagate
+    // straight out of this function. Caught here, not left to the .catch on
+    // fireWatch's own call: that .catch only logs, and a watch has no OTHER
+    // durable record of itself, so a read that throws would drop the ending
+    // from the recap entirely -- the exact bug this branch exists to close.
+    // Folded into the same reason/text shape readSession's own failures use,
+    // so everything below this needs no branch of its own for it.
+    log(`watch read-back failed (${change}) for ${watch.name ?? watch.sessionId}: ${err.message || err}`);
+    text = "";
+    reason = "failed";
+  }
   const spoken = describeFired({
     name: watch.name, change, state: record?.state ?? record?.status, text, reason,
   });
@@ -377,7 +418,11 @@ async function reportWatch({ watch, change, record }) {
   // whether anything is ever spoken. So this must land even when announce()
   // has nowhere to go at all -- not only when a page is merely offline for
   // the moment, which announce() itself now covers by storing a watch kind
-  // regardless (see announce, below).
+  // regardless (see announce, below). Landing here too, on the failure path
+  // above, is the whole point of that try/catch: a restart mid-await still
+  // loses this the same way main's own reportComplete can lose its call to
+  // summarizeSession, but a read that merely throws instead of hanging no
+  // longer has to lose it as well.
   recordEvent(memoryStore, watchEvent({ name: watch.name, change, text, reason }));
   saveStore(memoryStore);
   if (!announce(spoken, { kind: `watch-${change}`, sessionId: watch.sessionId })) {
@@ -389,45 +434,39 @@ async function reportWatch({ watch, change, record }) {
 // this machine, and recording every time somebody closes one would make the
 // recap worthless within a day.
 async function reportComplete(sessionId, context = {}) {
+  // context.roster on the hook path (the /hook call above) is
+  // rosterPoller.current() -- the previous tick's roster, taken before this
+  // session actually left it. Filtered here, once, rather than separately at
+  // each of the two places below that read it: fireWatch's own
+  // broadcastRoster (in the pending-watch branch immediately below) needs the
+  // roster to look like what is actually true right now -- this session is
+  // gone -- or ghostRecords (lib/watch.js) would skip drawing a ghost row on
+  // the strength of a stale entry that still lists it; dispatchChain's own
+  // ownRunning count needs the same thing, or it counts the exited session
+  // against MAX_SESSIONS and refuses a chain one slot early. A non-array
+  // context.roster (current() can be null this early, no tick has ever run)
+  // passes through unfiltered -- fireWatch already skips its broadcast for a
+  // non-array roster, and dispatchChain's own `Array.isArray(roster) ? roster
+  // : []` already treats one the same way.
+  const roster = Array.isArray(context.roster)
+    ? context.roster.filter((record) => record.sessionId !== sessionId)
+    : context.roster;
+
   // A watch still PENDING for this session (registered, never fired) can
   // only ever end one way from here: the session just exited, so reading it
   // back now and firing "gone" is not a guess, it is the only thing tick()
   // would ever have found on its next pass. Cancelled and fired
   // synchronously, right here, rather than left to that next poller tick --
   // a tick only runs with a page open and dies outright on a restart, so
-  // waiting for one can lose the ending altogether. Not awaited, for the
-  // same reason onRoster does not await reportWatch's own call to it: a
-  // read-back and the announcement behind it must not hold this function,
-  // or the SessionEnd hook that called it, open.
+  // waiting for one can lose the ending altogether. fireWatch (above) is what
+  // actually marks watchReported/recentlyFired, kicks off the not-awaited
+  // read-back, and broadcasts -- this path runs with no accompanying roster
+  // tick at all (the SessionEnd hook calls this function directly, see /hook
+  // above), so nothing else is about to broadcast a roster that would carry
+  // this ghost the way onEvents' own unconditional broadcastRoster does for
+  // onRoster's fires.
   const pending = watchers.cancel(sessionId);
-  if (pending) {
-    watchReported.set(sessionId, "gone");
-    // Filled here too, not only in onRoster's own tick loop -- this path runs
-    // with no accompanying roster tick at all (the SessionEnd hook calls this
-    // function directly, see /hook above), so nothing else is about to
-    // broadcast a roster that would carry this ghost. broadcastRoster is
-    // called explicitly, right below, for exactly that reason: onRoster's own
-    // fires need no equivalent call because onEvents already broadcasts
-    // unconditionally on the very same tick.
-    recentlyFired.set(sessionId, {
-      name: pending.name, alias: pending.alias, startedAt: pending.startedAt, firedAt: Date.now(),
-    });
-    // context.roster on the hook path (the /hook call above) is
-    // rosterPoller.current() -- the previous tick's roster, taken before this
-    // session actually left it, so broadcasting it unfiltered would still
-    // list the session and ghostRecords (lib/agents.js) would skip drawing a
-    // ghost for it on the strength of that stale entry. Filtered here so the
-    // broadcast looks like what is actually true right now: this session is
-    // gone. current() can also be null this early (no tick has ever run) --
-    // rosterForClient(null) would render an empty panel, which is worse than
-    // sending nothing, so the call is skipped outright rather than fed [].
-    if (Array.isArray(context.roster)) {
-      broadcastRoster(context.roster.filter((record) => record.sessionId !== sessionId));
-    }
-    reportWatch({ watch: pending, change: "gone", record: null }).catch((err) =>
-      log(`watch report failed for ${pending.name} (${pending.sessionId}): ${err.message}`),
-    );
-  }
+  if (pending) fireWatch(pending, "gone", null, roster);
 
   // Read after the cancel above, not before it: a watch that was pending a
   // moment ago is "gone" now, and watchCoverage (lib/watch.js) must see the
@@ -516,7 +555,7 @@ async function reportComplete(sessionId, context = {}) {
     }), { kind: "other", sessionId });
   }
 
-  await dispatchChain(sessionId, remembered, chain, context.roster);
+  await dispatchChain(sessionId, remembered, chain, roster);
 }
 
 // A session named a successor and this one just ended -- start it now, if it
@@ -767,29 +806,38 @@ function rosterForClient(roster) {
   // over the FULL list, not the slice below, so a hidden sixteenth session
   // still has a number and "stop session sixteen" still resolves even though
   // the panel never draws that row.
-  const mapped = roster.slice(0, MAX_LISTED).map((record) => ({
-    sessionId: record.sessionId,
-    name: record.name,
-    // The alias rather than the path: a repository is called "jarvis" out loud,
-    // and a page has no business being told where it lives on disk.
-    alias: typeof record.alias === "string" ? record.alias : "",
-    number: record.number,
-    state: record.state,
-    status: record.status,
-    startedAt: record.startedAt,
-    // When it finished, for a done session, so the page can stop the clock at
-    // that moment rather than counting on from startedAt (see trackEnded in
-    // lib/agents.js). null for a live one: its age is counted on the page.
-    endedAt: endedAtOf(record),
-    // Whether a watch is still live for this session, and the last time a
-    // watch fired for it -- read straight off this module's own registries
-    // rather than anything the poller's diffing produces, because neither is
-    // a fact about the roster itself. A blocked fire leaves the session on
-    // the roster (the one change that does not remove it), so firedAt can be
-    // non-null here too, not only on a ghost row below.
-    watched: watchers.has(record.sessionId),
-    firedAt: recentlyFired.get(record.sessionId)?.firedAt ?? null,
-  }));
+  const mapped = roster.slice(0, MAX_LISTED).map((record) => {
+    const fire = recentlyFired.get(record.sessionId);
+    return {
+      sessionId: record.sessionId,
+      name: record.name,
+      // The alias rather than the path: a repository is called "jarvis" out loud,
+      // and a page has no business being told where it lives on disk.
+      alias: typeof record.alias === "string" ? record.alias : "",
+      number: record.number,
+      state: record.state,
+      status: record.status,
+      startedAt: record.startedAt,
+      // When it finished, for a done session, so the page can stop the clock at
+      // that moment rather than counting on from startedAt (see trackEnded in
+      // lib/agents.js). null for a live one: its age is counted on the page.
+      endedAt: endedAtOf(record),
+      // Whether a watch is still live for this session, and the last time a
+      // watch fired for it -- read straight off this module's own registries
+      // rather than anything the poller's diffing produces, because neither is
+      // a fact about the roster itself. Only a BLOCKED fire lights this: it is
+      // the one change that leaves the session on the roster while still
+      // needing attention, so it is the one change worth an amber "reported"
+      // dot on a still-listed record here. An idle or gone fire also leaves an
+      // entry in recentlyFired (fireWatch sets one for every change), but idle
+      // needs no further attention and gone has already left the roster
+      // outright (its row comes from the ghost row below instead) -- lighting
+      // the dot for either would tell someone a session is still waiting on
+      // them when it is not.
+      watched: watchers.has(record.sessionId),
+      firedAt: fire?.change === "blocked" ? fire.firedAt : null,
+    };
+  });
   // Appended after the MAX_LISTED slice above, never folded into it: this
   // function feeds only sendRoster/the sessions panel, never the model's own
   // view of the roster (recallable, dispatchRead's matching, mentionedSessions
@@ -2568,8 +2616,21 @@ wss.on("connection", (ws) => {
   // first take, so a page that reconnects twice in quick succession offering
   // the same entry twice is harmless: whichever ack arrives first wins it,
   // and the other finds nothing left to take.
+  //
+  // `cue` is false whenever another socket is already open at this moment:
+  // that other tab may already hold this very entry and have chimed for it
+  // once already (announce() reaches only `voice`, the newest tab, so an
+  // older still-open one can be sitting on the same still-pending news), and
+  // a second chime for news already sounded once is exactly the double this
+  // guards against (see cueFor's own comment, public/attention-policy.js).
+  // `sessions` already counts this very connection (set just above, when
+  // `remembered` is truthy), so size <= 1 means nothing else is open and no
+  // other tab could have chimed for this yet.
   for (const entry of pending.live(Date.now())) {
-    send({ type: "announce", id: entry.id, text: entry.text, kind: entry.kind, sessionId: entry.sessionId, reoffered: true });
+    send({
+      type: "announce", id: entry.id, text: entry.text, kind: entry.kind, sessionId: entry.sessionId,
+      reoffered: true, cue: sessions.size <= 1,
+    });
   }
 
   log("client connected");

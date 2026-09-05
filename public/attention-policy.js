@@ -83,10 +83,20 @@ export function owesCue(stale) {
 // real AudioContext running (`audioReady` -- see app.js's own comment on why
 // three creation sites exist and only one of them is a user gesture), and
 // never twice inside `cooldownMs` of the last time, however much is waiting.
+//
+// `speak` is ignored on its own -- never counted toward the "worth ringing"
+// answer at all -- when its own `cue` field reads false: a re-offer the
+// server flagged that way (server.js's connect handler) is one another
+// socket may still hold and may already have chimed for once, and a second
+// chime for the same news the instant this tab reconnects is exactly the
+// double this exists to prevent (see app.js's receiveAnnouncement, which
+// carries the wire's `cue` onto the queued item unchanged). `stale` and
+// `owed` are untouched by this -- an item swept as stale or a tone owed from
+// an earlier pump still rings regardless, because neither one is a re-offer.
 export function cueFor({ speak, stale, owed, lastCueAt, now, audioReady, cooldownMs = CUE_COOLDOWN_MS } = {}) {
   if (!audioReady) return false;
   if (Number.isFinite(lastCueAt) && Number.isFinite(now) && now - lastCueAt < cooldownMs) return false;
-  return speak?.kind === "watch-blocked" || owesCue(stale) || Boolean(owed);
+  return (speak?.kind === "watch-blocked" && speak.cue !== false) || owesCue(stale) || Boolean(owed);
 }
 
 // attentionPending(queue) -> whether anything still queued is a watcher's own
