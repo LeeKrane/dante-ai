@@ -147,5 +147,5 @@ is the escape-phrase rate, the one signal that tells you whether this shape back
 `docs/feature-candidates.md` item 14 (STT confirm and correct before dispatch) was tagged
 MEASURE-FIRST because it adds two speak-and-listen cycles per command. The critic recommended
 here is a different thing: it adds no spoken turn, runs once per start, and attaches to a facet
-already being read back. Item 1 there (usage counters) and the log line above are the same
-instrumentation.
+already being read back. The council's usage-counter recommendation (cut from that file on
+2026-09-05, still in git history) and the log line above are the same instrumentation.

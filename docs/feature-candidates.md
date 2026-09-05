@@ -1,63 +1,35 @@
 # Feature candidates
 
-Thirty-six candidate features and extensions for Dante, collected from a council review on
-2026-09-02 (five advisors with distinct reasoning methods, anonymous peer review, a devil's
-advocate against the consensus, and a chairman synthesis). Each entry says what the feature is
-and why it earned, or lost, its place. The score is the chairman's calibrated usefulness out of
-ten, not an average. "Channel" is the effect on the single push-to-talk voice channel: `+` adds
-speak-and-listen cycles, `−` removes them, `0` is neutral.
+The fifteen candidates from the council review of 2026-09-02 that the owner is willing to
+consider, each checked against main at 73d2c40 on 2026-09-05. The other twenty-one entries the
+council scored (instrumentation, the ambient status strip and diff-stat, the transcript overlay,
+the action log, the rejected and conflicting items) were cut from this file on 2026-09-05; they
+remain in git history at commit 30c030a. Numbers are the council's original numbers, kept so
+the plan file and the two council documents still line up.
+
+Each entry says what the feature is, why it earned its place, what would change in the code, and
+what main already has. The score is the chairman's calibrated usefulness out of ten. "Channel"
+is the effect on the single push-to-talk voice channel: `+` adds speak-and-listen cycles, `−`
+removes them, `0` is neutral.
 
 The verdict that orders this list: **instrument before adding voice ceremony.** Nothing about
-daily use is measured yet, so the first item creates the evidence the rest are judged against,
-and the next four reduce voice traffic rather than add to it.
+daily use is measured yet. The council's first recommendation, local usage counters in the
+event log and diagnostics panel, is not on this list because the owner did not shortlist it, but
+several entries below say they wait on those counters.
 
-Verdict tags: SHIP-NEXT, SOON, LATER, MEASURE-FIRST, REJECT, CONFLICTS (with a decision already
-fixed in `README.md` or in the roadmap that main deleted in commit 4724861).
-
-On 2026-09-05 fifteen entries (4, 5, 7, 10 to 15, 17 to 21, 23) were rewritten with a "what would
-change" line and checked against main at 73d2c40; each carries an "On main" status. Item 14 turned
-out to be implemented and item 15 was decided against in code.
+Verdict tags: SHIP-NEXT, SOON, LATER, MEASURE-FIRST.
 
 ---
 
 ## Ship next
 
-### 1. Local usage counters
-**What.** A counter block in the restart-surviving event log (`lib/notify.js`), rendered in the
-diagnostics panel: STT re-records and corrections per day, approvals proposed versus answered
-versus expired at the hook, and mean seconds from a proposal being spoken to the "yes" arriving.
-**Why.** Every other item on this list rests on an unmeasured assumption about how reliable voice
-is and how much confirmation the owner tolerates. The council could not tell whether Dante's
-constraint is trust or throughput, and neither can anyone else until these numbers exist. Pure
-functions, no dependencies, one to two days, and it decides the fate of items 12 to 14.
-Score 10. Channel 0. Size S.
-
-### 2. Persistent session status strip
-**What.** A small always-visible strip of session states (running, waiting, blocked, finished)
-in `public/roster-panel.js`, independent of the key that opens the full sessions panel, fed by
-the roster polling that already runs.
-**Why.** Push-to-talk is a single mutex over every session on the machine. Beyond two concurrent
-sessions, asking "what is running" by voice serializes the day. Glanceable state answers the
-question without spending a turn, and it renders data Dante already has, so it adds no security
-surface. Score 9. Channel −. Size S to M.
-
-### 3. Session diff-stat, rendered not spoken
-**What.** On session completion, read `git diff --stat` of the session's repository (paths and
-line counts only, never file bodies) and show it next to the session's row in the roster panel.
-**Why.** Four of five advisors independently named "a session finished and I do not know what it
-did" as the biggest trust gap. Three of them wanted it spoken. The devil's advocate showed that
-eleven seconds of paths read aloud while another session's approval window drains is how Dante
-becomes ceremonial. Producing the diff-stat is the value; speaking it is the cost. Render it.
-Needs one ruling from the owner first: is a no-content diff-stat "code output" under the
-voice-only decision, or session state like the build HUD tree? The council reads it as state.
-Score 9. Channel 0. Size M.
-
 ### 4. Expired approvals surfaced, never decided
 **What.** When an approval window closes unanswered, keep a visible marker on that session's row in
 the roster panel and count the expiry in the diagnostics counters.
 **Why.** The expiry count is the best proxy for whether Dante is in the loop at all, and it feeds
-item 1. The Contrarian's catch fixes the shape: auto-approve edges toward `bypassPermissions`,
-auto-deny breaks "no browser means no decision, never a denial". So visibility, never a timer.
+the usage counters the council asked for first. The Contrarian's catch fixes the shape:
+auto-approve edges toward `bypassPermissions`, auto-deny breaks "no browser means no decision,
+never a denial". So visibility, never a timer.
 **What would change.** `rosterForClient` in `server.js` carries an "approval expired" flag per
 session, `public/roster-panel.js` renders it, and the counter lands in the event log.
 **On main.** Partial. A timeout already logs "approval timed out", records a needs-attention event
@@ -83,13 +55,6 @@ can answer conversationally. There is no dedicated verb, and `recap` is history 
 
 ## Soon
 
-### 6. Most-recently-used roster order
-**What.** Order the roster in `lib/agents.js` and the panel by last interaction rather than by
-workspace or name.
-**Why.** The session the owner just spoke to is the one they will speak to again. Alphabetical
-order makes every glance a search. It is the one useful idea inside the rejected tmux request.
-Score 8. Channel −. Size S.
-
 ### 7. Batch confirm
 **What.** Let several proposals be pending at once and answer them with one "yes", each named in
 the read-back.
@@ -100,21 +65,6 @@ Batching keeps the explicit gate and cuts the round trips.
 entry on a yes and clears all on a no; `lib/verdict.js` names each entry in the spoken line.
 **On main.** Absent. `conv.proposal` is a single object (`server.js:781`); a second request
 overwrites the first, so a "yes" can only ever answer the newest ask. Score 8. Channel −. Size S.
-
-### 8. Live "what it heard" overlay
-**What.** Show the raw transcript on screen as it arrives and before it is dispatched, display
-only, no extra confirmation turn.
-**Why.** The transcription boundary is where a misheard repository name becomes a wrong session
-brief, and nothing marks it. Showing the text costs no voice traffic and lets the owner catch a
-mishear with the cancel button that already exists. Mind the security note: transcripts can
-contain repository paths, so this is a panel, not a persisted log. Score 8. Channel 0. Size S.
-
-### 9. Browsable action log panel
-**What.** Expose the event log that backs "catch me up" as a scrollable panel.
-**Why.** "What did it do" currently has one answer, spoken, and speaking it clears the log. A
-visible log answers the same question repeatedly for free. Peer review warned this can become
-permission amnesia, so it shows what was sent and verified, not what was approved and why.
-Score 7. Channel −. Size M.
 
 ### 10. Notes query by voice
 **What.** "What do you know about X" looks a topic up across the whole notes store under
@@ -149,8 +99,8 @@ recap-class clips only, with a cap so a long build cannot hold an announcement f
 **On main.** Absent, and decided against once. `BUSY_STATES` in `public/playback-policy.js:103`
 leaves "working" out on purpose: a background build is not a conversation, and holding an
 announcement until it lands would hold it for minutes. Progress lines go to the HUD, not to
-speech, so the premise is weaker than the council assumed. Downgraded to LATER unless item 1
-shows announcements colliding with progress. Score 4. Channel −. Size S.
+speech, so the premise is weaker than the council assumed. Downgraded to LATER unless the usage
+counters show announcements colliding with progress. Score 4. Channel −. Size S.
 
 ### 18. State reasons in reports
 **What.** Carry the reason behind "blocked" or "needs attention" (which approval, what it waits
@@ -179,7 +129,7 @@ pass it on when it stops". Nothing about it reaches the panel. Score 6. Channel 
 
 ## Measure first
 
-These earn their place only if item 1 shows the pain exists.
+These earn their place only if the usage counters show the pain exists.
 
 ### 12. Needs-attention re-ping
 **What.** Re-speak an unacknowledged needs-attention after a set silence; a spoken "yes" or any
@@ -210,29 +160,16 @@ facets. Score 7. Channel −. Size M.
 extra cycles per command is the highest channel cost on the list.
 **What would change.** Little. The residual gap is the raw transcript of `read`, `recap` and
 `unwatch`, which dispatch without a gate, and a misheard interview answer, which surfaces only
-through the facet read-back. Item 8, the overlay, covers both at zero channel cost.
+through the facet read-back. A display-only "what it heard" transcript overlay (council item 8,
+not on this list) would cover both at zero channel cost.
 **On main.** Implemented for everything that acts. `CONFIRMED_VERBS` in `lib/confirm.js:47`
 gates start, tell, interrupt, stop and watch behind a spoken yes, and the confirming phase reads
-all four facets back once (`readBack`, `lib/interview.js:679`). Treat as done; keep item 8.
+all four facets back once (`readBack`, `lib/interview.js:679`). Treat as done.
 Score 7. Channel ++. Size M.
-
-### 22. Readback on note and memory writes
-**What.** One spoken confirmation the first time a session writes a note or a `[MEMORY:SET]`
-preference lands.
-**Why.** Air-traffic control reads back every clearance; Dante reads back session commands but
-memory writes land silently. Low stakes, so it waits for evidence that silent writes surprise
-the owner. Score 5. Channel +. Size S.
 
 ---
 
 ## Later
-
-### 16. Local end-of-day handoff
-**What.** A spoken summary of every session's terminal state, generated locally from the event
-log, offered at the end of the day.
-**Why.** This is the Slack pattern without the vendor, the credential, or the "did it land"
-failure mode that got Slack removed. If item 4 shows approvals often expire while the owner is
-away, this is the door that reopens, not a webhook. Score 6. Channel +. Size M.
 
 ### 17. "Good morning" briefing
 **What.** On page open after a long absence, offer, not auto-speak, a one-line digest of what
@@ -276,89 +213,3 @@ line, and `public/progress-policy.js` seeding the tree from it instead of growin
 HUD keeps a five-line window drawn as a tree as lines arrive (`public/progress-policy.js:103`).
 Score 5. Channel 0. Size M.
 
-### 24. Duration estimates from past runs
-**What.** Predict how long a session will take from the durations of similar past sessions.
-**Why.** Assumes the owner wants a prediction, which nobody has asked for, and past durations of
-open-ended Claude sessions are a poor predictor. Score 4. Channel 0. Size M.
-
-### 25. Weekly notes hygiene pass
-**What.** A scheduled pass that merges and trims notes under the existing size caps.
-**Why.** Pruning already runs on every write. This is operations, not daily value.
-Score 4. Channel 0. Size S.
-
-### 26. Peer-review chaining
-**What.** A finished session automatically proposes a reviewer session for its own diff, through
-`lib/peer.js` and `lib/spawn-session.js`, behind the usual spoken confirmation.
-**Why.** Attractive, but it is a second spawn point, so the deny list has to be re-derived and
-reviewed as carefully as `lib/builder.js`. The Executor's outside view puts it at ten to twelve
-days and names it the item most likely to be half-built and abandoned mid security review, which
-is worse than not starting. It also needs item 3 to be anything but noise. Score 4. Channel +.
-Size L. Security review required.
-
-### 27. Transcript index as a third store
-**What.** A searchable local index of session transcripts for "catch me up" style questions.
-**Why.** There are already two memory stores, and contradiction detection reconciles them. A
-third means reconciling three. Notes already capture what a read produced. Score 3. Channel +.
-Size M.
-
-### 28. More voice-approval classes
-**What.** Extend `lib/approval.js` beyond the two classes it answers by voice today.
-**Why.** Every new class is a security review by house rule, and each one moves the line toward
-general permission grants by voice. Wait for evidence that a specific class is asked for often.
-Score 3. Channel +. Size M. Security review required.
-
----
-
-## Rejected
-
-### 29. First-run tour, cheat-sheet, glossary tooltips
-**What.** Onboarding UI for a new user.
-**Why not.** Dante has one user, who designed it. The Outsider proposed this from a first-time
-perspective; two reviewers noted there is no evidence any of it is a friction point. Score 2.
-
-### 30. Time-boxed "yes to this whole build"
-**What.** A spoken, revocable, five-minute pre-authorisation of already-proposed actions in one
-workspace.
-**Why not.** It is not `bypassPermissions`, but it is the on-ramp: a bounded batch of approvals
-becomes an unbounded one the first time the window feels too short. Approval fatigue is not yet
-evidenced. Score 2. Security review required.
-
-### 31. Auto-resolve stale approvals
-**What.** Approve or deny an approval prompt automatically after a timeout.
-**Why not.** Either direction is wrong. Auto-approve is bypass by another name; auto-deny breaks
-the rule that no browser open means no decision, never a denial. Item 4 is the safe version.
-Score 1.
-
-### 32. Widen the roster to unnamed workspaces
-**What.** Show and control every Claude session on the machine, not only those in named
-repositories.
-**Why not.** Stage 34 built the scoping fence after Dante stopped a session the owner never
-created. Convenience is exactly what reversed it once. Score 2.
-
-### 33. Multi-user or shared login
-**What.** More than one Supabase account.
-**Why not.** The entire approval and deny-layer design leans on "runs under the owner's login".
-A second identity whose actions cannot be attributed empties that of meaning. Score 2.
-
----
-
-## Conflicts with a fixed decision
-
-### 34. Outbound webhook or push channel
-**What.** Reinstate a push notification path to an external service.
-**Why not.** Slack was built through Stage 32 and removed entirely: another credential, another
-"did it land" failure mode, maintenance the owner voted against. The council notes that removing
-Slack is not the same as deciding against async awareness forever; item 16 is the local answer.
-Score 3.
-
-### 35. Read diffs or symbols aloud
-**What.** Speak code changes on completion.
-**Why not.** Voice-only was decided precisely because code does not survive being read aloud. It
-turns TTS into a review surface nobody asked for and slows the loop. Item 3 keeps the information
-and drops the reading. Score 2.
-
-### 36. Code panel, wake word, tmux, sub-builds, bypassPermissions by voice
-**Why not.** Each was listed under "deliberately not on this roadmap" in the roadmap main has
-since deleted; `bypassPermissions` by voice is still ruled out in `README.md`. The
-council raised none of them as worth relitigating. Wake word in particular removes the explicit
-gate that makes voice-triggered session control safe. Score 1.
