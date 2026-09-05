@@ -350,6 +350,12 @@ test("the interview paragraph does not add another ask him", () => {
   assert.equal(persona.match(/ask him\b/g)?.length, 2);
 });
 
+test("the persona forbids announcing or prefacing the first interview question", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /never announce it or preface it/);
+  assert.match(persona, /the reply is the question, then the tag/);
+});
+
 test("the persona lists the skills it may send, and says nothing about them when there are none", () => {
   const commands = new Map([["grilling", { name: "grilling" }], ["blast-radius", { name: "blast-radius" }]]);
   const persona = brain.buildPersona(registry, null, kinds, commands);

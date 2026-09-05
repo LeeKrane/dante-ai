@@ -28,7 +28,7 @@ import {
 // waiting for the first person to use the wrong one.
 import {
   FACETS, composeBrief, holdForReadBack, interviewBlock, isLive, markProceed, matches as matchesInterview, noteInterview, readBack,
-  wantsToProceed, withdrawConfirming,
+  stripInterviewPreamble, wantsToProceed, withdrawConfirming,
 } from "./lib/interview.js";
 import { readSession, summarizeSession, verdictFor } from "./lib/transcript.js";
 import {
@@ -3024,16 +3024,22 @@ wss.on("connection", (ws) => {
           activity(send, "interviewing", { subject: conv.interview.repo || undefined });
           log(`interview asked ${conv.interview.asked} (repo=${conv.interview.repo || "none"}, ` +
               `notes=${conv.interview.notes.length}, covered=${conv.interview.covered.join(",") || "none"})`);
+          // See stripInterviewPreamble in lib/interview.js for why a
+          // model-written lead-in has to be cut here at all.
+          const question = stripInterviewPreamble(reply);
+          if (question && question !== reply) {
+            log(`interview: dropped the model's lead-in ${JSON.stringify(reply.slice(0, reply.length - question.length).trim())}`);
+          }
           // A tag with no question in front of it is a model that forgot the
           // question. It still counts -- asked is logged and reported, never
           // enforced -- but there is nothing to speak. What actually ends an
           // interview is the TTL, or the escape phrase read earlier this turn.
-          if (!reply) {
+          if (!question) {
             dropAnswered(conv.unanswered, answering);
             log("interview tag carried no question");
             return;
           }
-          if (await say(send, reply, undefined, () => gate.isCurrent(token))) {
+          if (await say(send, question, undefined, () => gate.isCurrent(token))) {
             dropAnswered(conv.unanswered, answering);
           }
           return;
