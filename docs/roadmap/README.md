@@ -21,7 +21,7 @@ without being asked.
 | 18 | [State reasons in reports](18-state-reasons.md) | SOON | S |
 | 19 | [Queued follow-ups shown in the roster](19-queued-followups.md) | SOON | S |
 | 20 | [Cost and token query](20-cost-query.md) | LATER | S |
-| 21 | [Session kinds](21-session-kinds.md) | LATER | M to L |
+| 21 | [Session kinds, seven of them](21-session-kinds.md) | LATER | M to L |
 
 Suggested order: 4 and 18 first (both add a field to the roster record and share the panel
 change), then 19 (same seam), 5, 11, 10, 21, 12, 17, 20. Plan 21 starts by merging the

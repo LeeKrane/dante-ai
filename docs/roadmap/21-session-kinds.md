@@ -1,16 +1,18 @@
-# 21. Session kinds: review, tests, brainstorm, docs, security-review, implementation
+# 21. Session kinds: review, tests, brainstorm, docs, security-review, investigation,
+implementation
 
-**Verdict** LATER by the council; the owner wants six kinds. **Size** M to L, in four stages.
+**Verdict** LATER by the council; the owner wants seven kinds. **Size** M to L, in four stages.
 **Channel** 0.
 
 ## Goal
 
-Six session kinds under `sessions/*.mjs`, each a prompt shape and nothing more: `review` (runs
-the built-in `/code-review`), `tests` (unchanged), `brainstorm` (runs `/council-review` on the
-interview brief), `docs` (runs `/technical-writing`, writes only documentation),
-`security-review` (runs `/blast-radius`, then reports against the security seams), and
-`implementation` (staged, test-first, one commit per green stage, fed by the brief a brainstorm
-produced). Decisions taken with the owner on 2026-09-05.
+Seven session kinds under `sessions/*.mjs`, each a prompt shape and nothing more: `review`
+(runs the built-in `/code-review`), `tests` (unchanged), `brainstorm` (runs `/council-review`
+on the interview brief), `docs` (runs `/technical-writing`, writes only documentation),
+`security-review` (runs `/blast-radius`, then reports against the security seams),
+`investigation` (answers one question about the code or a bug, read only, names the cause
+with file and line), and `implementation` (staged, test-first, one commit per green stage,
+fed by the brief a brainstorm produced). Decisions taken with the owner on 2026-09-05.
 
 ## Why
 
@@ -57,7 +59,7 @@ shape that should not be re-dictated by voice every time.
 message-history merges that landed after `cb7aea4`. Resolve, `npm test` green, one commit. Do
 not fix the two open findings in the same commit; note them in `docs/known-limitations.md` §6.
 
-## Stage 1: three small kinds, one file each
+## Stage 1: four small kinds, one file each
 
 Copy `sessions/_template.mjs`. Each is a prompt shape only.
 
@@ -90,6 +92,25 @@ never being a verification in `lib/auth.js`, `builds/` gating, the two hooks, an
 nothing, commit nothing, finish with a verdict someone can act on. `model: "opus"`, `effort:
 "high"`, `speaksVerdict: true` only if its output ends with a "Do This First" heading the way
 the council does; otherwise leave it unset. `nameHint: () => "security-review"`.
+
+**`investigation`** (`sessions/investigation.mjs`): `triggers: ["investigate", "look into",
+"find out why", "root cause", "figure out"]`; no `prompt` hook and no `skill`: the brief is
+the question, and the plugin-provided debugging skills are not files Dante can see, so a
+bespoke `systemPrompt` like `tests.mjs` carries the method: reproduce first (run the failing
+command or test and read the actual output before forming a theory); trace the path from the
+symptom to the cause, reading the code the path touches rather than guessing from names; state
+one cause with file and line, or say what was ruled out and what evidence is still missing;
+read only: no edits, no commits, no branch, and no fix even when it looks like one line, since
+an investigation that quietly patches is a build nobody proposed; finish with a "Do This
+First" heading naming the single next action, so the existing `verdictFor` extractor speaks
+it. `speaksVerdict: true`. `effort: "high"`, no model override. `nameHint: () =>
+"investigate"`. This differs from `review`, which is scoped to a diff, and from
+`security-review`, which is scoped to the seams: an investigation is scoped to one question
+and may read anything, including logs and test output. The interview's `done` facet for it is
+"the cause is named" unless the owner says otherwise; the persona clause below says so.
+"Investigate X, then fix it" chains through `then=` like any other start, and the chained
+session receives the investigation's Do This First line as the head of its task the way the
+brainstorm chain in Stage 2 passes its brief.
 
 `tests` and `brainstorm` are unchanged.
 
@@ -139,24 +160,27 @@ implementing agent finds they must, stop and say why.
 
 ## Stage 3: docs and persona
 
-- `README.md`: the `sessions/*.mjs` paragraph lists six kinds with one clause each; the "It runs
+- `README.md`: the `sessions/*.mjs` paragraph lists seven kinds with one clause each; the "It runs
   your skills" paragraph gets the `builtin` exception sentence; "It asks first" gets one sentence
   on `from=`.
 - `docs/voice-reference.md`: trigger phrases for the four new or changed kinds and the chain.
 - `sessions/_template.mjs`: document `builtin` beside `skill`.
-- `lib/brain.js` `sessionsBlock`: the `from=` and `then_kind=` clauses. Pin in
+- `lib/brain.js` `sessionsBlock`: the `from=` and `then_kind=` clauses, and one sentence that
+  an investigation's `done` is the cause being named. Pin in
   `test/brain.test.js`.
 
 ## Tests
 
 - `test/sessions.test.js`: `loadSessionKinds` on the real `sessions/` directory yields exactly
-  the six ids; each kind's `prompt` (where present) opens with its slash command, fits
+  the seven ids; each kind's `prompt` (where present) opens with its slash command, fits
   `maxChars` keeping the command line whole, and `missingSkill` accepts `builtin: true` while
   still refusing an unknown `skill` name; `validateSessionKind` rejects `builtin: "yes"`.
 - `test/spawn-session.test.js`: argv for a `docs` start ends with a positional prompt whose
   first line is `/technical-writing`; for `implementation` the positional prompt is the brief
   itself; `FORBIDDEN` still refuses on every kind.
-- `test/transcript.test.js`: `briefFor` finds the last well-formed brief, ignores a malformed
+- `test/transcript.test.js`: `verdictFor` on an investigation transcript that ends with the
+  heading speaks the line and returns null without it; `briefFor` finds the last well-formed
+  brief, ignores a malformed
   one, caps, strips unprintables, returns `null` on none.
 - `test/memory.test.js`: `chainAfter` round-trips `kind` and `briefFrom`; an old record without
   them still loads.
@@ -171,7 +195,8 @@ implementing agent finds they must, stop and say why.
 - "Review this" starts a session whose first prompt line is `/code-review`; "write the docs for
   this" starts one whose first line is `/technical-writing` and whose diff touches only `docs/`
   and `README.md`; "security review" starts one whose first line is `/blast-radius` and that
-  commits nothing.
+  commits nothing; "find out why the builder test is red" starts one that leaves the working
+  tree untouched and ends with Dante speaking its Do This First line.
 - `npm test` green; no new dependency; no change to `FACETS` or `docs/interview.md`.
 
 ## Out of scope
