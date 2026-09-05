@@ -14,14 +14,16 @@ on the page costs no voice traffic and turns a forgotten recap into a choice.
 
 ## Today
 
-- The connection handler (`server.js:2364-2404`) sends only `sendRoster` and `sendWorkspaces`.
-- The event log persists across restarts: `recordEvent` / `getEvents` in
-  `lib/memory.js:997-1017`, capped at `MAX_EVENTS = 24` (`:93`), each `{ kind, name, detail,
+- The connection handler (`server.js:2677-2739`) replays every live entry in `pending` (the
+  watcher re-offer, `:2707-2732`, as `{ type: "announce", ..., reoffered: true }`), then
+  `sendRoster` and `sendWorkspaces` (`:2738-2739`). Nothing summarises the event log.
+- The event log persists across restarts: `recordEvent` (`lib/memory.js:1004`) / `getEvents`
+  (`:1027`), capped at `MAX_EVENTS = 24` (`:94`), each `{ kind, name, detail,
   at }`.
 - `describeFinished(records, aliases, now)` in `lib/recall.js:186-206` names finished,
   still-readable sessions; `recallableSessions` (`:86-158`) builds its input.
-- `reply_text` (`server.js:1385`) puts a caption on the page without audio; `activity`
-  (`:1452`) drives the "what Dante is doing" line. Message history on the page snaps to the
+- `reply_text` (`server.js:1635`) puts a caption on the page without audio; `activity`
+  (`:1703`) drives the "what Dante is doing" line. Message history on the page snaps to the
   newest line.
 
 ## Design
@@ -34,7 +36,8 @@ on the page costs no voice traffic and turns a forgotten recap into a choice.
    hours) or when no event is newer than `lastSeenAt`. Otherwise one sentence: counts of
    finished, failed and waiting-on-you events since then, newest name first, then "Say catch me
    up for the details." Cap at 160 characters.
-3. **Send.** In the connection handler, after `sendRoster`: `const line = briefingLine(...)`;
+3. **Send.** In the connection handler, after the `pending` replay and `sendRoster`: `const
+   line = briefingLine(...)`;
    if non-null, `send({ type: "reply_text", text: line })`. No `announce`, no TTS.
 4. **Once per absence.** After sending, `noteSeen(store, now)` so a page reload a minute later
    does not repeat it.

@@ -17,47 +17,48 @@ fed by the brief a brainstorm produced). Decisions taken with the owner on 2026-
 ## Why
 
 A kind is the whole extension mechanism for what a session is asked to do; it names no tools
-and grants nothing, so it is cheap and safe to add. Today only two ship. The owner's daily loop
+and grants nothing, so it is cheap and safe to add. Today three ship. The owner's daily loop
 is brainstorm a plan, implement it, review it, document it, and each of those is a fixed prompt
 shape that should not be re-dictated by voice every time.
 
-## Today (main at 73d2c40)
+## Today (main at 7874e57)
 
-- Kind contract in `lib/sessions.js:44-90`: `id` and `systemPrompt` required; optional
-  `triggers`, `model`, `effort` (one of `EFFORT_LEVELS`), `nameHint`. `loadSessionKinds`
-  (`:102`) reads `sessions/*.mjs`, skipping `_`-prefixed files.
-- `beginSession` (`server.js:2052-2138`) resolves `kind=` against the loaded map (`:2053`) and
+- Kind contract in `validateSessionKind` (`lib/sessions.js`): `id` and `systemPrompt`
+  required; optional `triggers`, `model`, `effort` (one of `EFFORT_LEVELS`), `nameHint`,
+  `prompt`, `skill`, `speaksVerdict`. `loadSessionKinds` (`:236`) reads `sessions/*.mjs`,
+  skipping `_`-prefixed files.
+- `beginSession` (`server.js:2314-2447`) resolves `kind=` against the loaded map (`:2315`) and
   calls `startSession({ name, sessionId, cwd, task, brief, command, systemPrompt:
   kind?.systemPrompt?.({ task, alias }), model, effort })`. `buildStartArgs`
   (`lib/spawn-session.js:98-155`) puts `command || brief || task` last; `command` must start with
   `/` and is one line, so it drops the brief by design.
 - `then=` on a start tag chains a follow-up: `chainAfter(memoryStore, id, { task: then, alias,
-  depth })` (`server.js:2132`); the chained start runs with `kind: null` (`server.js:460`).
+  depth })` (`server.js:2445`); the chained start runs with `kind: null` (`server.js:671-672`).
 - The model learns kinds and triggers from `sessionsBlock` in `lib/brain.js` (~`:111-160`),
   pinned by `test/brain.test.js`.
-- README, "It runs your skills" and the `sessions/*.mjs` paragraph (~line 318): "Ships `review`
-  and `tests`". Claude Code's own commands are never sendable by voice.
-- Branch `worktree-brainstorm-kind` (HEAD `20b6e97`, based on `cb7aea4`, 17 files, +1496/−51,
-  three review passes applied, unmerged) adds: `sessions/brainstorm.mjs`; kind fields
+- README, "It runs your skills" and the `sessions/*.mjs` paragraph (`README.md:334`): "Ships
+  `review`, `tests` and `brainstorm`". Claude Code's own commands are never sendable by voice.
+- The brainstorm kind is on main (feature `9402260`, fix `20b6e97`, merged through `925ebfe`):
+  `sessions/brainstorm.mjs`; kind fields
   `prompt({ task, brief, alias, maxChars })` composing the whole positional prompt (a slash
   command on line one expands, later lines reach the skill as arguments, verified on CLI
   2.1.259 and pinned in `test/spawn-session.test.js`), `skill` (the start refuses when it is
-  not among the discovered skills; `leadingSkill(prompt)` reads it off the composed prompt when
-  the field is absent, `missingSkill` does the check), and `speaksVerdict` (a finished session
+  not among the discovered skills; `leadingSkill(prompt)` (`lib/sessions.js:145`) reads it off
+  the composed prompt when the field is absent, `missingSkill` (`:185`) does the check), and
+  `speaksVerdict` (a finished session
   of an opted-in kind speaks the transcript's "Do This First" line through `verdictFor` in
-  `lib/transcript.js`, capped at 240 chars). Two findings deliberately left open: the 64 KB
-  trailing cap in `lastAssistantTexts` can drop a heading in a huge message, and a completion
-  reads the transcript twice.
+  `lib/transcript.js`, capped at 240 chars). Two findings from its review were left open: the
+  64 KB trailing cap in `lastAssistantTexts` can drop a heading in a huge message, and a
+  completion reads the transcript twice. No `builtin` field exists yet.
 - Skills Dante can see for this owner include `technical-writing`, `blast-radius`,
   `council-review`. `/code-review` is a CLI built-in, not a `skills/*/SKILL.md`, so the branch's
   skill check would refuse it.
 
-## Stage 0: merge the brainstorm branch
+## Stage 0: confirm the brainstorm kind
 
-`git merge worktree-brainstorm-kind` onto main. Expect conflicts in `server.js`, `lib/notify.js`,
-`lib/watch.js`, `lib/transcript.js` and `README.md` against the watcher, repo-letters and
-message-history merges that landed after `cb7aea4`. Resolve, `npm test` green, one commit. Do
-not fix the two open findings in the same commit; note them in `docs/known-limitations.md` §6.
+Nothing to merge. Run `npm test`, start a brainstorm by voice once, and confirm the Do This
+First line is spoken; that is the path Stage 2 extends. If the two open findings above are not
+yet in `docs/known-limitations.md` §6, add them there in a docs-only commit.
 
 ## Stage 1: four small kinds, one file each
 

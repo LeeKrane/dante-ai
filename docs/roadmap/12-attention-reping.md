@@ -16,15 +16,20 @@ long, the count is capped, and every acknowledgement path silences it.
 
 ## Today
 
-- `reportAttention(event)` (`server.js:477-502`) records and speaks once, deduped on
+- `reportAttention(event)` (`server.js:689-716`) records and speaks once, deduped on
   `${sessionId}:needs-attention:${detail}` through `reported = createDeduper()`
-  (`lib/hooks.js`, `server.js:268`).
-- `resumedAmong(reported, roster)` (`lib/watch.js:195-204`) lists reported sessions the roster
+  (`server.js:321`; check the import for the module). It announces with `kind: "other"`
+  (`:714`), which `announce()` (`:970-982`) drops when no page is open.
+- Main already re-offers watcher announcements: `announce()` keeps every non-`"other"` kind in
+  `pending`, and the connection handler (`server.js:2677`) replays `pending.live()` to the next
+  page. That covers a page that was closed, for watch kinds only. It does not repeat anything
+  to a page that was open and missed it, and it does not cover needs-attention.
+- `resumedAmong(reported, roster)` (`lib/watch.js:274`) lists reported sessions the roster
   now shows working; the poller's `onRoster` callback (`server.js:168`) uses it to forget.
-- `requestApproval` (`server.js:538-581`) resolves through `finish(decision)` when a voice
+- `requestApproval` (`server.js:753-798`) resolves through `finish(decision)` when a voice
   answer lands; the timeout branch calls `reportAttention`.
 - Spoken turns that target a session resolve it through `findTarget` (`lib/confirm.js:117`);
-  `answerProposal` (`server.js:911-962`) runs the proposal on yes.
+  `answerProposal` (`server.js:1161`) runs the proposal on yes.
 
 ## Design
 
@@ -41,7 +46,11 @@ long, the count is capped, and every acknowledgement path silences it.
 4. **Ack.** `repinger.ack(sessionId)` when: `requestApproval` resolves with a real decision for
    that session; a proposal targeting that session is answered yes; `dispatchRead` or a `tell`
    names it. All of these already know the sessionId.
-5. **Constant, not config.** Two minutes and two repeats, in `lib/attention.js`, with the reason
+5. **No page open.** Give needs-attention its own announce kind instead of `"other"` so
+   `pending` replays it on reconnect the way watch reports are. Then the re-ping covers the
+   open-but-missed case and the existing replay covers the closed-page case, with no second
+   queue.
+6. **Constant, not config.** Two minutes and two repeats, in `lib/attention.js`, with the reason
    in a comment. An env knob can come later if the numbers turn out wrong.
 
 ## Files

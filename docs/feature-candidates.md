@@ -1,7 +1,9 @@
 # Feature candidates
 
 The ten candidates from the council review of 2026-09-02 that the owner is willing to
-consider, each checked against main at 73d2c40 on 2026-09-05. The other twenty-six entries the
+consider, each checked against main at 73d2c40 on 2026-09-05 (line numbers in this file are
+from that commit; the plans under `docs/roadmap/` carry current ones). The other twenty-six
+entries the
 council scored were cut from this file on 2026-09-05: instrumentation, the ambient status strip
 and diff-stat, the transcript overlay, the action log, the rejected and conflicting items, then
 13 (interview memoisation), 14 (STT confirm, already implemented), 15 (speech throttling, decided
@@ -155,6 +157,6 @@ through a peer frame. Score 5. Channel +. Size S.
 **What would change.** One file per kind, copied from `sessions/_template.mjs`;
 `loadSessionKinds` in `lib/sessions.js` picks it up. The earlier version of this entry named
 `lib/registry.js`, which holds build primitives, not session kinds.
-**On main.** Partial. Two kinds ship, `review` and `tests`. A `brainstorm` kind exists on the
-unmerged `worktree-brainstorm-kind` branch. Score 5. Channel 0. Size S.
+**On main.** Partial. Three kinds ship: `review`, `tests` and `brainstorm` (merged after this
+entry was first checked). Score 5. Channel 0. Size S.
 

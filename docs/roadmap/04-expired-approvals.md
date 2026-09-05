@@ -19,17 +19,19 @@ decision, never a denial", so the fix is visibility only.
 
 ## Today
 
-- `requestApproval` in `server.js:538-581`. On timeout (`APPROVAL_WINDOW_MS = 60_000`,
-  `server.js:525`) it logs `approval timed out`, calls `reportAttention({ sessionId, detail:
+- `requestApproval` in `server.js:753-798`. On timeout (`APPROVAL_WINDOW_MS = 60_000`,
+  `server.js:740`) it logs `approval timed out`, calls `reportAttention({ sessionId, detail:
   scope.spoken })` and resolves `finish({})`, the no-decision object from `buildDecision` in
   `lib/approval.js:149-158`.
-- `reportAttention` (`server.js:477-502`) records a `needs-attention` event through
-  `recordEvent` (`lib/memory.js:997-1013`) and speaks it once, deduped on
+- `reportAttention` (`server.js:689-716`) records a `needs-attention` event through
+  `recordEvent` (`lib/memory.js:1004`) and speaks it once, deduped on
   `${sessionId}:needs-attention:${detail}`.
-- `rosterForClient` (`server.js:633-653`) ships exactly `sessionId, name, alias, number, state,
-  status, startedAt, endedAt`. `rowFromRecord` in `public/roster-panel.js:53-73` reads those and
-  `condition()` (`:43-48`) reduces them to one word.
-- `resumedAmong` in `lib/watch.js:195-204` already answers "which reported sessions are working
+- `rosterForClient` (`lib/agents.js:366-382`, pure) ships exactly `sessionId, name, alias,
+  number, state, status, startedAt, endedAt`; `panelRows(roster)` in `server.js:847-869` wraps
+  it with the store at hand and already adds the watch marks `watched` and `firedAt`.
+  `rowFromRecord` in `public/roster-panel.js:69-97` reads those and `condition()` (`:57-60`)
+  reduces them to one word; `sessionRowEl` (`public/app.js:645-661`) renders marks as classes.
+- `resumedAmong` in `lib/watch.js:274` already answers "which reported sessions are working
   again" and is the forget signal for needs-attention reports.
 - Session records persist across restarts via `rememberSession` in `lib/memory.js:812-833`.
 
@@ -38,15 +40,16 @@ decision, never a denial", so the fix is visibility only.
 1. **Mark, in the memory store.** On the timeout branch, `rememberSession(store, sessionId, {
    approvalExpiredAt: now })`. This is the same record `getSessionRecord` returns, so it survives
    a restart and needs no new store.
-2. **Clear, on resume.** In the poller's `onRoster` callback (`server.js:168`), for every id in
+2. **Clear, on resume.** In the poller's `onRoster` callback, for every id in
    `resumedAmong(expired, roster)` patch `approvalExpiredAt: null`. Build `expired` from
    `getSessions(store)` filtered on the field. Also clear when `requestApproval` resolves with a
    real decision for that session, so a second prompt answered by voice removes the stale mark.
-3. **Ship it.** `rosterForClient` adds `approvalExpiredAt` (epoch ms or null) read off the
-   session record. Plan 18 adds `reason` on the same line; when both land, the expiry sets
+3. **Ship it.** `panelRows` adds `approvalExpiredAt` (epoch ms or null) read off the session
+   record, beside `watched` and `firedAt`; `rosterForClient` stays pure. Plan 18 adds `reason`
+   on the same line; when both land, the expiry sets
    `reason` to `"waiting at the terminal"` and the panel needs no special case.
 4. **Render it.** `rowFromRecord` adds `expired: Boolean(record.approvalExpiredAt)`;
-   `sessionRowEl` in `public/app.js:591-606` appends a short tag ("at the terminal") to the
+   `sessionRowEl` appends a short tag ("at the terminal") to the
    condition word. No colour change beyond the existing blocked style.
 5. **Count it (optional, one line).** `store.counters.approvalsExpired += 1` beside the mark, so
    a later diagnostics panel has the number. Skip if `store.counters` does not exist yet.
@@ -56,7 +59,7 @@ Nothing is spoken beyond what `reportAttention` already says.
 ## Files
 
 - `server.js`: the timeout branch in `requestApproval`, the clear in `onRoster`, one field in
-  `rosterForClient`. Wiring only.
+  `panelRows`. Wiring only.
 - `lib/memory.js`: no new API needed; if a helper reads cleaner, `markApprovalExpired(store,
   sessionId, now)` and `clearApprovalExpired(store, sessionId)` as pure store mutations.
 - `public/roster-panel.js`: `rowFromRecord` field. `public/app.js`: the tag in `sessionRowEl`.

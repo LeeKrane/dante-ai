@@ -19,12 +19,12 @@ The retrieval already exists; what is missing is a way to aim it with a spoken s
 
 - `pickNotes(notes, hint)` in `lib/notes.js:1210-1241` orders notes by `hint = { topic, names }`,
   where `topic` is a session topic key set by `dispatchRead` / `recordDiscussion`, not free text.
-- `foldNotes` (`lib/notes.js:1288`) runs every turn from `server.js:2536` with `hint.topic =
+- `foldNotes` (`lib/notes.js:1288`) runs every turn from `server.js:2871` with `hint.topic =
   conv.topic` gated by `topicIsLive`, and `hint.names = mentionedSessions(...)`.
 - `recordDiscussion` writes a discussion section after turns inside the topic window
-  (`server.js:2381`, `:2521`). Notes are treated as an injection surface: everything re-entering
+  (`server.js:3235`). Notes are treated as an injection surface: everything re-entering
   a prompt goes through the module's cleaning and caps.
-- `say(send, text, nextState)` in `server.js:1384-1440` speaks a string straight to the page;
+- `say(send, text, nextState)` in `server.js:1634` speaks a string straight to the page;
   `MAX_REPLY_CHARS = 700` in `lib/spawn-session.js:36` is the existing spoken-reply cap.
 
 ## Design
@@ -36,7 +36,7 @@ The retrieval already exists; what is missing is a way to aim it with a spoken s
    existing cleaning helpers for `text`; cap it at `opts.maxChars` (default 600, under
    `MAX_REPLY_CHARS`).
 2. **Verb.** `[ACTION:SESSION verb=notes topic=<words>]`. In `dispatchSession`
-   (`server.js:1953`) add a `notes` case, unconfirmed like `recap`: load the store, call
+   (`server.js:2215`) add a `notes` case, unconfirmed like `recap`: load the store, call
    `searchNotes`, speak "On <subject>, sir: <text>" or "I have nothing on <topic>, sir." The
    spoken text goes to TTS only; it does not enter the next prompt.
 3. **No echo.** The turn that answers must not call `recordDiscussion` and must not move

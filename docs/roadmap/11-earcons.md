@@ -17,20 +17,23 @@ leaves the sentence for events with content. The owner chose this split on 2026-
 ## Today
 
 - Event kinds are the closed set `KINDS = started, needs-attention, complete, failed`
-  (`lib/notify.js:24`). `formatSpoken(event)` (`lib/notify.js:91-109`) builds the sentence;
+  (`lib/notify.js:35`). Separate from that, `announce()` now carries a wire-level `kind`
+  (`normalizeKind` in `lib/announcements.js`) used for watcher announcements: any kind other
+  than `"other"` is kept in `pending` and replayed to the next page that connects.
+  `formatSpoken(event)` (`lib/notify.js:91-109`) builds the sentence;
   `formatEvent` (`:63-79`) the recap line. `recordEvent` lives in `lib/memory.js:997-1013`.
-- `reportComplete(sessionId, context)` (`server.js:314-392`) records the event and calls
+- `reportComplete(sessionId, context)` (`server.js:458`) records the event and calls
   `announce(formatSpoken(...))`; the completion sentence carries `summarizeSession`'s summary
-  (`lib/transcript.js:207-227`). `reportAttention` (`server.js:477-502`) does the same for
-  needs-attention. Started events are reported from the roster poller's `onEvents`
-  (`server.js:205`).
-- `announce(text)` (`server.js:711-731`) sends `{ type: "announce", id, text }` to the newest
-  page; the page answers `announce_ready` when `floorIsFree` (`public/playback-policy.js:112`)
-  and the server streams `audio_start / audio_chunk / audio_end` (`say`, `server.js:1384-1440`).
-- The page owns one `AudioContext`, wired once in `ensureGraph` (`public/app.js:1026-1039`),
-  and one `<audio id="clip">` element (`public/index.html:590`). `public/clip-stream.js` queues
-  one clip's bytes; a new `audio_start` pre-empts the current clip
-  (`handoffAfterPreempt`, `public/app.js:1107`).
+  (`lib/transcript.js:445-464`). `reportAttention` (`server.js:689-716`) does the same for
+  needs-attention. Started events are reported from the roster poller's `onEvents` callback.
+- `announce(text, { kind, sessionId })` (`server.js:970-982`) sends `{ type: "announce", id,
+  text, kind }` to the newest page; the page answers `announce_ready` when `floorIsFree`
+  (`public/playback-policy.js:114`) and the server streams `audio_start / audio_chunk /
+  audio_end` (`say`, `server.js:1634`).
+- The page owns one `AudioContext`, wired once in `ensureGraph` (`public/app.js:1223`), and
+  one `<audio id="clip">` element (`public/index.html:629`). `public/clip-stream.js` queues one
+  clip's bytes; a new `audio_start` pre-empts the current clip (`handoffAfterPreempt`,
+  `public/app.js:1303`).
 - All audio today is speech; no sound file or oscillator exists.
 
 ## Design
@@ -40,14 +43,16 @@ leaves the sentence for events with content. The owner chose this split on 2026-
    `"finished"`; `needs-attention`, `failed`, and any `complete` whose summary reports an error
    → `null`. Both callers keep `recordEvent` exactly as today.
 2. **Frame.** When `earconFor` returns a name, `reportComplete` and the started path send
-   `{ type: "earcon", name }` to the newest page instead of `announce(...)`. Document the frame
-   in `docs/protocol.md` under "Server → client frames". When it returns `null`, nothing changes.
+   `{ type: "earcon", name }` to the newest page instead of `announce(...)`. Do not route it
+   through `announce`: a tone must never land in `pending` and replay on reconnect. Document
+   the frame in `docs/protocol.md` under "Server → client frames". When it returns `null`,
+   nothing changes.
 3. **Sounds, pure spec.** `public/earcons.js` exports `earconSpec(name)` returning an array of
    `{ freq, ms, gain }` steps (started: two rising notes; finished: three descending) and
    `playEarcon(ctx, spec, at)` that schedules `OscillatorNode` and `GainNode` on the shared
    context. Total length under 500 ms. No assets, so nothing under `public/` imports from
    `node_modules` and the no-bundler rule holds.
-4. **When to play.** In the `ws.onmessage` chain (`public/app.js:478-559`) add the `earcon`
+4. **When to play.** In the `ws.onmessage` chain (`public/app.js:526`) add the `earcon`
    case: play immediately when `floor.playing` is false, otherwise drop it. A tone that plays
    over speech is noise, and a tone held for later carries no information. Never pre-empt a
    clip for it.

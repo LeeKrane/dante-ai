@@ -17,11 +17,11 @@ which, and writing the answer down either way.
 - `parseListing` in `lib/agents.js:102-143` reads `sessionId, id, name, cwd, kind, status,
   state, pid, startedAt` from `claude agents --json` and nothing else.
 - `lib/transcript.js` reads a session's transcript JSONL: `transcriptPath`, `tailMessages`,
-  `summarizeSession` (`:207-227`), `readSession` (`:325+`). Claude Code transcripts carry a
+  `summarizeSession` (`:445-464`), `readSession` (`:563`). Claude Code transcripts carry a
   `usage` object on assistant messages in current CLI versions, but that is reverse-engineered
   (`docs/known-limitations.md` §2), so it must be pinned by a fixture and tolerated when absent.
 - `readTarget` in `lib/confirm.js:223` resolves a spoken session name or number for unconfirmed
-  verbs; `dispatchRead` (`server.js:1966-1969`) is the model to copy.
+  verbs; `dispatchRead` (`server.js:2075`) is the model to copy.
 
 ## Design
 

@@ -24,5 +24,5 @@ without being asked.
 | 21 | [Session kinds, seven of them](21-session-kinds.md) | LATER | M to L |
 
 Suggested order: 4 and 18 first (both add a field to the roster record and share the panel
-change), then 19 (same seam), 5, 11, 10, 21, 12, 17, 20. Plan 21 starts by merging the
-`worktree-brainstorm-kind` branch, which several later kinds build on.
+change), then 19 (same seam), 5, 11, 10, 21, 12, 17, 20. Plan 21 builds on the brainstorm kind
+already on main. Line numbers were re-checked against main `7874e57`.

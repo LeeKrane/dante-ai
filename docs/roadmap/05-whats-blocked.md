@@ -17,12 +17,12 @@ turn and reads the same every time.
 
 ## Today
 
-- `describeRoster(roster, now)` in `lib/agents.js:323-345` renders the numbered per-session line
-  the model sees every turn (`lib/turns.js:113`). `activity(record)` (`lib/agents.js:167-186`,
-  not exported) reduces a record to `working | done | blocked | idle | running`.
-- `dispatchSession` in `server.js:1953-2052` is the verb switch. `recap` runs unconfirmed via
-  `dispatchRecap(send, preamble)` (`:1954-1957`); `read` via `dispatchRead` (`:1966-1969`).
-  Unknown verbs fall to the "I can start a session, talk to one, ..." line (`:1978-1983`).
+- `describeRoster(roster, now)` in `lib/agents.js:325` renders the numbered per-session line
+  the model sees every turn (`lib/turns.js:113`). `activity(record)` (`lib/agents.js:182`,
+  exported) reduces a record to `working | done | blocked | idle | running`.
+- `dispatchSession` in `server.js:2215` is the verb switch. `recap` runs unconfirmed via
+  `dispatchRecap(send, preamble)` (defined `:2186`); `read` via `dispatchRead` (defined
+  `:2075`). Unknown verbs fall to the "I can start a session, talk to one, ..." line.
 - `CONFIRMED_VERBS` in `lib/confirm.js:47` is `start, tell, interrupt, stop, watch`; the new
   verb must stay out of it.
 - The model learns the verbs it may emit from `lib/brain.js` (`sessionsBlock`, around
@@ -33,7 +33,7 @@ turn and reads the same every time.
 ## Design
 
 1. **Pure function.** `describeStatus(roster, opts = {})` in `lib/agents.js` beside
-   `describeRoster`, exporting `activity` if it is not already. Groups the ordered roster by
+   `describeRoster`, using the exported `activity`. Groups the ordered roster by
    activity word into three buckets and returns at most three sentences:
    - needs you: blocked sessions, by name, with the `reason` field from plan 18 when present
      ("fix-tests in jarvis is waiting at the terminal");
@@ -41,7 +41,7 @@ turn and reads the same every time.
    - running: a count plus the names if three or fewer.
    Empty roster: "Nothing is running, sir." Every sentence ends with the spoken register the
    persona uses. No timestamps; `describeRoster` already carries elapsed time for the model.
-2. **Verb.** Add `status` to `dispatchSession`: unconfirmed, no target, calls
+2. **Verb.** Add `status` to `dispatchSession` (`server.js:2215`): unconfirmed, no target, calls
    `say(send, describeStatus(await rosterPoller.read({ maxAgeMs: 0 })), ...)` the way
    `dispatchRecap` speaks. Add it to the fallback sentence so a misrouted turn names it.
 3. **Persona.** One clause in `sessionsBlock` in `lib/brain.js`: `verb=status` when the owner
