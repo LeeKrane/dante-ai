@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { MAX_ROWS, elapsedLabel, groupsFromRoster, panelIsVisible, rowsFromRoster } from "../public/roster-panel.js";
-import { MAX_LISTED } from "../lib/agents.js";
+import { MAX_LISTED, activity } from "../lib/agents.js";
 
 const NOW = 1_800_000_000_000;
 const record = (overrides = {}) => ({
@@ -57,6 +57,40 @@ test("blocked is its own word, because it is the one you can do something about"
   assert.equal(rowsFromRoster([record({ state: "done", status: "idle" })], NOW)[0].condition, "done");
   assert.equal(rowsFromRoster([record({ state: null, status: "idle" })], NOW)[0].condition, "idle");
   assert.equal(rowsFromRoster([record({ state: null, status: "busy" })], NOW)[0].condition, "working");
+});
+
+test("a session whose task still reads working but whose process is idle is shown idle", () => {
+  // `state` is where the task stands and `status` is what the process is doing
+  // now; the CLI leaves `state` at "working" across a turn that ended without
+  // finishing anything, so a live listing had this exact pair for hours. The
+  // person is asking what the machine is doing, and the process is doing
+  // nothing.
+  assert.equal(rowsFromRoster([record({ state: "working", status: "idle" })], NOW)[0].condition, "idle");
+  // The pairs the CLI actually sends for the other three words still say what
+  // they said before.
+  assert.equal(rowsFromRoster([record({ state: "working", status: "busy" })], NOW)[0].condition, "working");
+  assert.equal(rowsFromRoster([record({ state: "blocked", status: "waiting" })], NOW)[0].condition, "blocked");
+  assert.equal(rowsFromRoster([record({ state: "blocked", status: null })], NOW)[0].condition, "blocked");
+  assert.equal(rowsFromRoster([record({ state: "done", status: "idle" })], NOW)[0].condition, "done");
+  // A working state with no status at all is still working: only a status that
+  // says idle contradicts it.
+  assert.equal(rowsFromRoster([record({ state: "working", status: null })], NOW)[0].condition, "working");
+});
+
+test("the panel's condition table agrees with the spoken activity table on every pair", () => {
+  // Two copies of one table, because public/ cannot import from lib/. This is
+  // what keeps the next edit to one of them from quietly missing the other.
+  const states = ["working", "done", "blocked", null];
+  const statuses = ["busy", "idle", "waiting", null];
+  for (const state of states) {
+    for (const status of statuses) {
+      const spoken = activity({ state, status });
+      const painted = rowsFromRoster([record({ state, status })], NOW)[0].condition;
+      // The one allowed difference: a pair neither table has a word for is
+      // "running" out loud and "idle" on the page.
+      assert.equal(painted, spoken === "running" ? "idle" : spoken, `state=${state} status=${status}`);
+    }
+  }
 });
 
 test("rows keep the server's own numbered order rather than being resorted here", () => {

@@ -809,7 +809,7 @@ test("a main key naming an unknown workspace changes nothing and applyWorkspaceT
 });
 
 test("workspacesForClient lists main first, then the rest alphabetically", () => {
-  // No path in the output: rosterForClient in server.js is explicit about why
+  // No path in the output: rosterForClient in lib/agents.js is explicit about why
   // an absolute filesystem path never rides along with an alias to a page --
   // a repository is called "jarvis" out loud, and a page has no business being
   // told where it lives on disk.

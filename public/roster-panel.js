@@ -41,17 +41,26 @@ export function elapsedLabel(ms) {
 // A session's one-word condition. "blocked" is its own word rather than folded
 // into working, because it is the one a person can do something about.
 // "finished" is checked before any of the state/status fields below it: a
-// ghost row (server.js's rosterForClient, via lib/watch.js's ghostRecords)
-// sets state: "done" to make every other reader of a record happy, but this
-// panel has a truer word for a row that is not merely done, it is not on the
+// ghost row (server.js's panelRows, via lib/watch.js's ghostRecords) sets
+// state: "done" to make every other reader of a record happy, but this panel
+// has a truer word for a row that is not merely done, it is not on the
 // roster at all any more -- and `gone` is the one field nothing else could
 // set by accident.
+//
+// The rest is the same order lib/agents.js's activity() spells out, and says
+// why: `state` is where the task stands and `status` what the process is
+// doing now, and a process reporting itself idle is idle whatever its task's
+// ledger says. A copy rather than an import because public/ cannot import
+// from lib/; only the fallback differs, "idle" rather than "running", since
+// the page has no style for a word it has never seen. test/roster-panel.test.js
+// pins the two tables together.
 function condition(record) {
   if (record.gone) return "finished";
   if (record.state === "blocked") return "blocked";
-  if (record.state === "working") return "working";
   if (record.state === "done") return "done";
-  return record.status === "busy" ? "working" : "idle";
+  if (record.status === "idle") return "idle";
+  if (record.state === "working" || record.status === "busy") return "working";
+  return "idle";
 }
 
 // The one row shape both rowsFromRoster and groupsFromRoster paint. Split out
@@ -83,7 +92,7 @@ function rowFromRecord(record, now) {
     watched: Boolean(record.watched),
     // Whether a watch has fired for this session recently enough that
     // server.js still has it in recentlyFired -- but server.js's own
-    // rosterForClient only ever puts a number here for a BLOCKED fire, never
+    // server.js's panelRows only ever puts a number here for a BLOCKED fire, never
     // an idle or gone one, even though all three leave an entry in
     // recentlyFired and idle (like blocked) leaves the session listed too: an
     // idle session needs no further attention, so lighting this dot for one
@@ -103,7 +112,7 @@ function rowFromRecord(record, now) {
 // this is what keeps the panel correct even so -- a session with no number
 // (a wire message from an older server, or a row the caller built by hand for
 // a test) sorts last rather than first, the same posture every other missing-
-// value sort in this codebase takes. A ghost row (server.js's rosterForClient,
+// value sort in this codebase takes. A ghost row (server.js's panelRows,
 // appended after every real session, always carrying number: null) is exactly
 // this case: it already sorts below every numbered session with no change
 // needed here, and it is therefore the first row the MAX_ROWS cut below

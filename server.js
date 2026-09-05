@@ -45,8 +45,8 @@ import { COOKIE, clearCookie, createAuth, parseCookie } from "./lib/auth.js";
 import { ask, askResilient, buildPersona, createBrainSession } from "./lib/brain.js";
 import { createTurnGate, dropAnswered, mergeTurns } from "./lib/turns.js";
 import {
-  MAX_LISTED, completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, mentionedSessions, orderRoster,
-  ownRunning, visibleSessions,
+  completedIn, createRosterPoller, endedAtOf, idleAmong, isWorking, mentionedSessions, orderRoster, ownRunning,
+  rosterForClient, visibleSessions,
 } from "./lib/agents.js";
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
@@ -126,6 +126,11 @@ let knownCommands = loadCommands({ repos: [] });
 // process that just restarted has plainly stopped watching anything.
 const watchers = createWatchers();
 
+// What the panel was last sent, as broadcastRoster's wire string (below).
+// Null until the first broadcast, so the first successful tick always pushes.
+// Declared here because the poller's onRoster closes over it.
+let lastRosterWire = null;
+
 // One place that knows what Claude Code sessions are running. A turn reads it
 // (usually from cache, so an ordinary turn costs no child process at all), and
 // the ticks are what notice a session finishing while nobody is looking --
@@ -143,7 +148,7 @@ const rosterPoller = createRosterPoller({
   // mid-conversation widens it on the next tick with no restart.
   //
   // orderRoster is applied here, in the one place every consumer of the roster
-  // shares -- onRoster, onEvents/broadcastRoster, current(), read() (the
+  // shares -- onRoster/broadcastRoster, onEvents, current(), read() (the
   // say-handler's own snapshot, and proposeSession's maxAgeMs: 0 re-read),
   // fresh() (the roster a stop or a start is checked against afterwards) and
   // dispatchRead's recallable(roster) all see the same numbered records this
@@ -207,7 +212,7 @@ const rosterPoller = createRosterPoller({
     // not working, which is exactly the one this sweep leaves alone.
     // recentlyFired is swept in the same breath, on the same ids, and for the
     // same reason: the session went back to work, so whatever dot or ghost
-    // row that entry was drawing (rosterForClient/ghostRecords) is exactly as
+    // row that entry was drawing (panelRows/ghostRecords) is exactly as
     // stale as the generic report it stood beside.
     for (const sessionId of resumedAmong(watchReported, roster)) {
       watchReported.delete(sessionId);
@@ -230,6 +235,14 @@ const rosterPoller = createRosterPoller({
     // only a fire whose session has actually left the roster ages out on the
     // ghostMs clock.
     recentlyFired = pruneFired(recentlyFired, roster, Date.now(), GHOST_MS);
+    // The panel is pushed from here, every successful tick, and
+    // broadcastRoster itself drops the ticks the page would paint the same.
+    // Not from onEvents: diffRoster's events are isWorking's edges, and a
+    // status gone busy -> idle under a state still reading "working" is not
+    // one of those (see broadcastRoster). After the prune above so a ghost
+    // that just aged out is already off the rows compared, and above the
+    // voice check below because the panel is drawn with the sound off too.
+    broadcastRoster(roster);
     if (!voice) return;
     const fires = watchers.tick(roster, Date.now(), { skip });
     // fireWatch (below) owns the four things a firing does -- mark
@@ -238,9 +251,9 @@ const rosterPoller = createRosterPoller({
     // branch can never drift on what "firing" means. A BLOCKED fire changes
     // nothing diffRoster (lib/agents.js) treats as worth an event on its own
     // -- isWorking() counts blocked as still working, so the session's state
-    // looks unchanged to it, and onEvents never runs this tick -- which is
-    // why fireWatch's own broadcast is what gives a page the "reported" dot
-    // for a fire that just went out, not onEvents' unconditional one.
+    // looks unchanged to it -- and the tick's own broadcastRoster, above, ran
+    // before the fire was marked, which is why fireWatch's own broadcast is
+    // what gives a page the "reported" dot for a fire that just went out.
     for (const fired of fires) fireWatch(fired.watch, fired.change, fired.record, roster);
   },
 
@@ -255,8 +268,6 @@ const rosterPoller = createRosterPoller({
         }).catch((e) => log("report failed:", e.message || e));
       }
     }
-    // Whatever changed, the panel is now describing a machine that has moved on.
-    broadcastRoster(roster);
     // A queue or a chain for a session that ended is a promise that can never
     // be kept, and leaving either behind means a reused id would inherit a
     // stranger's follow-up or successor.
@@ -355,16 +366,16 @@ let recentlyFired = new Map();
 // can never drift on what "firing" means. watchReported is marked
 // synchronously so reportComplete/reportAttention never repeat the generic
 // line about this ending; recentlyFired is marked synchronously too, keyed
-// beside it, and now carries the `change` it fired with -- rosterForClient
-// reads that to decide whether the "reported" dot belongs on a still-listed
-// record (blocked only; see rosterForClient's own comment) -- so ghostRecords
+// beside it, and now carries the `change` it fired with -- panelRows reads
+// that to decide whether the "reported" dot belongs on a still-listed
+// record (blocked only; see panelRows' own comment) -- so ghostRecords
 // (lib/watch.js) can still synthesise a "finished" row for GHOST_MS once a
 // gone fire removes the session from the roster outright. reportWatch is not
 // awaited, for the same reason a poller tick or the SessionEnd hook that
 // called reportComplete must not be held open by a read-back call and the
 // announcement behind it. broadcastRoster is skipped when `roster` is not an
 // array -- the hook path can call this before any poller tick has ever run,
-// and rosterForClient(null) would render an empty panel, worse than sending
+// and panelRows(null) would render an empty panel, worse than sending
 // nothing.
 function fireWatch(watch, change, record, roster) {
   watchReported.set(watch.sessionId, change);
@@ -474,8 +485,7 @@ async function reportComplete(sessionId, context = {}) {
   // read-back, and broadcasts -- this path runs with no accompanying roster
   // tick at all (the SessionEnd hook calls this function directly, see /hook
   // above), so nothing else is about to broadcast a roster that would carry
-  // this ghost the way onEvents' own unconditional broadcastRoster does for
-  // onRoster's fires.
+  // this ghost the way the next poller tick's own broadcastRoster would.
   const pending = watchers.cancel(sessionId);
   if (pending) fireWatch(pending, "gone", null, roster);
 
@@ -824,39 +834,21 @@ async function answerApproval(send, text) {
 // ---------------------------------------------------------------------------
 
 // The same roster the turn carries, sent to the page so the panel beside the
-// orb can paint it. Only what a row needs -- no pid, no path, no session id
-// beyond the one that keys the row -- because everything sent here is written
-// by whoever started the session and lands in a browser.
+// orb can paint it. rosterForClient (lib/agents.js) says what a row carries,
+// why nothing naming a process or a path rides along, and why the list is
+// cut at MAX_LISTED; what is added here is what only this module knows -- its
+// watch registries -- and the ghost rows those registries earn.
 //
 // Sent when it changes rather than on a timer: a session's age changes every
-// second and the page can count that itself.
-// More than this is a wall of text beside an orb, and the panel caps itself
-// again anyway. Cut here as well so the message stays small whatever a machine
-// running twenty sessions does. MAX_LISTED, not a number of its own: the
-// numbering below is only meaningful if the panel and the model are looking at
-// the same cut of the same list.
-function rosterForClient(roster) {
-  if (!Array.isArray(roster)) return [];
-  // The roster arrives already numbered (see the poller's own filter, above) --
-  // over the FULL list, not the slice below, so a hidden sixteenth session
-  // still has a number and "stop session sixteen" still resolves even though
-  // the panel never draws that row.
-  const mapped = roster.slice(0, MAX_LISTED).map((record) => {
-    const fire = recentlyFired.get(record.sessionId);
+// second and the page can count that itself. What was last sent is kept as
+// the wire string (lastRosterWire, declared above the poller that closes over
+// it), and broadcastRoster compares before it sends, so a caller may hand it
+// every tick and only the ticks that moved the panel reach a socket.
+function panelRows(roster) {
+  const rows = rosterForClient(roster).map((row) => {
+    const fire = recentlyFired.get(row.sessionId);
     return {
-      sessionId: record.sessionId,
-      name: record.name,
-      // The alias rather than the path: a repository is called "jarvis" out loud,
-      // and a page has no business being told where it lives on disk.
-      alias: typeof record.alias === "string" ? record.alias : "",
-      number: record.number,
-      state: record.state,
-      status: record.status,
-      startedAt: record.startedAt,
-      // When it finished, for a done session, so the page can stop the clock at
-      // that moment rather than counting on from startedAt (see trackEnded in
-      // lib/agents.js). null for a live one: its age is counted on the page.
-      endedAt: endedAtOf(record),
+      ...row,
       // Whether a watch is still live for this session, and the last time a
       // watch fired for it -- read straight off this module's own registries
       // rather than anything the poller's diffing produces, because neither is
@@ -869,26 +861,39 @@ function rosterForClient(roster) {
       // outright (its row comes from the ghost row below instead) -- lighting
       // the dot for either would tell someone a session is still waiting on
       // them when it is not.
-      watched: watchers.has(record.sessionId),
+      watched: watchers.has(row.sessionId),
       firedAt: fire?.change === "blocked" ? fire.firedAt : null,
     };
   });
-  // Appended after the MAX_LISTED slice above, never folded into it: this
-  // function feeds only sendRoster/the sessions panel, never the model's own
-  // view of the roster (recallable, dispatchRead's matching, mentionedSessions
-  // and the rest all read the raw roster this function is handed, not its
-  // return value) -- so a ghost row can never be recalled, numbered, or
-  // matched by name the way a real session can.
-  return mapped.concat(ghostRecords(recentlyFired, roster, Date.now(), GHOST_MS));
+  // Appended after rosterForClient's MAX_LISTED slice, never folded into it:
+  // this function feeds only sendRoster/the sessions panel, never the model's
+  // own view of the roster (recallable, dispatchRead's matching,
+  // mentionedSessions and the rest all read the raw roster this function is
+  // handed, not its return value) -- so a ghost row can never be recalled,
+  // numbered, or matched by name the way a real session can.
+  return rows.concat(ghostRecords(recentlyFired, roster, Date.now(), GHOST_MS));
 }
 
 function sendRoster(send, roster) {
-  send({ type: "roster", sessions: rosterForClient(roster) });
+  send({ type: "roster", sessions: panelRows(roster) });
 }
 
+// "Changes", above, has to mean what the PAGE would paint differently -- a
+// status flip under an unchanged state (see activity in lib/agents.js), a
+// renumbering, a finish time being stamped, a watch mark, a ghost row aging
+// out -- and diffRoster reports only isWorking's edges, so hanging the push
+// off its events left the panel saying "working" of an idle process until
+// some unrelated session started or ended. Comparing the rows themselves is
+// what makes the panel follow the machine.
 function broadcastRoster(roster) {
+  const rows = panelRows(roster);
+  const wire = JSON.stringify(rows);
+  if (wire === lastRosterWire) return;
+  lastRosterWire = wire;
+  // One string for every socket: the envelope is the same for all of them.
+  const message = JSON.stringify({ type: "roster", sessions: rows });
   for (const ws of sessions.keys()) {
-    if (ws.readyState === 1) sendRoster((o) => ws.send(JSON.stringify(o)), roster);
+    if (ws.readyState === 1) ws.send(message);
   }
 }
 
@@ -912,12 +917,14 @@ function broadcastWorkspaces() {
 // always first -- and that is a change worth showing right away, not on
 // whichever poll tick happens to land next. It is not, on its own, a change
 // diffRoster would ever notice: no session started, stopped, or changed
-// state, so the ordinary broadcastRoster call inside onEvents never fires for
-// it. A fresh, unforced read (maxAgeMs: 0) recomputes the numbering against
-// the memory store's new order and pushes that -- same re-read
-// proposeSession's own "yes" path already relies on for the same reason.
+// state, and the panel is only pushed on a poll tick, so left alone it would
+// show up to five seconds late. A fresh, unforced read (maxAgeMs: 0) runs a
+// tick now -- same re-read proposeSession's own "yes" path already relies on
+// for the same reason -- and that tick's own onRoster hands broadcastRoster
+// the renumbered roster. Nothing is sent from here directly: doing so as well
+// sent the same roster twice.
 function renumberNow() {
-  rosterPoller.read({ maxAgeMs: 0 }).then(broadcastRoster).catch(() => {});
+  rosterPoller.read({ maxAgeMs: 0 }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
