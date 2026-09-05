@@ -31,10 +31,15 @@ import {
   sanitizeAlias,
   workspacePaths,
   MAIN_KEY,
+  NOTE_LIMIT_KEYS,
+  applyNoteLimitsTag,
+  getNoteLimits,
   setMainRepo,
   getMainRepo,
   resolveRepoAlias,
   workspacesForClient,
+  repoLetter,
+  resolveRepoRef,
   MAX_QUEUED_PER_SESSION,
   MAX_QUEUED_CHARS,
   QUEUE_TTL_MS,
@@ -45,6 +50,8 @@ import {
   queuedSessionIds,
   MAX_SESSIONS_REMEMBERED,
   rememberSession,
+  rememberEnded,
+  endedSeeds,
   getSessionRecord,
   getSessions,
   MAX_CHAIN_DEPTH,
@@ -62,6 +69,7 @@ import {
   clearEvents,
 } from "../lib/memory.js";
 import { MAX_BRIEF_CHARS } from "../lib/interview.js";
+import { DEFAULT_MAX_BYTES as NOTES_DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES as NOTES_DEFAULT_MAX_FILES } from "../lib/notes.js";
 
 // loadStore/saveStore are the only impure functions here; everything else is
 // tested as plain data in/data out, the same way test/builder.test.js tests
@@ -373,6 +381,63 @@ test("applyMemoryTag saves the keys that fit and drops only the ones past the ca
   assert.equal(Object.keys(getProject(store, "/p").preferences).length, MAX_PREFERENCE_KEYS);
   assert.equal(getProject(store, "/p").preferences.k0, "updated");
   assert.deepEqual(result, { k0: "updated", newa: "a" });
+});
+
+// ---------------------------------------------------------------------------
+// Note-memory limits (lib/notes.js's directory, sized through a preference tag)
+// ---------------------------------------------------------------------------
+
+test(`a "${NOTE_LIMIT_KEYS.maxBytes}=" tag sets the note byte limit and is not kept as a preference`, () => {
+  const store = emptyStore();
+  const result = applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxBytes]: "100" });
+  assert.deepEqual(result, { maxBytes: 100 * 1024 * 1024 });
+  assert.deepEqual(store.noteLimits, { maxBytes: 100 * 1024 * 1024 });
+
+  const saved = applyMemoryTag(store, "/cwd", { [NOTE_LIMIT_KEYS.maxBytes]: "100", palette: "dark" });
+  assert.deepEqual(saved, { palette: "dark" });
+});
+
+test(`a "${NOTE_LIMIT_KEYS.maxFiles}=" tag sets the note file-count limit and is not kept as a preference`, () => {
+  const store = emptyStore();
+  const result = applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxFiles]: "250" });
+  assert.deepEqual(result, { maxFiles: 250 });
+  assert.deepEqual(store.noteLimits, { maxFiles: 250 });
+
+  const saved = applyMemoryTag(store, "/cwd", { [NOTE_LIMIT_KEYS.maxFiles]: "250", palette: "dark" });
+  assert.deepEqual(saved, { palette: "dark" });
+});
+
+test("setting one note limit key does not clobber the other already stored", () => {
+  const store = emptyStore();
+  applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxBytes]: "10" });
+  applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxFiles]: "5" });
+  assert.deepEqual(store.noteLimits, { maxBytes: 10 * 1024 * 1024, maxFiles: 5 });
+});
+
+test("applyNoteLimitsTag ignores out-of-range or unparsable values and returns null when nothing survives", () => {
+  const store = emptyStore();
+  for (const bad of ["0", "-5", "abc", "2049", "", "  "]) {
+    assert.equal(applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxBytes]: bad }), null);
+  }
+  assert.equal(store.noteLimits, undefined);
+
+  assert.equal(applyNoteLimitsTag(store, { [NOTE_LIMIT_KEYS.maxFiles]: "100001" }), null);
+  assert.equal(applyNoteLimitsTag(store, {}), null);
+  assert.equal(applyNoteLimitsTag(store, null), null);
+});
+
+test("getNoteLimits falls back to lib/notes.js's own defaults when noteLimits is absent", () => {
+  assert.deepEqual(getNoteLimits(emptyStore()), { maxBytes: NOTES_DEFAULT_MAX_BYTES, maxFiles: NOTES_DEFAULT_MAX_FILES });
+});
+
+test("getNoteLimits falls back to defaults when noteLimits is a string from a hand-edited file", () => {
+  const store = { ...emptyStore(), noteLimits: "not an object" };
+  assert.deepEqual(getNoteLimits(store), { maxBytes: NOTES_DEFAULT_MAX_BYTES, maxFiles: NOTES_DEFAULT_MAX_FILES });
+});
+
+test("getNoteLimits returns whatever was actually stored", () => {
+  const store = { ...emptyStore(), noteLimits: { maxBytes: 5 * 1024 * 1024, maxFiles: 12 } };
+  assert.deepEqual(getNoteLimits(store), { maxBytes: 5 * 1024 * 1024, maxFiles: 12 });
 });
 
 // ---------------------------------------------------------------------------
@@ -743,7 +808,7 @@ test("a main key naming an unknown workspace changes nothing and applyWorkspaceT
 });
 
 test("workspacesForClient lists main first, then the rest alphabetically", () => {
-  // No path in the output: rosterForClient in server.js is explicit about why
+  // No path in the output: rosterForClient in lib/agents.js is explicit about why
   // an absolute filesystem path never rides along with an alias to a page --
   // a repository is called "jarvis" out loud, and a page has no business being
   // told where it lives on disk.
@@ -755,8 +820,8 @@ test("workspacesForClient lists main first, then the rest alphabetically", () =>
     setMainRepo(store, "fitness");
 
     assert.deepEqual(workspacesForClient(store), [
-      { alias: "fitness", main: true },
-      { alias: "jarvis", main: false },
+      { alias: "fitness", main: true, letter: "A" },
+      { alias: "jarvis", main: false, letter: "B" },
     ]);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -770,7 +835,122 @@ test("workspacesForClient is empty with no workspaces and needs no main", () => 
 test("workspacesForClient skips a workspace entry with no path, the same way getWorkspace refuses it", () => {
   const store = emptyStore();
   store.workspaces = { jarvis: { path: "/somewhere" }, ghost: { counter: 1 }, empty: {} };
-  assert.deepEqual(workspacesForClient(store), [{ alias: "jarvis", main: false }]);
+  assert.deepEqual(workspacesForClient(store), [{ alias: "jarvis", main: false, letter: "A" }]);
+});
+
+test("workspacesForClient assigns letters in sorted order, and they shift when main changes", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
+
+    // No main set yet: alphabetical order, letters assigned A, B in that order.
+    assert.deepEqual(workspacesForClient(store), [
+      { alias: "fitness", main: false, letter: "A" },
+      { alias: "jarvis", main: false, letter: "B" },
+    ]);
+
+    // Main pins that workspace to the front, and the letters are recomputed
+    // fresh for the new order rather than staying with whichever alias held
+    // them before -- a letter is a fact about this view, not a stored one.
+    setMainRepo(store, "jarvis");
+    assert.deepEqual(workspacesForClient(store), [
+      { alias: "jarvis", main: true, letter: "A" },
+      { alias: "fitness", main: false, letter: "B" },
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// repoLetter
+// ---------------------------------------------------------------------------
+
+test("repoLetter counts A through Z for indices 0 through 25", () => {
+  assert.equal(repoLetter(0), "A");
+  assert.equal(repoLetter(1), "B");
+  assert.equal(repoLetter(19), "T");
+  assert.equal(repoLetter(25), "Z");
+});
+
+test("repoLetter continues into two letters past Z", () => {
+  assert.equal(repoLetter(26), "AA");
+  assert.equal(repoLetter(27), "AB");
+});
+
+test("repoLetter returns empty for a non-integer or negative index", () => {
+  assert.equal(repoLetter(-1), "");
+  assert.equal(repoLetter(1.5), "");
+  assert.equal(repoLetter(NaN), "");
+  assert.equal(repoLetter("0"), "");
+});
+
+// ---------------------------------------------------------------------------
+// resolveRepoRef
+// ---------------------------------------------------------------------------
+
+test("resolveRepoRef resolves an uppercase letter to the workspace in that slot", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    addWorkspace(store, join(home, "development", "KraneticFitness"), "fitness", { home });
+    setMainRepo(store, "jarvis");
+
+    assert.equal(resolveRepoRef(store, "A"), "jarvis");
+    assert.equal(resolveRepoRef(store, "B"), "fitness");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRef resolves a lowercase letter the same way", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+    setMainRepo(store, "jarvis");
+
+    assert.equal(resolveRepoRef(store, "a"), "jarvis");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRef prefers a real alias over a letter someone happens to have named a repo", () => {
+  const home = fakeHome();
+  try {
+    const store = emptyStore();
+    addWorkspace(store, join(home, "development", "b-project"), "b", { home });
+    addWorkspace(store, join(home, "development", "jarvis"), null, { home });
+
+    // "b" is a real workspace, alphabetically before "jarvis" -- letter A, not
+    // letter B. resolveRepoRef must still return the real alias "b" for the
+    // literal input "b", never chase the letter it happens to also look like.
+    assert.equal(resolveRepoRef(store, "b"), "b");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRef passes an unknown letter through unchanged", () => {
+  const store = emptyStore();
+  assert.equal(resolveRepoRef(store, "z"), "z");
+});
+
+test("resolveRepoRef passes an unknown word through unchanged so refuseStart can name it", () => {
+  const store = emptyStore();
+  assert.equal(resolveRepoRef(store, "nonexistent"), "nonexistent");
+});
+
+test("resolveRepoRef returns empty for non-string input and the empty string for empty input", () => {
+  const store = emptyStore();
+  assert.equal(resolveRepoRef(store, null), "");
+  assert.equal(resolveRepoRef(store, undefined), "");
+  assert.equal(resolveRepoRef(store, 3), "");
+  assert.equal(resolveRepoRef(store, ""), "");
 });
 
 // ---------------------------------------------------------------------------
@@ -942,6 +1122,31 @@ test("a started session is remembered by what it was asked to do", () => {
   const saved = rememberSession(store, SESSION_ID, { name: "jarvis-1-review", task: "look at the diff" });
   assert.equal(saved.name, "jarvis-1-review");
   assert.equal(getSessionRecord(store, SESSION_ID).task, "look at the diff");
+});
+
+test("a finish time the poller stamped is written onto the remembered session, once, and only for sessions Dante started", () => {
+  const store = emptyStore();
+  rememberSession(store, SESSION_ID, { name: "jarvis-1-review" });
+  const mine = { sessionId: SESSION_ID, state: "done", endedAt: 5_000 };
+  const stranger = { sessionId: "not-ours", state: "done", endedAt: 5_000 };
+  const live = { sessionId: SESSION_ID, state: "working", endedAt: 5_000 };
+  assert.equal(rememberEnded(store, [mine, stranger]), 1);
+  assert.equal(getSessionRecord(store, SESSION_ID).endedAt, 5_000);
+  assert.equal(getSessionRecord(store, "not-ours"), null);
+  // The same stamp again is not a change, so a save is not owed for it.
+  assert.equal(rememberEnded(store, [mine]), 0);
+  // A live record never carries one in practice; a contradictory one is ignored.
+  assert.equal(rememberEnded(store, [live]), 0);
+  assert.equal(rememberEnded(store, null), 0);
+  assert.equal(rememberEnded(store, [null, "x", {}]), 0);
+});
+
+test("the remembered finish times come back as seeds for the poller, and nothing else does", () => {
+  const store = emptyStore();
+  rememberSession(store, SESSION_ID, { name: "jarvis-1-review", endedAt: 5_000 });
+  rememberSession(store, "still-running-0000", { name: "jarvis-2-build" });
+  assert.deepEqual(endedSeeds(store), [[SESSION_ID, 5_000]]);
+  assert.deepEqual(endedSeeds({}), []);
 });
 
 test("a later patch adds to a session record rather than replacing it", () => {

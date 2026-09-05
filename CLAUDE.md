@@ -1,4 +1,4 @@
-# dante-demo
+# Dante AI
 
 Voice front-end to headless Claude Code. Hold a key, speak, release: Chrome's Web Speech API
 transcribes, a WebSocket carries the text to this Node server, `claude -p` answers, and Fish

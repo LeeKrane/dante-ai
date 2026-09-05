@@ -133,6 +133,27 @@ file also names your repositories (`workspace:<name>=<path>`) and which one is
 name one; the panel lists it first, starred, and clicking any other
 repository's header there makes it the new main.
 
+**Notes** — `~/.config/dante/memory/`, one Markdown file per topic: a header
+(title, summary, a one-line description, created/updated timestamps, and any
+facts it holds) followed by dated sections, oldest first. What goes in: every
+session read, and the conversation that follows it for the next half hour —
+after that the topic goes stale and later chat is just chat again. Reading a
+session again replaces its earlier read rather than piling up — one section
+per distinct question, and the newest plain read-back if there was no
+question. What comes back, two notes in all, every turn: the note for the
+session you just read and the one for any session you name come first, and
+the most recently updated notes fill whatever seats are left — so *"what did
+it decide"* still has an answer after a restart even when something else was
+touched more recently, though a fresher unrelated note can lose its seat to
+one you actually named. Capacity defaults to 50 MB or 500
+files, whichever comes first — the oldest-updated note is pruned first on
+every write, and the newest is never pruned even alone over the cap. Say
+*"keep your notes under a hundred megabytes"* and the model appends
+`[MEMORY:SET memory-max-mb=100]`; file count works the same way via
+`memory-max-files`. When two notes about the same session disagree on a fact
+— a task that changed, a status that moved on — Dante says so once per
+conversation and goes with the newer.
+
 **Builds.** *"Build me a landing page for a coffee shop called Ember."* It asks a
 question or two, then spawns a second Claude Code session with file tools on in a
 fresh `builds/<timestamp>/`, streams the work into the HUD around the orb, and
@@ -154,6 +175,14 @@ it sees the ones you started in a terminal too — and you can drive them:
   instead of its name; a number is only ever resolved against the current
   list, and a number said about one that has since stopped is refused rather
   than guessed at.
+- Repositories are lettered A, B, C... in the panel, in that same order —
+  main first, then alphabetical — so the header above each group of rows
+  reads *"A: jarvis"*, *"B: fitness"*, and so on. Letters are reassigned on
+  every view exactly the way the numbers are, never stored, so A always
+  names whichever repository is currently main. *"Start a session in repo
+  B"* and *"session three in repo B"* both work out loud, the letter
+  standing in for the repository's name the same way a number stands in for
+  a session.
 - *"Start a session in jarvis to fix the failing builder test"* — spawns
   `claude --bg` in that repo and names it `fix-failing-builder-test`, off the
   task alone — no repository or counter baked into the name, since the panel
@@ -170,10 +199,12 @@ it sees the ones you started in a terminal too — and you can drive them:
   channel, but it cuts in front of the work in flight. The session drops what
   it was doing, takes the new instruction, and carries on. It is **not** a
   stop: same process, same transcript, same session id.
-- *"Stop session three"* — SIGTERM, never SIGKILL, and confirmed gone from the
-  roster before it says so. A session still listed after the signal is
-  reported as exactly that — *"the stop went to it, but it is still on the
-  roster"* — never as stopped.
+- *"Stop session three"* — asks the Claude Code daemon (`claude stop <id>`), because a
+  background session is the daemon's and a worker that is merely SIGTERMed is resumed ten
+  seconds later under a new pid. Then it confirms the session is gone from the roster before
+  it says so; a session still listed after the stop is reported as exactly that — *"the stop
+  went to it, but it is still on the roster"* — never as stopped. A session in somebody's
+  terminal has no daemon behind it and gets SIGTERM, never SIGKILL.
 - *"Start a session in jarvis to fix the tests, then run the linter"* — records a
   successor and starts it the moment the first session **finishes**, not when it
   succeeds: a Claude Code session exposes no pass/fail verdict, so there is
@@ -187,8 +218,9 @@ it sees the ones you started in a terminal too — and you can drive them:
   be named instead — and takes a real question: *"did its tests pass?"*,
   *"which files did it touch?"*
 
-Reading is the one command that is **not** proposed first. The other three
-reach a live process, so a misheard sentence must not be able to move one;
+Reading is the one command that is **not** proposed first. The other five —
+start, tell, interrupt, stop and watch — reach a live process or stand up a
+promise about one, so a misheard sentence must not be able to move one;
 reading touches nothing, and putting a *"Shall I, sir?"* in front of every
 question about your own work would be a spoken round trip for nothing.
 
@@ -199,6 +231,24 @@ cached: delete a session and it stops being readable that instant, with nothing
 left behind to answer in its place. The one-line summary recorded when a
 session ends is kept only in the short recap log — cleared the first time you
 ask what you missed — and reading a session never consults it.
+
+**"Watch session three and tell me when it's done."** A fifth proposed
+command, alongside start, tell, interrupt and stop — a misheard *"watch"*
+confirmed unchecked would be a promise to report on the wrong session later,
+to whoever is listening then, so it goes through the same *"Shall I, sir?"*
+as the rest. It watches exactly the one session you named, and fires exactly
+once: the moment that session stops working — finishes, goes idle, or gets
+blocked on a permission prompt — Dante reads its transcript back, the same
+way a *read* does, and says what it produced, what state it's in now, and
+*"Ready for the next step, sir?"* Then the watch is gone; it never fires
+twice for the same ending. *"Never mind, stop watching that"* cancels one
+at once, with no confirmation needed — a watch touches no process, so
+cancelling one is the same kind of thing as reading one is. Watching a
+session that isn't currently working is refused outright: it would never
+cross the line a watcher fires on, and confirming it would be a promise
+nothing could keep. Watches exist only in memory, five at a time, and do
+not survive a restart — a Dante that just restarted has plainly stopped
+watching whatever it was watching before.
 
 The difference between *tell* and *interrupt* is timing and nothing else, and
 when it isn't clear which you meant, it picks *tell*. Neither one forks the
@@ -253,7 +303,9 @@ A proposal expires after two minutes and is then not answerable at all. The
 fifteen-session ceiling counts only sessions Dante itself started — your
 terminals and other tools' background jobs are not its business.
 
-**It asks first.** A one-line spoken request is rarely a brief a session can work from. When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what must not be touched, what done looks like), Dante interviews you, **one question per turn**, most important first, until it is confident it has all four ([docs/interview.md](docs/interview.md)) or you say to stop asking or to just start it. When it is confident it proposes as usual, but the spoken sentence is a summary while the **full brief is shown centred over the orb** — above the other panels, never over the hold-to-talk button — and is what the session actually receives — a structured document (Goal / Where / Constraints / Done when) that loses nothing you said. A request that is already specific gets no interview. Below the state label, a line shows what Dante is doing right now (*interviewing*, *awaiting your yes*, *starting jarvis*, *telling fix-tests*, *reading readme-summary*, *building landing page*), and goes blank when nothing is.
+**It runs your skills.** "Run the cleanup skill in jarvis" starts a session whose whole prompt is `/cleanup-session-codebase`; "send grilling to fix-tests" passes `/grilling` to a running one. Dante only sends a skill it can see: every `skills/*/SKILL.md` under `~/.claude` and under each repository's `.claude`, discovered at startup and again whenever a repository is named. A name it cannot see is refused rather than guessed at, and Claude Code's own commands (`/compact`, `/clear`, `/permissions`, `/login` and the rest) are never sendable by voice at all — those act on the session or the CLI, not on the work, and a misheard one can throw a session's context away. The proposal says the exact line — "Start a session in jarvis running /grilling the rollout plan. Shall I, sir?" — and that yes is the confirmation: a skill is its own brief, so it skips the read-back below. A skill sent to a running session always waits its turn, even when you asked to interrupt: the live channel an interrupt uses wraps what it delivers in a sentence, and a slash command inside a sentence is prose to the session, not a command.
+
+**It asks first.** A one-line spoken request is rarely a brief a session can work from. When a start — or a tell or interrupt — is missing what a good brief needs (the goal, where, what must not be touched, what done looks like), Dante interviews you, **one question per turn**, most important first, until it is confident it has all four ([docs/interview.md](docs/interview.md)) or you say to stop asking or to just start it; a request that already states all four gets no interview question at all. Confirming is separate, and it is the machine's job, not the model's: every start, tell and interrupt is held once it is proposed, and its brief is read back to you in one question covering the goal, the place (or the session), the constraints and what done looks like — always, even when the request left nothing open for the interview to ask about — with two exceptions: an escape phrase ("just start it", "stop asking") skips the read-back and goes straight to the ordinary "Shall I, sir?", and a vetted skill (`command=`) has no facets to read back, since the command line already says the goal, constraints and acceptance all at once. Otherwise, only your yes to the read-back turns it into the proposal itself. Say no, or correct it, and Dante folds the correction in and either asks about what it left open or proposes again, read back once more the same way. The spoken read-back is a summary while the **full brief is shown centred over the orb** — above the other panels, never over the hold-to-talk button — and is what the session actually receives — a structured document (Goal / Where / Constraints / Done when) that loses nothing you said. Below the state label, a line shows what Dante is doing right now (*interviewing*, *confirming*, *awaiting your approval*, *starting jarvis*, *telling fix-tests*, *reading readme-summary*, *building landing page*), and goes blank when nothing is.
 
 These sessions run under **your** settings, permissions, hooks and MCP servers —
 the same session you'd have started by typing `claude` there. Dante imposes no
@@ -381,6 +433,7 @@ Claude Code will still use a tool you leave off the list, which is why
 | Key | Does |
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
+| **← / →** | step back and forward through this tab's messages, timestamped; gone when the tab closes |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
 | **s** | sessions panel (grouped by repository, main starred first; what is running, where, for how long; on by default) |
 | **t** | the caption line |
@@ -391,6 +444,12 @@ the screen. If part of the UI "disappeared," press the key again. All four are
 also on screen as switches under the controls, lit while on -- on a phone,
 where there are no keys, tapping those is how the panels are toggled.
 
+The arrows step one line at a time -- what you said, what Dante said, a question
+it asked, an error -- with the time under each. The view returns to the newest
+line the moment Space is pressed and whenever a new line arrives, so a question
+Dante asks while you are reading something older is never missed. On a phone
+the two arrows sit under the caption.
+
 ## How it's put together
 
 | | |
@@ -398,16 +457,30 @@ where there are no keys, tapping those is how the panels are toggled.
 | `server.js` | static files, WebSocket, dispatch. Wiring only — logic lives in `lib/`. |
 | `lib/brain.js` | **the seam.** The warm CLI, the persona, `ask` / `askResilient`. |
 | `lib/agents.js` | the session roster: `claude agents --json`, parsed and said out loud. |
+| `lib/transcript.js` | reading a session's own `.jsonl` off disk and summarizing what it actually did. |
+| `lib/recall.js` | which sessions can still be read once they've fallen off the roster. |
 | `lib/memory.js` | the store — preferences, summaries, artifacts, workspace aliases. |
+| `lib/notes.js` | the second half of memory — one Markdown file per topic, weighted and pruned. |
 | `lib/turns.js` | what one call carries: merged interruptions, the roster, the turn gate. |
 | `lib/registry.js` + `primitives/` | what it can build. |
 | `lib/sessions.js` + `sessions/` | what kinds of session it can start. |
+| `lib/module-dir.js` | the shared loader behind `lib/registry.js` and `lib/sessions.js` — every `*.mjs` in a directory into a keyed Map. |
 | `lib/spawn-session.js` | starting, telling and stopping a real session. |
+| `lib/interview.js` | asking one question at a time before a session gets proposed — the goal/where/constraints/done facets. |
+| `lib/confirm.js` | turning a parsed tag into a spoken proposal, and turning yes/no back into an action. |
+| `lib/commands.js` | vetting a spoken skill name against `/`-commands before it reaches a running session. |
+| `lib/run-cli.js` | one child-process runner for every verb that spawns the CLI and waits: deadline, two-step kill, capped pipes. |
 | `lib/peer.js` | writing a line into a session that is already running — the interrupt. |
+| `lib/approval.js` + `hooks/dante-approve.mjs` | the PreToolUse hook that asks out loud before an outside-repo write or a publishing git op, and blocks for your answer. |
+| `lib/hooks.js` + `hooks/dante-notify.mjs` | the fast path for "something happened in a session" — hook events, deduplicated against the roster poller. |
+| `lib/notify.js` | the wording of an event, recap and spoken forms, in one pure place. |
 | `lib/builder.js` | spawns the build with file tools on, streams progress, enforces a timeout. |
 | `lib/auth.js` + `public/login.html` | the Supabase gate. |
 | `lib/action.js`, `outcome.js`, `verdict.js`, `progress.js`, `tts.js`, `config.js` | tags, build success detection, what a session command may claim afterwards, readable progress, speech, config. |
 | `claude-settings.json` | small and load-bearing — hooks off, thinking off. A build gets a throwaway copy with path deny rules merged on. |
+
+`recap` ("catch me up") is dispatched as its own session verb too, alongside
+start/tell/interrupt/stop/read.
 
 `npm test` — `node --test`, no network and no keys needed.
 
@@ -466,6 +539,14 @@ while the file is there. The session id is checked against a strict alphabet
 before it names a file, because it arrives from a roster listing and from
 model-authored tags and neither is trusted to be a uuid.
 
+**Notes are a persistence surface too.** Files under `~/.config/dante/memory/`
+are written mode `0600`, same as `memory.json`. A topic name is always run
+through `topicSlug` before it becomes a filename, so nothing — a session
+name, a repository path — can walk a note out of that directory. Every line
+folded from a note back into a prompt is capped the same way the roster and
+the preference store are, because a note is exactly as much of an injection
+surface as either.
+
 **The gate.** The check that matters is at the WebSocket upgrade, not on the login
 page: a UI-only gate is skipped by opening the socket directly. `builds/` is gated
 alongside the orb, so pages the model wrote are not readable by anyone who can
@@ -505,6 +586,9 @@ any primitive, and `denyRules()` names credentials, shell startup files and
 this app's own source, never the repository a build was pointed at. So "does
 not write to the repo it reads" is enforced by the system prompt alone, which
 is exactly the layer `lib/builder.js` is explicit is not the one that refuses.
+
+What silently does not hold, and which CLI internals this leans on, is kept in
+[docs/known-limitations.md](docs/known-limitations.md).
 
 ## When something breaks
 

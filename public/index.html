@@ -29,7 +29,7 @@
      status readout, or the build HUD must not paint a stray text selection.
      This used to sit on `body` and inherit everywhere, which also made the
      model's own replies uncopyable, so it is scoped to just the controls. */
-  #mic, #cancel, #orb, #volume, #status, #activity, #build-hud, #keys {
+  #mic, #cancel, #orb, #volume, #status, #activity, #build-hud, #keys, #caption-nav {
     -webkit-user-select: none;
     user-select: none;
   }
@@ -70,6 +70,29 @@
   #caption[data-who="you"]::before    { content: "you   "; color: var(--muted); font-size: .78em; letter-spacing: .12em; }
   #caption[data-who="dante"]::before { content: "dante   "; color: var(--cyan); opacity: .8; font-size: .78em; letter-spacing: .12em; }
   #caption[data-who="error"] { color: #ff9a8a; }
+  /* The row under the caption for stepping back through what was said. Same
+     type as #activity: it labels the caption, it is not prose. Its height is
+     fixed and its buttons hide with visibility rather than display, because
+     the orb is laid out against #hud and re-measured whenever #hud changes
+     height -- a row that grew and shrank as buttons came and went would move
+     the orb on every step. */
+  #caption-nav {
+    display: flex; justify-content: center; align-items: center; gap: 14px;
+    height: 1.8em; margin-top: 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px; letter-spacing: .12em; color: var(--muted);
+  }
+  #caption-nav button {
+    appearance: none; border: 0; background: none; padding: 0 6px; margin: 0;
+    font: inherit; color: var(--muted); opacity: .7; cursor: pointer;
+  }
+  #caption-nav button:hover { color: var(--ink); opacity: 1; }
+  #caption-when { min-width: 9ch; text-align: center; }
+  @media (max-width: 520px) {
+    /* Thumb-sized on a phone, where the buttons are the only way to step. */
+    #caption-nav { height: 44px; }
+    #caption-nav button { min-width: 44px; min-height: 44px; }
+  }
   /* These three are the only prose on the page: the assistant's reply, the
      build log, and the diagnostics panel. The I-beam cursor tells the
      pointer they're selectable before the drag even starts. */
@@ -137,6 +160,10 @@
   /* The star reserves its own column whether or not it has anything in it, so
      every repository name lines up under the one before it. */
   #sessions .repo .star { display: inline-block; width: 1.4ch; color: var(--amber); }
+  /* Same fixed-width treatment as .star, just beside it and a touch wider --
+     "A:" and "AA:" both fit -- so "A: jarvis" and "B: fitness" still line up
+     under one another the way the star column already does. */
+  #sessions .repo .repo-letter { display: inline-block; width: 2.6ch; color: var(--cyan); }
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
   }
@@ -509,6 +536,11 @@
         <div id="status">idle</div>
         <div id="activity"></div>
         <div id="caption"></div>
+        <div id="caption-nav" aria-label="Earlier messages">
+          <button id="older" type="button" aria-label="Older message">◀</button>
+          <span id="caption-when"></span>
+          <button id="newer" type="button" aria-label="Newer message">▶</button>
+        </div>
         <div id="progress" class="hidden"></div>
         <a id="artifact" class="hidden" target="_blank" rel="noopener">Open the finished page</a>
       </div>

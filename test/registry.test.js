@@ -85,7 +85,7 @@ test("loads the real ask-repo primitive", async () => {
 test("ask-repo renders a prompt that carries the repo and question through, and a spoken done line", async () => {
   const registry = await loadRegistry(PRIMITIVES);
   const askRepo = registry.get("ask-repo");
-  const params = { repo: "/home/jesse/dev/widgets", question: "how is auth checked?" };
+  const params = { repo: "/home/krane/dev/widgets", question: "how is auth checked?" };
 
   const prompt = askRepo.systemPrompt(params);
   assert.equal(typeof prompt, "string");

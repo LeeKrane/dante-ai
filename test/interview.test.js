@@ -11,10 +11,16 @@ import {
   composeBrief,
   interviewBlock,
   isLive,
+  holdForReadBack,
   markProceed,
   matches,
   noteInterview,
+  parseBrief,
+  readBack,
+  readyToPropose,
+  unconfirmedFacets,
   wantsToProceed,
+  withdrawConfirming,
 } from "../lib/interview.js";
 import { parseAction } from "../lib/action.js";
 
@@ -32,12 +38,17 @@ test("a first interview tag starts a state that counts one question, keeps the n
   assert.deepEqual(state, {
     verb: "start",
     repo: "jarvis",
+    name: "",
     notes: ["wants the tests fixed"],
     said: ["fix the failing tests in jarvis"],
     covered: ["goal", "where"],
+    confirming: [],
+    confirmed: [],
     asked: 1,
     at: 1000,
     proceed: false,
+    spokenFor: false,
+    withdrawn: false,
   });
 });
 
@@ -60,12 +71,17 @@ test("a note and a said line are both appended and the count goes up, and the in
   assert.deepEqual(second, {
     verb: "start",
     repo: "jarvis",
+    name: "",
     notes: ["first note", "second note"],
     said: ["first thing said", "second thing said"],
     covered: ["goal", "where", "constraints"],
+    confirming: [],
+    confirmed: [],
     asked: 2,
     at: 2000,
     proceed: false,
+    spokenFor: false,
+    withdrawn: false,
   });
   assert.deepEqual(first, snapshot);
 });
@@ -89,12 +105,17 @@ test("an interview that has expired starts over rather than continuing", () => {
   assert.deepEqual(restarted, {
     verb: "tell",
     repo: "fitness",
+    name: "",
     notes: ["new note"],
     said: ["new ask"],
     covered: ["where"],
+    confirming: [],
+    confirmed: [],
     asked: 1,
     at: now,
     proceed: false,
+    spokenFor: false,
+    withdrawn: false,
   });
 });
 
@@ -163,7 +184,7 @@ test("a real tag, parsed end to end, teaches have= the way the persona now does 
   assert.deepEqual(noteInterview(null, unquoted, 1000).covered, ["goal", "constraints"]);
 
   // The quoted form -- have="goal, constraints" -- survives a space after the
-  // comma because the whole value is inside quotes, and parseHave's own
+  // comma because the whole value is inside quotes, and parseFacets's own
   // /[\s,]+/ split tolerates it regardless.
   const quoted = parseAction(
     'Which repo? [ACTION:SESSION verb=interview for=start have="goal, constraints" note="wants the tests fixed"]',
@@ -210,6 +231,48 @@ test("a tag for the same verb matches an interview, and the repo must match when
   // A different verb never matches.
   assert.equal(matches(state, { verb: "tell", repo: "jarvis" }), false);
   assert.equal(matches(null, { verb: "start" }), false);
+});
+
+test("an interview about one session does not match a tag about another, and the name carries forward like the repo", () => {
+  const state = noteInterview(null, { verb: "interview", for: "tell", name: "fix-tests" }, 1000);
+  assert.equal(state.name, "fix-tests");
+  assert.equal(matches(state, { verb: "tell", name: "fix-tests" }), true);
+  assert.equal(matches(state, { verb: "tell", name: "build-ui" }), false);
+  // A tag with no name, or an interview that never learned one, still matches.
+  assert.equal(matches(state, { verb: "tell" }), true);
+  assert.equal(matches(noteInterview(null, { verb: "interview", for: "tell" }, 1000), { verb: "tell", name: "build-ui" }), true);
+  assert.equal(noteInterview(state, { verb: "interview" }, 2000).name, "fix-tests");
+});
+
+test("a start, tell or interrupt is held for a read-back until Krane says to proceed, and a skill never is", () => {
+  assert.equal(holdForReadBack({ verb: "start" }, null), true);
+  assert.equal(holdForReadBack({ verb: "tell", name: "fix-tests" }, null), true);
+  assert.equal(holdForReadBack({ verb: "INTERRUPT" }, null), true);
+  assert.equal(holdForReadBack({ verb: "stop" }, null), false);
+  assert.equal(holdForReadBack({ verb: "read" }, null), false);
+  assert.equal(holdForReadBack({ verb: "start", command: "/grilling" }, null), false);
+  assert.equal(holdForReadBack({ verb: "start", command: "   " }, null), true);
+
+  // Every facet read back -- even all four at once, the way the machine's
+  // own synthetic tag would leave a state -- still does not skip the hold.
+  // That used to be the seam a model-written read-back got through, so now
+  // it holds all the same, and only proceed gets past it.
+  const fullyConfirming = noteInterview(null, { verb: "interview", for: "start", confirming: "goal,where,constraints,done" }, 1000);
+  assert.equal(holdForReadBack({ verb: "start" }, fullyConfirming, 1000), true);
+  const partial = noteInterview(null, { verb: "interview", for: "start", confirming: "goal" }, 1000);
+  assert.equal(holdForReadBack({ verb: "start" }, partial, 1000), true);
+  // Krane's escape phrase reaches this through markProceed, nothing else.
+  assert.equal(holdForReadBack({ verb: "start" }, markProceed(partial), 1000), false);
+  assert.equal(holdForReadBack({ verb: "start" }, markProceed(fullyConfirming), 1000), false);
+});
+
+test("withdrawing the read-back puts its facets back to unconfirmed and leaves the rest alone", () => {
+  const state = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", confirmed: "goal", confirming: "where,constraints,done" }, 1000);
+  const withdrawn = withdrawConfirming(state);
+  assert.deepEqual(withdrawn, { ...state, confirming: [], withdrawn: true });
+  assert.deepEqual(unconfirmedFacets(withdrawn), ["where", "constraints", "done"]);
+  assert.equal(readyToPropose(withdrawn, 1000), false);
+  assert.equal(withdrawConfirming(null), null);
 });
 
 test("no live interview means no block", () => {
@@ -288,74 +351,332 @@ test("stop alone is a negation rather than the stop-asking escape, and a refusal
 // interviewBlock
 // ---------------------------------------------------------------------------
 
+// A hand-built state for the block tests, with the confirmation lists defaulting
+// to empty so a test about coverage does not have to spell them out.
+function stateOf(fields) {
+  return {
+    name: "", notes: [], said: [], confirming: [], confirmed: [],
+    proceed: false, spokenFor: false, withdrawn: false, ...fields,
+  };
+}
+
+const ASK_FOR_GAP =
+  "Ask the one question that closes the biggest gap, one per turn. A facet the request " +
+  "itself settles is read back for a yes, never re-asked and never skipped.";
+
 test("the block reports nothing covered yet and asks for the biggest gap", () => {
-  const state = { verb: "start", repo: "", notes: [], said: [], covered: [], asked: 1, at: 1000, proceed: false };
+  const state = stateOf({ verb: "start", repo: "", covered: [], asked: 1, at: 1000 });
   assert.equal(
     interviewBlock(state, 1000),
     "INTERVIEW in progress: planning a start. 1 question asked. " +
       "Covered: none reported yet. Still open: goal, where, constraints, done. " +
-      "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
-      "request itself already settles what is open.",
+      ASK_FOR_GAP,
   );
 });
 
-test("the block says every facet is covered and tells it to propose", () => {
-  const state = {
-    verb: "start", repo: "jarvis", notes: ["n1", "n2"], said: [],
-    covered: ["goal", "where", "constraints", "done"], asked: 2, at: 2000, proceed: false,
-  };
+test("the block says every facet is covered and tells it to propose, never to write a read-back of its own", () => {
+  const state = stateOf({
+    verb: "start", repo: "jarvis", notes: ["n1", "n2"],
+    covered: ["goal", "where", "constraints", "done"], asked: 2, at: 2000,
+  });
   assert.equal(
     interviewBlock(state, 2000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
       "Covered: goal, where, constraints, done. Still open: nothing. " +
       "Learned so far: n1; n2. " +
-      "Every facet is covered: propose now, unless an answer left something genuinely open - " +
-      "then ask about that one thing only.",
+      "Every facet is covered: propose now with the start tag carrying task= and brief=; the brief is " +
+      "read back to Krane for you before anything is proposed, so never write a read-back of your " +
+      "own; unless an answer left something genuinely open, then ask about that one thing only.",
+  );
+});
+
+test("a tell or interrupt is held to the same rule as a start, and its tail names its own verb", () => {
+  const covered = stateOf({
+    verb: "tell", repo: "jarvis", covered: ["goal", "where", "constraints", "done"], asked: 2, at: 2000,
+  });
+  assert.match(interviewBlock(covered, 2000), /Every facet is covered: propose now with the tell tag carrying task= and brief=;/);
+
+  const awaiting = stateOf({
+    verb: "interrupt", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
+    confirming: ["goal", "where", "constraints", "done"], asked: 1, at: 2000,
+  });
+  assert.match(interviewBlock(awaiting, 2000), /propose now with the interrupt tag\.$/);
+});
+
+test("the block names the facets read back and says the answer to them comes next", () => {
+  const state = stateOf({
+    verb: "start", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
+    confirmed: ["goal", "where"], confirming: ["constraints", "done"], asked: 3, at: 2000,
+  });
+  assert.equal(
+    interviewBlock(state, 2000),
+    "INTERVIEW in progress: planning a start in jarvis. 3 questions asked. " +
+      "Covered: goal, where, constraints, done. Still open: nothing. Confirmed: goal, where. " +
+      "Awaiting a yes on: constraints, done. " +
+      "Krane's answer to that read-back follows: fold a correction in, otherwise propose now with the start tag.",
+  );
+});
+
+test("the block says when the read-back was the machine's, not the model's", () => {
+  const state = stateOf({
+    verb: "start", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
+    confirming: ["goal", "where", "constraints", "done"], asked: 1, at: 2000, spokenFor: true,
+  });
+  assert.match(interviewBlock(state, 2000), /The read-back was spoken for you, from your brief\. Krane's answer/);
+});
+
+test("a withdrawn state -- the machine's read-back answered no or corrected -- produces the loop-back tail", () => {
+  // withdrawn is the explicit signal withdrawConfirming sets: what Krane
+  // says next is a correction to a read-back the machine spoke, not an
+  // answer to whatever the model itself last asked.
+  const state = stateOf({
+    verb: "start", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
+    confirmed: [], confirming: [], asked: 2, at: 2000, spokenFor: true, withdrawn: true,
+  });
+  assert.equal(
+    interviewBlock(state, 2000),
+    "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
+      "Covered: goal, where, constraints, done. Still open: nothing. " +
+      "Your brief was read back to Krane by the machine, and he said no or corrected it. What he " +
+      "says now is the correction: fold it in, and if it leaves a facet open, ask about that one " +
+      "thing only, one question. If instead he dropped it, say so and propose nothing. Otherwise " +
+      "propose again with the corrected task and brief, which will be read back once more.",
+  );
+});
+
+test("the block says every facet is confirmed and, same as covered, tells it to propose rather than read anything back", () => {
+  const state = stateOf({
+    verb: "start", repo: "jarvis", covered: ["goal", "where", "constraints", "done"],
+    confirmed: ["goal", "where", "constraints", "done"], asked: 2, at: 2000,
+  });
+  assert.equal(
+    interviewBlock(state, 2000),
+    "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
+      "Covered: goal, where, constraints, done. Still open: nothing. " +
+      "Confirmed: goal, where, constraints, done. " +
+      "Every facet is covered: propose now with the start tag carrying task= and brief=; the brief is " +
+      "read back to Krane for you before anything is proposed, so never write a read-back of your " +
+      "own; unless an answer left something genuinely open, then ask about that one thing only.",
   );
 });
 
 test("the block names both the covered facets and the open ones", () => {
-  const state = {
-    verb: "start", repo: "jarvis", notes: [], said: [],
-    covered: ["goal", "where"], asked: 2, at: 2000, proceed: false,
-  };
+  const state = stateOf({ verb: "start", repo: "jarvis", covered: ["goal", "where"], asked: 2, at: 2000 });
   assert.equal(
     interviewBlock(state, 2000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
       "Covered: goal, where. Still open: constraints, done. " +
-      "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
-      "request itself already settles what is open.",
+      ASK_FOR_GAP,
   );
 });
 
 test("a proceed beats the facet coverage no matter how much is still open", () => {
-  const state = {
-    verb: "start", repo: "jarvis", notes: [], said: [],
-    covered: ["goal"], asked: 3, at: 1000, proceed: false,
-  };
+  const state = stateOf({ verb: "start", repo: "jarvis", covered: ["goal"], asked: 3, at: 1000 });
   const proceeding = markProceed(state);
   assert.equal(
     interviewBlock(proceeding, 1000),
     "INTERVIEW in progress: planning a start in jarvis. 3 questions asked. " +
       "Covered: goal. Still open: where, constraints, done. " +
-      "Jesse asked you to proceed: ask nothing more, propose now with what you have.",
+      "Krane asked you to proceed: ask nothing more, propose now with what you have.",
   );
   assert.equal(markProceed(null), null);
 });
 
-test("what Jesse said is read back in order, numbered", () => {
-  const state = {
-    verb: "start", repo: "jarvis", notes: [], said: ["fix the tests", "in jarvis"],
-    covered: [], asked: 2, at: 1000, proceed: false,
-  };
+test("what Krane said is read back in order, numbered", () => {
+  const state = stateOf({
+    verb: "start", repo: "jarvis", said: ["fix the tests", "in jarvis"], covered: [], asked: 2, at: 1000,
+  });
   assert.equal(
     interviewBlock(state, 1000),
     "INTERVIEW in progress: planning a start in jarvis. 2 questions asked. " +
       "Covered: none reported yet. Still open: goal, where, constraints, done. " +
-      "Jesse said, in order: (1) fix the tests (2) in jarvis. " +
-      "Ask the one question that closes the biggest gap, one per turn, or propose now if the " +
-      "request itself already settles what is open.",
+      "Krane said, in order: (1) fix the tests (2) in jarvis. " +
+      ASK_FOR_GAP,
   );
+});
+
+// ---------------------------------------------------------------------------
+// confirming= / confirmed= / readyToPropose
+// ---------------------------------------------------------------------------
+
+test("confirming= names this question's facets only, and is gone from the next tag that omits it", () => {
+  const first = noteInterview(null, { verb: "interview", for: "start", confirming: "goal,where" }, 1000);
+  assert.deepEqual(first.confirming, ["goal", "where"]);
+  const second = noteInterview(first, { verb: "interview", note: "an ordinary question" }, 2000);
+  assert.deepEqual(second.confirming, []);
+});
+
+test("confirmed= carries forward when omitted and resets when present but empty, like have=", () => {
+  const first = noteInterview(null, { verb: "interview", for: "start", confirmed: "goal" }, 1000);
+  assert.deepEqual(first.confirmed, ["goal"]);
+  const silent = noteInterview(first, { verb: "interview" }, 2000);
+  assert.deepEqual(silent.confirmed, ["goal"]);
+  const cleared = noteInterview(silent, { verb: "interview", confirmed: "" }, 3000);
+  assert.deepEqual(cleared.confirmed, []);
+});
+
+test("a facet being read back, or confirmed, counts as covered whether or not have= said so", () => {
+  const state = noteInterview(null, { verb: "interview", for: "start", have: "goal", confirming: "done", confirmed: "constraints" }, 1000);
+  assert.deepEqual(state.covered, ["goal", "constraints", "done"]);
+});
+
+test("a real tag, parsed end to end, carries confirming= and confirmed= the same way it carries have=", () => {
+  const tag = parseAction(
+    'So, the builder test only - have I got that right? [ACTION:SESSION verb=interview for=start repo=jarvis have=goal,where confirming=constraints,done confirmed=goal note="only the builder test"]',
+  ).session;
+  const state = noteInterview(null, tag, 1000);
+  assert.deepEqual(state.confirming, ["constraints", "done"]);
+  assert.deepEqual(state.confirmed, ["goal"]);
+  assert.deepEqual(state.covered, ["goal", "where", "constraints", "done"]);
+});
+
+test("a start is ready to propose only once Krane has said to proceed -- covered, confirmed or read back are none of them enough on their own", () => {
+  assert.equal(readyToPropose(null, 1000), false);
+  assert.deepEqual(unconfirmedFacets(null), ["goal", "where", "constraints", "done"]);
+
+  const partial = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", have: "goal,where,constraints,done", confirming: "goal" }, 1000);
+  assert.equal(readyToPropose(partial, 1000), false);
+  assert.deepEqual(unconfirmedFacets(partial), ["where", "constraints", "done"]);
+
+  // Covered is not confirmed: all four known, none read back.
+  const covered = noteInterview(null, { verb: "interview", for: "start", repo: "jarvis", have: "goal,where,constraints,done" }, 1000);
+  assert.equal(readyToPropose(covered, 1000), false);
+
+  // Every facet read back, even all four at once -- this is what the
+  // machine's own synthetic tag leaves behind -- is still not ready by
+  // itself. That used to be the rule, and it was the seam a model-written
+  // read-back (whole or partial) could get through instead of the machine's;
+  // now nothing short of Krane's own proceed does.
+  const readBackAll = noteInterview(null, { verb: "interview", for: "start", confirming: "goal,where,constraints,done" }, 1000);
+  assert.equal(readyToPropose(readBackAll, 1000), false);
+
+  // Nor is every facet confirmed, for the same reason.
+  const confirmedAll = noteInterview(readBackAll, { verb: "interview", confirmed: "goal,where,constraints,done" }, 2000);
+  assert.equal(readyToPropose(confirmedAll, 2000), false);
+
+  // Only proceed does -- live, and gone once the interview has gone stale.
+  assert.equal(readyToPropose(markProceed(partial), 1000), true);
+  assert.equal(readyToPropose(markProceed(confirmedAll), 2000), true);
+  assert.equal(readyToPropose(markProceed(confirmedAll), 2000 + INTERVIEW_TTL_MS), false);
+});
+
+test("the machine's own read-back tag marks the state as spoken for, but that alone still is not ready to propose", () => {
+  const held = noteInterview(null, { for: "start", repo: "jarvis", confirming: "goal,where,constraints,done", spokenFor: true }, 1000, "fix the tests");
+  assert.equal(held.spokenFor, true);
+  assert.equal(held.verb, "start");
+  // spokenFor says whose question this was, not whether Krane has answered
+  // it -- readyToPropose reads only proceed, and Krane has not said that.
+  assert.equal(readyToPropose(held, 1000), false);
+  const next = noteInterview(held, { verb: "interview", confirmed: "goal,where", confirming: "constraints" }, 2000, "no, the other test");
+  assert.equal(next.spokenFor, false);
+});
+
+// ---------------------------------------------------------------------------
+// parseBrief / readBack
+// ---------------------------------------------------------------------------
+
+const DOC_BRIEF = [
+  "Goal: fix the flaky builder test",
+  "Where: jarvis, test/builder.test.js",
+  "Constraints:",
+  "- do not touch lib/builder.js itself, only the test",
+  "- keep using the existing writeFake fixture, don't add a new one",
+  "Done when:",
+  "- npm test passes twice in a row",
+  "Also:",
+  "- Krane wants to know which assertion was racing, in the summary",
+].join("\n");
+
+test("parseBrief reads the documented shape back into its sections", () => {
+  assert.deepEqual(parseBrief(DOC_BRIEF), {
+    goal: "fix the flaky builder test",
+    where: "jarvis, test/builder.test.js",
+    constraints: [
+      "do not touch lib/builder.js itself, only the test",
+      "keep using the existing writeFake fixture, don't add a new one",
+    ],
+    done: ["npm test passes twice in a row"],
+    also: ["Krane wants to know which assertion was racing, in the summary"],
+  });
+});
+
+test("parseBrief reads a label the model dressed up as markdown, because the read-back must not deny what the brief said", () => {
+  const brief = "## Goal\nfix login\n**Where:** jarvis\n__Constraints__:\n- only touch auth.js\n* Done when: tests pass";
+  assert.deepEqual(parseBrief(brief), {
+    goal: "fix login", where: "jarvis", constraints: ["only touch auth.js"], done: ["tests pass"], also: [],
+  });
+  assert.match(readBack({ verb: "start", task: "fix login", brief }, FACETS), /constraints: only touch auth.js, done when tests pass\./);
+});
+
+test("parseBrief tolerates a missing section, text on the label's own line, and no brief at all", () => {
+  assert.deepEqual(parseBrief("Goal: run the tests\nConstraints: none\nDone: green"), {
+    goal: "run the tests", where: "", constraints: ["none"], done: ["green"], also: [],
+  });
+  assert.deepEqual(parseBrief(undefined), { goal: "", where: "", constraints: [], done: [], also: [] });
+  // Lines before any label belong to nothing and are dropped rather than
+  // guessed into a section.
+  assert.deepEqual(parseBrief("just some text\nGoal: x").goal, "x");
+});
+
+test("readBack names every facet it is given, from the brief, as one question", () => {
+  assert.equal(
+    readBack({ task: "fix tests", repo: "jarvis", brief: DOC_BRIEF }, FACETS),
+    "Before I propose, sir, let me check I have this right: the goal is fix the flaky builder test, " +
+      "in jarvis, test/builder.test.js, " +
+      "constraints: do not touch lib/builder.js itself, only the test; keep using the existing writeFake fixture, don't add a new one, " +
+      "done when npm test passes twice in a row. Have I got that right?",
+  );
+});
+
+test("readBack names only the facets it is given, so a second read-back covers the corrected one alone", () => {
+  assert.equal(
+    readBack({ task: "fix tests", repo: "jarvis", brief: DOC_BRIEF }, ["done"]),
+    "Before I propose, sir, let me check I have this right: done when npm test passes twice in a row. Have I got that right?",
+  );
+  assert.equal(readBack({ task: "fix tests", brief: DOC_BRIEF }, []), "");
+  assert.equal(readBack({ task: "fix tests", brief: DOC_BRIEF }, ["nonsense"]), "");
+});
+
+test("readBack falls back to the task and repo when there is no brief, and asks a silent facet as the assumption it amounts to", () => {
+  assert.equal(
+    readBack({ task: "fix the tests.", repo: "jarvis" }, FACETS),
+    "Before I propose, sir, let me check I have this right: the goal is fix the tests, in jarvis. " +
+      "And nothing was said about constraints, so I would take it there are none, " +
+      "and nothing was said about what done looks like, so I would take the goal itself as the test. " +
+      "Have I got that right?",
+  );
+  // Nothing at all known about a facet is still a question about that facet.
+  assert.equal(
+    readBack({ task: "fix the tests" }, ["where"]),
+    "Before I propose, sir, nothing was said about where, so I would use the main repository. Have I got that right?",
+  );
+});
+
+test("readBack for a tell or interrupt names the session rather than a repository, and says what it would tell it", () => {
+  assert.equal(
+    readBack({ verb: "tell", name: "fix-tests", task: "run the linter as well" }, FACETS),
+    "Before I propose, sir, let me check I have this right: I would tell it to run the linter as well, " +
+      "the session is fix-tests. " +
+      "And nothing was said about constraints, so I would take it there are none, " +
+      "and nothing was said about what done looks like, so I would take the goal itself as the test. " +
+      "Have I got that right?",
+  );
+  assert.equal(
+    readBack({ verb: "interrupt", name: "fix-tests", task: "use the other branch", brief: "Goal: use the other branch\nDone when:\n- the tests run there" }, ["goal", "done"]),
+    "Before I propose, sir, let me check I have this right: I would interrupt it to use the other branch, " +
+      "done when the tests run there. Have I got that right?",
+  );
+  // The session's name outranks the brief's Where line for these two verbs,
+  // and with neither a name nor a repo the facet is asked as its assumption.
+  assert.match(readBack({ verb: "tell", name: "fix-tests", brief: "Where: jarvis, lib/" }, ["where"]), /the session is fix-tests\./);
+  assert.match(readBack({ verb: "tell" }, ["where"]), /nothing was said about which session\. Have I got that right\?$/);
+});
+
+test("readBack strips unprintables and caps each clause, because a model wrote the brief", () => {
+  const rlo = String.fromCharCode(0x202e);
+  const spoken = readBack({ task: `fix${rlo} the tests`, brief: `Goal: ${"x".repeat(400)}` }, ["goal"]);
+  assert.equal(spoken.includes(rlo), false);
+  assert.ok(spoken.length < 260, spoken.length);
 });
 
 // ---------------------------------------------------------------------------
@@ -418,7 +739,7 @@ test("with no brief, the task, repo, notes and what was said become a structured
       "What the interview established:",
       "- it's the builder test.",
       "- only that one file.",
-      "Jesse said, in order:",
+      "Krane said, in order:",
       "- fix the failing tests",
       "- in jarvis, the builder test only",
     ].join("\n"),
@@ -468,5 +789,5 @@ test("a note handed straight to composeBrief is cleaned like everything else", (
 
 test("what was said is cleaned the same way, and an empty one is dropped", () => {
   const result = composeBrief({ task: "build something", said: ["  spaced out  ", ""] });
-  assert.equal(result, "Goal: build something\nJesse said, in order:\n- spaced out");
+  assert.equal(result, "Goal: build something\nKrane said, in order:\n- spaced out");
 });

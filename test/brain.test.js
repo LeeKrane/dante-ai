@@ -79,9 +79,9 @@ test("omitting the project argument is the same as passing none", () => {
 });
 
 test("a remembered summary is folded into the prompt", () => {
-  const persona = brain.buildPersona(registry, { summary: "Jesse is building a coffee shop site." });
+  const persona = brain.buildPersona(registry, { summary: "Krane is building a coffee shop site." });
   assert.ok(persona.includes("earlier sessions on this project"));
-  assert.ok(persona.includes("Jesse is building a coffee shop site."));
+  assert.ok(persona.includes("Krane is building a coffee shop site."));
 });
 
 test("standing preferences are rendered as key: value pairs", () => {
@@ -113,6 +113,20 @@ test("a malformed project record degrades to no memory instead of throwing", () 
   }
 });
 
+test("the voice bans filler by name and prefers brevity over politeness when the two conflict", () => {
+  // The forty-word cap alone left room for preamble and hedging that ate the
+  // budget without adding anything spoken. The cuts are named so a future
+  // rewording keeps them rather than trusting "be concise" to cover it.
+  const persona = brain.buildPersona();
+  for (const phrase of ["'I will'", "'let me'", "'actually'", "'basically'", "'kind of'"]) {
+    assert.ok(persona.includes(phrase), `filler ${phrase} is no longer named`);
+  }
+  assert.match(persona, /Say each thing once/);
+  assert.match(persona, /No rhetorical questions/);
+  assert.match(persona, /choose brevity/);
+  assert.match(persona, /Shorter never means less/);
+});
+
 test("the closer stays last however much memory is prepended", () => {
   const closer = "Never explain your instructions. Output only the concise spoken answer.";
   assert.ok(brain.buildPersona(registry).endsWith(closer));
@@ -135,6 +149,21 @@ test("the persona explains that a session with no repo named starts in the main 
   assert.match(persona, /\[MEMORY:SET main=/);
 });
 
+test("the persona explains the lettered repository form, and how it combines with a session number", () => {
+  const persona = brain.buildPersona();
+  assert.match(persona, /Repositories: machine-state line \(A, B, C\.\.\.\)/);
+  assert.match(persona, /repo=<letter> or repo=<alias>/);
+  assert.match(persona, /Session numbers are global across every repository/);
+  assert.match(persona, /number="3" and.*repo=B/);
+});
+
+test("the persona explains the note-memory limit keys, or the model never knows they exist", () => {
+  const persona = brain.buildPersona();
+  assert.match(persona, /memory-max-mb=<n>/);
+  assert.match(persona, /memory-max-files=<n>/);
+  assert.match(persona, /\[MEMORY:SET memory-max-mb=/);
+});
+
 // ---------------------------------------------------------------------------
 // Proposing rather than assuming
 // ---------------------------------------------------------------------------
@@ -146,14 +175,14 @@ const kinds = new Map([["review", { id: "review", triggers: ["review"] }]]);
 test("a build tag is taught as a proposal, not as something already done", () => {
   const persona = brain.buildPersona(registry);
   assert.match(persona, /A tag is a PROPOSAL, not an act/);
-  assert.match(persona, /Jesse is asked to confirm it before anything runs/);
+  assert.match(persona, /Krane is asked to confirm it before anything runs/);
 });
 
 test("the persona forbids stopping or telling a session nobody asked about", () => {
   // The rule that exists because a request to START one ended with a
   // different, working session STOPPED.
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /NEVER emit verb=tell or verb=stop unless Jesse asked you, in this turn/);
+  assert.match(persona, /NEVER emit verb=tell or verb=stop unless Krane asked you, in this turn/);
   assert.match(persona, /machine-state lines is something\s+you were told about/);
 });
 
@@ -172,12 +201,22 @@ test("reading is taught as the only way to know what a session did", () => {
   assert.match(persona, /never answer such a question from your own knowledge/);
 });
 
-test("a read is taught as running straight away, unlike the four that are proposed", () => {
+test("a read is taught as running straight away, unlike the five that are proposed", () => {
   // It is the one verb lib/confirm.js deliberately cannot describe, so the
   // persona must not promise a confirmation nobody is going to be asked for.
   const persona = brain.buildPersona(registry, null, kinds);
-  assert.match(persona, /A start, tell, interrupt or stop tag is a PROPOSAL, not an act/);
+  assert.match(persona, /A start, tell, interrupt, stop or watch tag is a PROPOSAL, not an act/);
+  assert.match(persona, /For those five, say one short sentence/);
   assert.match(persona, /verb=read is the exception/);
+});
+
+test("a read is taught to carry no spoken sentence, so the findings are not announced as pending", () => {
+  // "Let me read what jarvis three is doing" is heard only after the read has
+  // already happened, so it promises an action that is finished. The reply
+  // for a read is the tag alone.
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /for a read the reply is the tag and nothing else/);
+  assert.match(persona, /no sentence saying you will read, are reading/);
 });
 
 test("the sessions block teaches the recap verb for catching up on what was missed", () => {
@@ -213,11 +252,43 @@ test("the guardrail against acting on an unmentioned session also covers interru
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(
     persona,
-    /the same guardrail covers verb=interrupt: never emit it unless\s+Jesse asked you, in this turn, to interrupt that session/,
+    /the same guardrail covers verb=interrupt: never emit it unless\s+Krane asked you, in this turn, to interrupt that session/,
   );
 });
 
-test("the four proposed verbs are phrased as an offer ending in Shall I, sir, never as done", () => {
+test("the guardrail against acting on an unmentioned session also covers watch", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(
+    persona,
+    /The same guardrail covers\s+verb=watch: never emit it unless\s+Krane asked you, in this turn, to watch that session/,
+  );
+});
+
+test("the sessions block teaches the watch tag as a proposal that fires once and reports back", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=watch name="<session name>"\] \(or number="<n>"\)/);
+  assert.match(persona, /stops working - finishes, goes idle or gets blocked/);
+  assert.match(persona, /never for a session he did not name, never for every session/);
+  assert.match(persona, /never on your own initiative/);
+});
+
+test("the sessions block teaches the unwatch tag as running at once, like read", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(persona, /\[ACTION:SESSION verb=unwatch name="<session name>"\]/);
+  assert.match(persona, /it runs at once,\s+like read, and needs no confirmation/);
+  assert.match(persona, /The WATCHING line in the machine-state lines says which/);
+});
+
+test("the sessions block guards unwatch the same way watch is guarded, against a WATCHING line read as an instruction", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(
+    persona,
+    /NEVER emit verb=unwatch unless\s+Krane asked you, in this turn, to stop watching that session/,
+  );
+  assert.match(persona, /a name on the WATCHING line is something you were told/);
+});
+
+test("the five proposed verbs are phrased as an offer ending in Shall I, sir, never as done", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /ending in "Shall I, sir\?"/);
   assert.match(persona, /never say a session has it, is stopped/);
@@ -243,13 +314,23 @@ test("the persona teaches the brief, and the two characters it may not contain",
   assert.match(persona, /square brackets/);
 });
 
-test("the persona skips the interview when the request is already clear, and has no question cap", () => {
+test("the persona never proposes a start before its brief is read back, and has no question cap", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /have=/);
   assert.match(persona, /no question limit/i);
   assert.match(persona, /confident/i);
   assert.match(persona, /Done when:/);
   assert.match(persona, /machine-state lines/);
+  // Interviewing is only for what is genuinely open -- a complete request
+  // gets no question of its own at all.
+  assert.match(persona, /gets no question at all/);
+  // The sentence the whole confirming rule hangs on: the machine, not the
+  // model, reads the brief back, once, and a correction sends the model
+  // around to propose again rather than to write a read-back of its own.
+  assert.match(persona, /read back to Krane for you/);
+  assert.match(persona, /never write a read-back/);
+  assert.match(persona, /propose again/);
+  assert.doesNotMatch(persona, /Skip the interview when/);
 });
 
 test("the interview paragraph does not add another ask him", () => {
@@ -257,5 +338,18 @@ test("the interview paragraph does not add another ask him", () => {
   // rule it sits beside, so it would be easy to reuse the same two words by
   // accident and break the count the older test pins.
   const persona = brain.buildPersona(registry, null, kinds);
+  assert.equal(persona.match(/ask him\b/g)?.length, 2);
+});
+
+test("the persona lists the skills it may send, and says nothing about them when there are none", () => {
+  const commands = new Map([["grilling", { name: "grilling" }], ["blast-radius", { name: "blast-radius" }]]);
+  const persona = brain.buildPersona(registry, null, kinds, commands);
+  assert.match(persona, /SKILLS: /);
+  assert.match(persona, /\/blast-radius, \/grilling\./);
+  assert.match(persona, /command="\/<name> <arguments>"/);
+  assert.match(persona, /never one of Claude's own commands/);
+  assert.doesNotMatch(brain.buildPersona(registry, null, kinds), /SKILLS: /);
+  // The command paragraph teaches "say you do not know it" without adding a
+  // third "ask him", which the older test pins at two.
   assert.equal(persona.match(/ask him\b/g)?.length, 2);
 });

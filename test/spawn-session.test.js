@@ -1,5 +1,6 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,10 @@ import {
   MAX_REPLY_CHARS,
   buildTellArgs,
   createInFlight,
+  daemonId,
+  parseStartedId,
   refuseStart,
+  resolveStartedSession,
   startSession,
   stopSession,
   tellSession,
@@ -185,6 +189,51 @@ test("a follow-up keeps its line breaks too, for the same reason a start brief d
 });
 
 // ---------------------------------------------------------------------------
+// parseStartedId
+// ---------------------------------------------------------------------------
+
+// Byte-exact, ANSI codes included, from a live probe against CLI 2.1.258.
+const BACKGROUNDED_STDOUT = [
+  "backgrounded · \x1b[36m034b047b\x1b[39m · dante-probe-1",
+  "\x1b[2m  claude agents             list sessions\x1b[22m",
+  "\x1b[2m  claude attach 034b047b    open in this terminal\x1b[22m",
+  "\x1b[2m  claude logs 034b047b      show recent output\x1b[22m",
+  "\x1b[2m  claude stop 034b047b      stop this session\x1b[22m",
+].join("\n");
+
+test("the id comes off the backgrounded line, colour codes and all", () => {
+  assert.equal(parseStartedId(BACKGROUNDED_STDOUT), "034b047b");
+});
+
+test("a later line naming the same id is not what gets matched", () => {
+  // Every line below the first repeats "034b047b" in a sentence of its own
+  // ("claude stop 034b047b ..."); only the "backgrounded" line is a
+  // confirmation, and this pins that the match is anchored on it rather than
+  // on the first id-shaped token anywhere in the output.
+  const onlyTrailingLines = BACKGROUNDED_STDOUT.split("\n").slice(1).join("\n");
+  assert.equal(parseStartedId(onlyTrailingLines), null);
+});
+
+test("no backgrounded line is nothing to read", () => {
+  assert.equal(parseStartedId(""), null);
+  assert.equal(parseStartedId("something else entirely\n"), null);
+  assert.equal(parseStartedId(undefined), null);
+  assert.equal(parseStartedId(null), null);
+});
+
+test("an id that would be read as a flag is refused rather than trimmed", () => {
+  assert.equal(parseStartedId("backgrounded · -bad · dante-probe-1"), null);
+});
+
+test("a cursor-hide escape ahead of the backgrounded line does not defeat the match", () => {
+  // A busy build has been seen to emit a "hide cursor" CSI sequence before its
+  // first real line -- a private-marker ("?") and a final byte other than the
+  // colour codes' "m", which is exactly what the narrower ANSI pattern this
+  // replaced would have missed.
+  assert.equal(parseStartedId("\x1b[?25l" + BACKGROUNDED_STDOUT), "034b047b");
+});
+
+// ---------------------------------------------------------------------------
 // startSession — against a real fake CLI on disk
 // ---------------------------------------------------------------------------
 
@@ -199,6 +248,13 @@ before(async () => {
   // A background agent detaches and leaves the parent alone, which from here
   // looks like a clean exit.
   fake.detaches = await writeFake("claude-detaches.cjs", 'console.log("started");');
+
+  // The real CLI's own confirmation, byte-exact, so startSession is proven
+  // against the actual thing rather than a paraphrase of it.
+  fake.backgrounds = await writeFake(
+    "claude-backgrounds.cjs",
+    `process.stdout.write(${JSON.stringify(BACKGROUNDED_STDOUT + "\n")});`,
+  );
 
   // Refuses outright: an unknown flag, a model that does not exist, a login
   // that expired. All of them look like this.
@@ -220,6 +276,36 @@ before(async () => {
       'fs.writeFileSync(process.env.RECORD_TO, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));',
     ].join("\n"),
   );
+
+  // The daemon end of a stop. Logs what it was asked, then answers the way the
+  // real CLI does.
+  fake.stops = await writeFake(
+    "claude-stops.cjs",
+    [
+      "const fs = require(\"node:fs\");",
+      "fs.appendFileSync(process.env.STOP_LOG, process.argv.slice(2).join(\" \") + \"\\n\");",
+      "console.log(\"stopped \" + process.argv[3]);",
+    ].join("\n"),
+  );
+
+  // What the real CLI says of an id it has never heard of, verbatim.
+  fake.noJob = await writeFake(
+    "claude-no-job.cjs",
+    [
+      "console.error(\"No job matching 'zzzzzzzz'. Run 'claude agents' to list running sessions.\");",
+      "process.exitCode = 1;",
+    ].join("\n"),
+  );
+
+  // Dies by signal with nothing said: the shape of an OOM-killed client.
+  fake.diesOnStop = await writeFake("claude-dies-on-stop.cjs", 'process.kill(process.pid, "SIGKILL");');
+
+  // Never answers and ignores the polite ask, so the timeout is the only thing
+  // that can end this call.
+  fake.hangsOnStop = await writeFake(
+    "claude-hangs-on-stop.cjs",
+    ["process.on(\"SIGTERM\", () => {});", "setInterval(() => {}, 1000);"].join("\n"),
+  );
 });
 
 after(async () => {
@@ -231,6 +317,18 @@ test("a session that started is reported started, by name and id", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.name, "jarvis-1-fix-failing-builder-test");
   assert.equal(result.sessionId, ID);
+});
+
+test("a CLI that prints the real confirmation hands back the daemon's own id", async () => {
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: fake.backgrounds });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortId, "034b047b");
+});
+
+test("a CLI that prints nothing recognisable yields no shortId, not a crash", async () => {
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: fake.detaches });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortId, null);
 });
 
 test("a session still running when the window closes is a session that started", async () => {
@@ -246,6 +344,25 @@ test("a CLI that refuses says why, in words rather than a stack", async () => {
   assert.match(result.error, /unknown option/);
 });
 
+test("a multibyte character split across two stderr chunks is not mangled", async () => {
+  // Without setEncoding("utf8"), each chunk decodes as UTF-8 on its own the
+  // moment it is concatenated onto the string -- and a multibyte sequence cut
+  // in half by the pipe becomes two invalid halves, each read back as a
+  // replacement character, not the character that was actually written.
+  const splitMultibyte = await writeFake(
+    "claude-splits-multibyte.cjs",
+    [
+      'const part1 = Buffer.concat([Buffer.from("stderr with a check "), Buffer.from([0xe2, 0x9c])]);',
+      'const part2 = Buffer.concat([Buffer.from([0x93]), Buffer.from(" mark")]);',
+      "process.stderr.write(part1);",
+      'setTimeout(() => { process.stderr.write(part2); process.exitCode = 1; }, 20);',
+    ].join("\n"),
+  );
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: splitMultibyte });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /check ✓ mark/);
+});
+
 test("a CLI that is not installed is a refusal, not a crash", async () => {
   const result = await startSession({ ...spec(), cwd: workspace }, { bin: join(workspace, "nope") });
   assert.equal(result.ok, false);
@@ -255,6 +372,31 @@ test("a CLI that is not installed is a refusal, not a crash", async () => {
 test("a session without a workspace to run in is refused before anything spawns", async () => {
   assert.equal((await startSession(spec(), { bin: fake.detaches })).ok, false);
   assert.equal((await startSession({ ...spec(), cwd: "" }, { bin: fake.detaches })).ok, false);
+});
+
+test("startSession reports the moment it was actually asked for", async () => {
+  // Read just before spawn, not before argument building or after anything
+  // async -- server.js hands this straight to resolveStartedSession as
+  // `since`, and that bound is only worth having if it names the true spawn
+  // moment.
+  const before = Date.now();
+  const result = await startSession({ ...spec(), cwd: workspace }, { bin: fake.detaches });
+  const after = Date.now();
+  assert.ok(Number.isFinite(result.startedAtMs));
+  assert.ok(
+    result.startedAtMs >= before && result.startedAtMs <= after,
+    `${before} <= ${result.startedAtMs} <= ${after}`,
+  );
+});
+
+test("a spawn that throws synchronously resolves the same shape a slower failure gets", async () => {
+  // A cwd with a null byte is one of the few things that makes node's own
+  // spawn() throw before a child process ever exists, rather than failing
+  // later on an "error" event the way a missing binary does.
+  const result = await startSession({ ...spec(), cwd: workspace + "\u0000bad" }, { bin: fake.detaches });
+  assert.equal(result.ok, false);
+  assert.equal(result.shortId, null);
+  assert.ok(Number.isFinite(result.startedAtMs));
 });
 
 test("an unstartable request never reaches a child process", async () => {
@@ -280,6 +422,110 @@ test("the session runs in the repository it was asked for, with the arguments it
   } finally {
     if (previous === undefined) delete process.env.RECORD_TO;
     else process.env.RECORD_TO = previous;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// resolveStartedSession
+// ---------------------------------------------------------------------------
+
+// A roster record shaped the way parseRoster would produce one -- only the
+// fields matchStarted and this poller actually look at.
+function rosterRecord(overrides = {}) {
+  return {
+    sessionId: "3b139d5b-d998-4168-9a8c-6afae89909b8",
+    id: "3b139d5b",
+    name: "dante-probe-1",
+    kind: "background",
+    startedAt: 1_000_000,
+    ...overrides,
+  };
+}
+
+test("the record shows up on a later poll, not the first", async () => {
+  // The gap resolveStartedSession exists to close: the daemon has the id
+  // before `claude agents --json` necessarily lists it.
+  let calls = 0;
+  const list = async () => {
+    calls += 1;
+    return calls < 3 ? [] : [rosterRecord()];
+  };
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, delayMs: 1 },
+  );
+  assert.equal(calls, 3);
+  assert.equal(result.sessionId, "3b139d5b-d998-4168-9a8c-6afae89909b8");
+  assert.equal(result.record.id, "3b139d5b");
+});
+
+test("giving up after every attempt is a miss, not a crash", async () => {
+  const list = async () => [];
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 2, delayMs: 1 },
+  );
+  assert.equal(result, null);
+});
+
+test("a roster read that throws is treated as one more empty attempt", async () => {
+  const list = async () => {
+    throw new Error("the CLI is not installed");
+  };
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 2, delayMs: 1 },
+  );
+  assert.equal(result, null);
+});
+
+test("a matched record with no usable sessionId is nothing found yet, not a false positive", async () => {
+  // matchStarted's own shortId path returns whatever record carries that id,
+  // sessionId included or not -- this is the check that stands between an
+  // id-only match and handing back an id nothing downstream could resume,
+  // queue against or chain off of.
+  const list = async () => [rosterRecord({ sessionId: "" })];
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 2, delayMs: 1 },
+  );
+  assert.equal(result, null);
+});
+
+test("the overall deadline bounds the wait regardless of how slow list is", async () => {
+  // attempts and delayMs describe the *intended* pacing, but a real CLI under
+  // load can make each call itself slower than delayMs -- and without a bound
+  // of its own, a caller waiting on this would be waiting on attempts * (list's
+  // own time), not attempts * delayMs.
+  let calls = 0;
+  const list = async () => {
+    calls += 1;
+    await new Promise((done) => setTimeout(done, 40));
+    return [];
+  };
+  const start = Date.now();
+  const result = await resolveStartedSession(
+    { shortId: "3b139d5b", name: "dante-probe-1" },
+    { list, attempts: 100, delayMs: 5, deadlineMs: 100 },
+  );
+  const elapsed = Date.now() - start;
+  assert.equal(result, null);
+  // Left unbounded this would run up toward 100 * 45ms -- well over four
+  // seconds. A generous multiple of the deadline still catches a regression
+  // without being flaky on a loaded machine.
+  assert.ok(elapsed < 500, `took ${elapsed}ms for ${calls} calls`);
+});
+
+// ---------------------------------------------------------------------------
+// daemonId
+// ---------------------------------------------------------------------------
+
+test("a roster id that looks like a flag is not handed to the CLI as one", () => {
+  // stopSession's own coverage of this is indirect, by way of a refused stop;
+  // this pins the shape check itself.
+  assert.equal(daemonId({ id: "3b139d5b" }), "3b139d5b");
+  for (const id of ["-", "--all", "", " ", "3ee7 f1c2", null, undefined, 42]) {
+    assert.equal(daemonId({ id }), null, JSON.stringify(id));
   }
 });
 
@@ -550,4 +796,148 @@ test("a real process really does stop", async () => {
       // Already stopped, which is what the assertion above wanted.
     }
   }
+});
+
+test("a slash command is the whole prompt, ahead of both the brief and the task", () => {
+  const args = buildStartArgs(spec({ command: "/review high", brief: "Goal: x\nConstraints:\n- y" }));
+  assert.deepEqual(args.slice(-2), ["--", "/review high"]);
+});
+
+test("a command that lost its slash is refused rather than run as a sentence about a command", () => {
+  assert.equal(buildStartArgs(spec({ command: "review high" })), null);
+  // An empty command is no command, and the task is the prompt as before.
+  assert.deepEqual(buildStartArgs(spec({ command: "" })).slice(-2), ["--", "fix the failing builder test"]);
+});
+
+test("a command is one line on the command line, whatever the model wrote", () => {
+  const args = buildStartArgs(spec({ command: "/review\nhigh" }));
+  assert.deepEqual(args.slice(-2), ["--", "/review high"]);
+});
+
+// The daemon path. Background sessions belong to the Claude Code daemon, and a
+// worker that is merely signalled comes back ten seconds later -- see the
+// comment on stopSession. These pin the other ask.
+
+// A kill(2) stand-in whose pid is alive until the fake CLI has been asked --
+// which is how a real worker behaves: `claude stop` is what ends it.
+function killUntilAsked(pid, askedLog) {
+  const signals = [];
+  const kill = (target, signal) => {
+    signals.push([target, signal]);
+    if (target === pid && !existsSync(askedLog)) return;
+    const err = new Error("no such process");
+    err.code = "ESRCH";
+    throw err;
+  };
+  kill.signals = signals;
+  return kill;
+}
+
+test("a background session is stopped through the daemon, never by signalling its worker", async () => {
+  const askedLog = join(workspace, "stop-asked.log");
+  process.env.STOP_LOG = askedLog;
+  const kill = killUntilAsked(4242, askedLog);
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background", name: "stop-probe" };
+  const result = await stopSession(record, { kill, bin: fake.stops, pollMs: 20 });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "daemon");
+  assert.equal(readFileSync(askedLog, "utf8").trim(), "stop 3ee7f1c2");
+  // Signal 0 is only a question. Anything else would be the bug this fixes.
+  assert.ok(kill.signals.every(([, signal]) => signal === 0), JSON.stringify(kill.signals));
+});
+
+test("a background session the daemon refuses to stop is reported, not signalled instead", async () => {
+  // Falling back to SIGTERM here would land in the resume-after-ten-seconds
+  // this path exists to avoid, while sounding like a success.
+  const kill = fakeKill([4242]);
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill, bin: fake.noJob });
+  assert.equal(result.ok, false);
+  assert.equal(result.via, "daemon");
+  assert.match(result.error, /No job matching/);
+  // The CLI's own full stop is dropped: the sentence it is spoken in adds one.
+  assert.doesNotMatch(result.error, /[.!?]$/);
+  assert.ok(!kill.signals.some(([, signal]) => signal === "SIGTERM"), JSON.stringify(kill.signals));
+});
+
+test("a background session listed without a pid can still be stopped through the daemon", async () => {
+  // The listing drops the pid for the ten seconds between a worker dying and
+  // the daemon resuming it -- exactly when a stop is most wanted.
+  process.env.STOP_LOG = join(workspace, "stop-nopid.log");
+  const kill = fakeKill([]);
+  const result = await stopSession({ id: "3ee7f1c2", kind: "background" }, { kill, bin: fake.stops });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "daemon");
+  assert.equal(kill.signals.length, 0);
+});
+
+test("a background session whose worker had already left is reported as already gone", async () => {
+  process.env.STOP_LOG = join(workspace, "stop-gone.log");
+  const result = await stopSession({ pid: 4242, id: "3ee7f1c2", kind: "background" }, { kill: fakeKill([]), bin: fake.stops });
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyGone, true);
+  // Still asked, so the lease is settled and the daemon does not resume it.
+  assert.equal(existsSync(join(workspace, "stop-gone.log")), true);
+});
+
+test("a background session whose worker outlives the daemon's answer is not called stopped", async () => {
+  process.env.STOP_LOG = join(workspace, "stop-lingers.log");
+  const kill = fakeKill([4242], { ignoresTerm: true });
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  // The budget covers the CLI spawn as well as the poll. A cold node start
+  // under a loaded test runner has been measured near a second, so the budget
+  // is wide enough that the CLI always answers and the poll is what runs out.
+  const result = await stopSession(record, { kill, bin: fake.stops, timeoutMs: 2500, pollMs: 20 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /still running/);
+});
+
+test("an interactive session has no daemon to ask and is still signalled", async () => {
+  // fake.noJob would fail the stop if it were consulted; the signal path must
+  // not go near the CLI.
+  const kill = fakeKill([4242]);
+  const result = await stopSession({ pid: 4242, id: null, kind: "interactive" }, { kill, bin: fake.noJob });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "signal");
+  assert.deepEqual(kill.signals[0], [4242, "SIGTERM"]);
+});
+
+test("a background session without a usable id is refused, not signalled and not handed to the CLI", async () => {
+  // Signalling it would be the original bug again: the lease is there whether
+  // or not the id came through the listing intact.
+  const askedLog = join(workspace, "stop-no-id.log");
+  process.env.STOP_LOG = askedLog;
+  const kill = fakeKill([4242]);
+  for (const id of ["--all", "-", "", " ", "3ee7 f1c2", null, undefined]) {
+    const result = await stopSession({ pid: 4242, id, kind: "background" }, { kill, bin: fake.stops });
+    assert.equal(result.ok, false, JSON.stringify(id));
+    assert.equal(result.via, "daemon", JSON.stringify(id));
+    assert.match(result.error, /id/, JSON.stringify(id));
+  }
+  assert.equal(kill.signals.length, 0, JSON.stringify(kill.signals));
+  assert.equal(existsSync(askedLog), false);
+});
+
+test("a CLI that never answers a stop is abandoned rather than waited on forever", async () => {
+  const kill = fakeKill([4242]);
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill, bin: fake.hangsOnStop, timeoutMs: 150, killGraceMs: 50 });
+  assert.equal(result.ok, false);
+  assert.equal(result.via, "daemon");
+  assert.match(result.error, /did not answer/);
+});
+
+test("a CLI killed before it answers is said so, not read out as an exit code of null", async () => {
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill: fakeKill([4242]), bin: fake.diesOnStop });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /killed before it answered/);
+  assert.doesNotMatch(result.error, /null/);
+});
+
+test("a missing CLI is a stop that did not go through, not a crash", async () => {
+  const record = { pid: 4242, id: "3ee7f1c2", kind: "background" };
+  const result = await stopSession(record, { kill: fakeKill([4242]), bin: join(workspace, "nope") });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /could not be started/);
 });

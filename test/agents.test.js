@@ -5,17 +5,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { writeFakeCli } from "./helpers.js";
+import { DEDUPE_MS } from "../lib/hooks.js";
 import {
   LIST_TIMEOUT_MS,
   MAX_LISTED,
   MAX_ROSTER_AGE_MS,
   POLL_MS,
+  completedIn,
   countWord,
   createRosterPoller,
+  endedAtOf,
+  isDone,
+  stampEnded,
+  trackEnded,
   describeRoster,
   idleAmong,
   isWorking,
   matchSessions,
+  mentionedSessions,
+  matchStarted,
   diffRoster,
   listAgents,
   orderRoster,
@@ -361,6 +369,7 @@ test("a row for the page carries what it paints and nothing that names a process
     state: "working",
     status: "busy",
     startedAt: 1_000_000,
+    endedAt: null,
   }]);
   assert.deepEqual(rosterForClient(null), []);
   assert.deepEqual(rosterForClient("not a roster"), []);
@@ -381,6 +390,21 @@ test("a status that moved under an unchanged state changes the wire, so the pane
   const idle = [numbered({ state: "working", status: "idle" })];
   assert.deepEqual(diffRoster(busy, idle), []);
   assert.notEqual(rosterWire(busy), rosterWire(idle));
+});
+
+test("a done session's finish time rides the wire, and a finish stamped later changes it", () => {
+  // The page stops a done row's clock at endedAt (rowFromRecord in
+  // public/roster-panel.js). The poller stamps that on the tick it first sees
+  // the session done, which can be a tick after the state itself changed.
+  // diffRoster reports that refinement as a "finished" event, but the panel
+  // no longer listens to events, so the wire is what has to carry it.
+  const done = [numbered({ state: "done", status: "idle" })];
+  const stamped = [numbered({ state: "done", status: "idle", endedAt: 2_000_000 })];
+  assert.equal(rosterForClient(done)[0].endedAt, null);
+  assert.equal(rosterForClient(stamped)[0].endedAt, 2_000_000);
+  assert.notEqual(rosterWire(done), rosterWire(stamped));
+  // A stamp on a live session is not a finish time, whoever put it there.
+  assert.equal(rosterForClient([numbered({ endedAt: 2_000_000 })])[0].endedAt, null);
 });
 
 test("a tick that changed nothing the page paints leaves the wire unchanged", () => {
@@ -1076,6 +1100,51 @@ test("a name that merely shares a word is not a match", () => {
 });
 
 // ---------------------------------------------------------------------------
+// mentionedSessions
+// ---------------------------------------------------------------------------
+
+test("mentionedSessions finds a candidate named exactly in the text", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions is punctuation-insensitive, the same as matchSessions", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is Jarvis 3 doing", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions finds a collided session by the shorthand matchSessions' prefix tier accepts", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "review-2" }));
+  assert.deepEqual(mentionedSessions("what did review decide", roster), ["review-2"]);
+});
+
+test("mentionedSessions still does not match jarvis-30 by prefix when jarvis-3 is what was actually said and both exist", () => {
+  // The full run "jarvis-3" is always tried before the shorter, vaguer
+  // "jarvis" prefix of it -- matchSessions' own exact tier resolves it to
+  // jarvis-3 alone, and that stops mentionedSessions from ever falling back
+  // to a shorter run that would have pulled in jarvis-30 too via prefix.
+  const roster = rosterOf(
+    session({ sessionId: "a", name: "jarvis-3" }),
+    session({ sessionId: "b", name: "jarvis-30" }),
+  );
+  assert.deepEqual(mentionedSessions("jarvis-3", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions returns nothing for an empty candidate list", () => {
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", []), []);
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", null), []);
+});
+
+test("mentionedSessions finds a name spoken well past the 100-char clip normalizeName applies to a single name", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  const rambling =
+    "Right, before anything else this morning, and I appreciate this is a slightly rambling " +
+    "question, what on earth is jarvis-3 actually up to";
+  assert.ok(rambling.indexOf("jarvis-3") > 100, "the fixture must actually exercise the clip");
+  assert.deepEqual(mentionedSessions(rambling, roster), ["jarvis-3"]);
+});
+
+// ---------------------------------------------------------------------------
 // visibleSessions
 // ---------------------------------------------------------------------------
 
@@ -1282,3 +1351,344 @@ test("nothing to count is not an error", () => {
   assert.deepEqual(ownRunning([], null), { running: 0, oldestIdle: null });
   assert.deepEqual(ownRunning(rosterOf(session()), "not a store"), { running: 0, oldestIdle: null });
 });
+
+// Remembering a session under the roster's own sessionId -- not the
+// provisional uuid --bg ignores -- is the whole point of resolveStartedSession
+// in lib/spawn-session.js; this is what makes that worth doing.
+test("a session remembered under the roster's real id is counted, not the discarded provisional one", () => {
+  const roster = rosterOf(session({ sessionId: MINE, name: "jarvis-1-fix" }));
+  const discarded = "9999ffff-0000-0000-0000-000000000000";
+  assert.equal(ownRunning(roster, { [discarded]: { name: "jarvis-1-fix" } }).running, 0);
+  assert.equal(ownRunning(roster, { [MINE]: { name: "jarvis-1-fix" } }).running, 1);
+});
+
+// ---------------------------------------------------------------------------
+// matchStarted
+// ---------------------------------------------------------------------------
+
+test("a matching id wins outright, name and all", () => {
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1" }),
+    session({ sessionId: YOURS, id: "eeee5555", name: "some-other-session" }),
+  );
+  const found = matchStarted(roster, { shortId: "eeee5555", name: "dante-probe-1" });
+  assert.equal(found.sessionId, YOURS);
+});
+
+test("an id that matches nothing falls back to the name", () => {
+  const roster = rosterOf(session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1" }));
+  const found = matchStarted(roster, { shortId: "zzzzzzzz", name: "dante-probe-1" });
+  assert.equal(found.sessionId, MINE);
+});
+
+test("no id at all still resolves by name", () => {
+  const roster = rosterOf(session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1" }));
+  const found = matchStarted(roster, { shortId: null, name: "dante-probe-1" });
+  assert.equal(found.sessionId, MINE);
+});
+
+test("a name collision is settled by which record is newest", () => {
+  // A name is only unique among sessions alive right now -- buildName in
+  // server.js reuses the name of one that has since ended -- so an older
+  // record can share a label with the one just started.
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1", startedAt: 1000 }),
+    session({ sessionId: YOURS, id: "eeee5555", name: "dante-probe-1", startedAt: 9000 }),
+  );
+  const found = matchStarted(roster, { shortId: null, name: "dante-probe-1" });
+  assert.equal(found.sessionId, YOURS);
+});
+
+test("an interactive session never wins the name fallback", () => {
+  // Only `claude --bg` sessions are ever what this is resolving for; an
+  // interactive terminal happening to share the label is not a match.
+  const roster = rosterOf(session({ sessionId: MINE, id: null, name: "dante-probe-1", kind: "interactive" }));
+  assert.equal(matchStarted(roster, { shortId: null, name: "dante-probe-1" }), null);
+});
+
+test("nothing to go on at all is not a match", () => {
+  const roster = rosterOf(session({ sessionId: MINE, name: "dante-probe-1" }));
+  assert.equal(matchStarted(roster, {}), null);
+  assert.equal(matchStarted(roster, { shortId: "", name: "" }), null);
+  assert.equal(matchStarted(null, { shortId: "abcd1234", name: "dante-probe-1" }), null);
+  assert.equal(matchStarted([], { shortId: "abcd1234", name: "dante-probe-1" }), null);
+});
+
+test("an older same-name record in another cwd is not the name-fallback match", () => {
+  // A background session Dante cannot see — started somewhere else entirely
+  // — must not become the remembered session just because it shares a slug.
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1", cwd: "/home/krane/development/other" }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found, null);
+});
+
+test("a same-name record started before since is not the name-fallback match", () => {
+  const roster = rosterOf(
+    session({ sessionId: MINE, id: "abcd1234", name: "dante-probe-1", startedAt: 1000 }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found, null);
+});
+
+test("the right record still matches by name inside both bounds", () => {
+  const roster = rosterOf(
+    session({
+      sessionId: MINE,
+      id: "abcd1234",
+      name: "dante-probe-1",
+      cwd: "/home/krane/development/jarvis",
+      startedAt: 500_500,
+    }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found.sessionId, MINE);
+});
+
+test("the since tolerance covers the small gap between this clock and the daemon's own", () => {
+  // startedAt comes back on the daemon's own clock; two seconds earlier than
+  // `since` is still close enough to be the very session waited on.
+  const roster = rosterOf(
+    session({
+      sessionId: MINE,
+      id: "abcd1234",
+      name: "dante-probe-1",
+      cwd: "/home/krane/development/jarvis",
+      startedAt: 499_000,
+    }),
+  );
+  const found = matchStarted(roster, {
+    shortId: null,
+    name: "dante-probe-1",
+    cwd: "/home/krane/development/jarvis",
+    since: 500_000,
+  });
+  assert.equal(found.sessionId, MINE);
+});
+
+// ---------------------------------------------------------------------------
+// When a session finished: trackEnded, stampEnded, endedAtOf, and the poller
+// ---------------------------------------------------------------------------
+
+const DONE = { state: "done", status: "idle" };
+
+test("done is the one terminal state, and an idle terminal is not it", () => {
+  assert.equal(isDone(session(DONE)), true);
+  assert.equal(isDone(session({ state: null, status: "idle" })), false);
+  assert.equal(isDone(session({ state: "blocked" })), false);
+  assert.equal(isDone(null), false);
+  assert.equal(isDone("done"), false);
+});
+
+test("a session first seen done takes that tick's clock, and a live one is not tracked", () => {
+  const ended = trackEnded(null, rosterOf(session(DONE), session({ sessionId: "live" })), 5_000);
+  assert.deepEqual([...ended], [[session().sessionId, 5_000]]);
+});
+
+test("the time is carried forward unchanged on every later tick, so a done clock never moves", () => {
+  const first = trackEnded(new Map(), rosterOf(session(DONE)), 5_000);
+  const second = trackEnded(first, rosterOf(session(DONE)), 65_000);
+  const third = trackEnded(second, rosterOf(session(DONE)), 125_000);
+  assert.equal(third.get(session().sessionId), 5_000);
+});
+
+test("a done session that is picked up again is dropped, and finishing again takes a fresh time", () => {
+  const done = trackEnded(null, rosterOf(session(DONE)), 5_000);
+  const resumed = trackEnded(done, rosterOf(session({ state: "working" })), 10_000);
+  assert.equal(resumed.size, 0);
+  const again = trackEnded(resumed, rosterOf(session(DONE)), 20_000);
+  assert.equal(again.get(session().sessionId), 20_000);
+});
+
+test("a session that leaves the listing is forgotten, so a reused id cannot inherit its finish time", () => {
+  const done = trackEnded(null, rosterOf(session(DONE)), 5_000);
+  assert.equal(trackEnded(done, rosterOf(), 10_000).size, 0);
+  assert.equal(trackEnded(done, null, 10_000).size, 0);
+});
+
+test("a time handed in ahead of the listing is kept iff the listing agrees the session is done", () => {
+  // A Stop hook lands before the tick; a seed from the memory store lands
+  // before the first tick. Either is confirmed or discarded by the listing.
+  const early = new Map([[session().sessionId, 4_000], ["gone", 1]]);
+  const confirmed = trackEnded(early, rosterOf(session(DONE)), 9_000);
+  assert.deepEqual([...confirmed], [[session().sessionId, 4_000]]);
+  const refused = trackEnded(early, rosterOf(session({ state: "working" })), 9_000);
+  assert.equal(refused.size, 0);
+});
+
+test("the stamp lands on done records only, and a record without a time is handed back untouched", () => {
+  const ended = new Map([[session().sessionId, 5_000]]);
+  const [done, live, unknown] = stampEnded(
+    rosterOf(session(DONE), session({ sessionId: "live" }), session({ ...DONE, sessionId: "unknown" })),
+    ended,
+  );
+  assert.equal(done.endedAt, 5_000);
+  assert.equal("endedAt" in live, false);
+  assert.equal("endedAt" in unknown, false);
+  assert.equal(stampEnded(null, ended), null);
+  assert.deepEqual(stampEnded([null, "x"], ended), [null, "x"]);
+});
+
+test("a finish time is read off a record only when it is done, whichever caller asks", () => {
+  assert.equal(endedAtOf({ ...session(DONE), endedAt: 5_000 }), 5_000);
+  assert.equal(endedAtOf(session(DONE)), null);
+  assert.equal(endedAtOf({ ...session({ state: "working" }), endedAt: 5_000 }), null);
+  assert.equal(endedAtOf(null), null);
+});
+
+test("a hook-driven report reads the time straight off the poller, even on a tick the filter dropped the session", async () => {
+  // A SessionEnd an hour after done must not report the hour, and must not
+  // depend on the session being in current() at that instant.
+  let time = 0;
+  let hide = false;
+  const list = scripted(rosterOf(session(DONE)));
+  const poller = createRosterPoller({
+    list,
+    maxAgeMs: 0,
+    now: () => time,
+    filter: (roster) => (hide ? [] : roster),
+  });
+  const id = session().sessionId;
+  assert.equal(poller.endedAt(id), null);
+  time = 5_000;
+  await poller.read();
+  assert.equal(poller.endedAt(id), 5_000);
+  hide = true;
+  time = 10_000;
+  await poller.read();
+  assert.deepEqual(poller.current(), []);
+  assert.equal(poller.endedAt(id), 5_000);
+  assert.equal(poller.endedAt("not-on-the-roster"), null);
+  assert.equal(poller.endedAt(null), null);
+  poller.stop();
+});
+
+test("a finish time that moved on a session that stayed done is an event, so the panel is told", () => {
+  const before = stampEnded(rosterOf(session(DONE)), new Map([[session().sessionId, 5_000]]));
+  const moved = stampEnded(rosterOf(session(DONE)), new Map([[session().sessionId, 50_000]]));
+  assert.deepEqual(diffRoster(before, moved).map((e) => e.kind), ["finished"]);
+  // The same time again is not news, and neither is the first stamp on its
+  // own: that tick already carries the idle (or started) event.
+  assert.deepEqual(diffRoster(before, before), []);
+  assert.deepEqual(diffRoster(rosterOf(session(DONE)), before), []);
+});
+
+test("how long a session took ends at the stamp when there is one and at now when there is not", () => {
+  assert.equal(completedIn(1_000, 5_000, 999_000), 4_000);
+  assert.equal(completedIn(1_000, null, 999_000), 998_000);
+  assert.equal(completedIn(1_000, undefined, 999_000), 998_000);
+  assert.equal(completedIn(null, 5_000, 999_000), undefined);
+  assert.equal(completedIn(NaN, 5_000, 999_000), undefined);
+});
+
+test("the poller stamps a session the tick it is first seen done and keeps that stamp on every tick after", async () => {
+  let time = 0;
+  const list = scripted(rosterOf(session({ state: "working" })), rosterOf(session(DONE)));
+  const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
+  time = 1_000;
+  await poller.read();
+  assert.equal("endedAt" in poller.current()[0], false);
+  time = 6_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 6_000);
+  time = 66_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 6_000);
+  poller.stop();
+});
+
+test("a session the filter hides for one tick comes back with the stamp it had", async () => {
+  // The times are kept off the raw listing, not the filtered roster: a
+  // listing that omitted a cwd for one tick drops the session from
+  // visibleSessions and nothing else, and its clock must not move for it.
+  let time = 0;
+  let hide = false;
+  const list = scripted(rosterOf(session(DONE)));
+  const poller = createRosterPoller({
+    list,
+    maxAgeMs: 0,
+    now: () => time,
+    filter: (roster) => (hide ? [] : roster.map((record) => ({ ...record, number: 1 }))),
+  });
+  time = 3_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 3_000);
+  hide = true;
+  time = 8_000;
+  await poller.read();
+  assert.deepEqual(poller.current(), []);
+  hide = false;
+  time = 13_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 3_000);
+  poller.stop();
+});
+
+test("a failed listing leaves the finish times where they were", async () => {
+  let time = 0;
+  const list = scripted(rosterOf(session(DONE)), null, rosterOf(session(DONE)));
+  const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
+  time = 3_000;
+  await poller.read();
+  time = 8_000;
+  await poller.read();
+  time = 13_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 3_000);
+  poller.stop();
+});
+
+test("a time noted from outside wins over the tick's own, and the listing still has the last word", async () => {
+  // A Stop hook beats the tick that would stamp the session, and a Stop for a
+  // session that was done, resumed and finished again is the only thing that
+  // can move a stamp the listing keeps reporting done.
+  let time = 0;
+  const list = scripted(rosterOf(session(DONE)), rosterOf(session(DONE)), rosterOf(session({ state: "working" })));
+  const poller = createRosterPoller({ list, maxAgeMs: 0, now: () => time });
+  const id = session().sessionId;
+  assert.equal(poller.noteEnded(id, 2_000), 2_000);
+  time = 5_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, 2_000);
+  const later = 2_000 + DEDUPE_MS;
+  assert.equal(poller.noteEnded(id, later), later);
+  time = later + 3_000;
+  await poller.read();
+  assert.equal(poller.current()[0].endedAt, later);
+  time += 5_000;
+  await poller.read();
+  assert.equal("endedAt" in poller.current()[0], false);
+  // Nothing to note is not an error.
+  assert.equal(poller.noteEnded(null, 1), null);
+  assert.equal(poller.noteEnded(id, NaN), null);
+  poller.stop();
+});
+
+test("a Stop that arrives again inside the dedupe window is a retry, and does not move the time", async () => {
+  // A hook can fire twice for one exit; the second is byte-for-byte the first,
+  // and the only thing that tells it from a genuine second finish is the gap.
+  const poller = createRosterPoller({ list: scripted(rosterOf(session(DONE))), maxAgeMs: 0 });
+  const id = session().sessionId;
+  assert.equal(poller.noteEnded(id, 2_000), 2_000);
+  assert.equal(poller.noteEnded(id, 2_500), 2_000);
+  assert.equal(poller.noteEnded(id, 2_000 + DEDUPE_MS - 1), 2_000);
+  assert.equal(poller.endedAt(id), 2_000);
+  poller.stop();
+});
+

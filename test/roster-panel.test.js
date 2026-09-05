@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { MAX_ROWS, elapsedLabel, groupsFromRoster, panelIsVisible, rowsFromRoster } from "../public/roster-panel.js";
-import { MAX_LISTED } from "../lib/agents.js";
+import { MAX_LISTED, activity } from "../lib/agents.js";
 
 const NOW = 1_800_000_000_000;
 const record = (overrides = {}) => ({
@@ -50,6 +50,22 @@ test("a session whose task still reads working but whose process is idle is show
   // A working state with no status at all is still working: only a status that
   // says idle contradicts it.
   assert.equal(rowsFromRoster([record({ state: "working", status: null })], NOW)[0].condition, "working");
+});
+
+test("the panel's condition table agrees with the spoken activity table on every pair", () => {
+  // Two copies of one table, because public/ cannot import from lib/. This is
+  // what keeps the next edit to one of them from quietly missing the other.
+  const states = ["working", "done", "blocked", null];
+  const statuses = ["busy", "idle", "waiting", null];
+  for (const state of states) {
+    for (const status of statuses) {
+      const spoken = activity({ state, status });
+      const painted = rowsFromRoster([record({ state, status })], NOW)[0].condition;
+      // The one allowed difference: a pair neither table has a word for is
+      // "running" out loud and "idle" on the page.
+      assert.equal(painted, spoken === "running" ? "idle" : spoken, `state=${state} status=${status}`);
+    }
+  }
 });
 
 test("rows keep the server's own numbered order rather than being resorted here", () => {
@@ -203,4 +219,41 @@ test("rows inside a group are shaped exactly the way rowsFromRoster shapes them"
 test("no workspaces and no sessions is an empty list of groups", () => {
   assert.deepEqual(groupsFromRoster([], [], NOW), []);
   assert.deepEqual(groupsFromRoster(null, null, NOW), []);
+});
+
+test("a done row's clock stops where the server said it finished, whatever the page's clock says", () => {
+  const done = record({ state: "done", status: "idle", endedAt: NOW - 5_000 });
+  assert.equal(rowsFromRoster([done], NOW)[0].elapsed, "1m");
+  // Painted again a minute later: same answer. This is the whole point --
+  // before, every repaint counted on from startedAt.
+  assert.equal(rowsFromRoster([done], NOW + 60_000)[0].elapsed, "1m");
+});
+
+test("a row without an end time keeps counting against the page's clock", () => {
+  assert.equal(rowsFromRoster([record({ endedAt: null })], NOW)[0].elapsed, "1m 5s");
+  assert.equal(rowsFromRoster([record({ endedAt: null })], NOW + 60_000)[0].elapsed, "2m 5s");
+});
+
+test("letters ride through from workspaces, in the order the server sent them", () => {
+  const workspaces = [
+    workspace({ alias: "fitness", main: true, letter: "A" }),
+    workspace({ alias: "jarvis", letter: "B" }),
+  ];
+  const groups = groupsFromRoster(workspaces, [], NOW);
+  assert.deepEqual(groups.map((g) => [g.alias, g.letter]), [["fitness", "A"], ["jarvis", "B"]]);
+});
+
+test("the elsewhere catch-all has no letter", () => {
+  const workspaces = [workspace({ alias: "jarvis", main: true, letter: "A" })];
+  const groups = groupsFromRoster(
+    workspaces,
+    [record({ sessionId: "ghost", alias: "long-gone" })],
+    NOW,
+  );
+  assert.equal(groups.find((g) => g.alias === "elsewhere").letter, "");
+});
+
+test("a workspace with no letter, from an older server, gets an empty one rather than undefined", () => {
+  const groups = groupsFromRoster([workspace({ alias: "jarvis", main: true })], [], NOW);
+  assert.equal(groups[0].letter, "");
 });

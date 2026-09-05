@@ -41,16 +41,13 @@ export function elapsedLabel(ms) {
 // A session's one-word condition. "blocked" is its own word rather than folded
 // into working, because it is the one a person can do something about.
 //
-// The CLI reports two fields that look like one: `state` is where the TASK
-// stands (working until it is done or blocked, and it stays "working" across
-// a turn that ended without finishing anything), and `status` is what the
-// PROCESS is doing right now (busy, idle, waiting). A live listing showed a
-// session carrying `state: "working"` next to `status: "idle"` for hours --
-// the one that was stopped mid-task and respawned -- and reading `state`
-// first painted it as working. So an idle status is believed over a working
-// state: nothing is happening in that process, whatever the task's ledger
-// says. Deliberately not the order lib/agents.js's isWorking uses, which is
-// about whether a follow-up may be delivered rather than what to paint.
+// The same order lib/agents.js's activity() spells out, and says why: `state`
+// is where the task stands and `status` what the process is doing now, and a
+// process reporting itself idle is idle whatever its task's ledger says. A
+// copy rather than an import because public/ cannot import from lib/; only the
+// fallback differs, "idle" rather than "running", since the page has no style
+// for a word it has never seen. test/roster-panel.test.js pins the two tables
+// together.
 function condition(record) {
   if (record.state === "blocked") return "blocked";
   if (record.state === "done") return "done";
@@ -75,7 +72,12 @@ function rowFromRecord(record, now) {
     // the same session.
     number: Number.isInteger(record.number) ? record.number : null,
     condition: condition(record),
-    elapsed: elapsedLabel(now - record.startedAt),
+    // A finished session's clock stops where the server says it finished
+    // (endedAt, stamped by the roster poller the tick it first saw the session
+    // done); a live one counts on from startedAt against this tick's clock.
+    // A local copy of lib/agents.js's completedIn, for the same reason
+    // elapsedLabel above is a local copy: public/ cannot import from lib/.
+    elapsed: elapsedLabel((Number.isFinite(record.endedAt) ? record.endedAt : now) - record.startedAt),
   };
 }
 
@@ -127,7 +129,18 @@ export function groupsFromRoster(workspaces, roster, now = Date.now()) {
     .slice(0, MAX_ROWS)
     .map((record) => rowFromRecord(record, now));
 
-  const groups = spaces.map((w) => ({ alias: w.alias, main: Boolean(w.main), other: false, sessions: [] }));
+  // `letter` rides straight off the workspace the server already lettered
+  // (lib/memory.js's workspacesForClient) -- a string when this tick has one,
+  // "" when it does not, so app.js never has to tell "no letter" apart from
+  // "the string 'undefined'" the way it would if this just forwarded whatever
+  // `w.letter` happened to be.
+  const groups = spaces.map((w) => ({
+    alias: w.alias,
+    main: Boolean(w.main),
+    letter: typeof w.letter === "string" ? w.letter : "",
+    other: false,
+    sessions: [],
+  }));
   const byAlias = new Map(groups.map((g) => [g.alias, g]));
 
   const elsewhere = [];
@@ -137,7 +150,9 @@ export function groupsFromRoster(workspaces, roster, now = Date.now()) {
     else elsewhere.push(row);
   }
 
-  if (elsewhere.length > 0) groups.push({ alias: "elsewhere", main: false, other: true, sessions: elsewhere });
+  if (elsewhere.length > 0) {
+    groups.push({ alias: "elsewhere", main: false, letter: "", other: true, sessions: elsewhere });
+  }
   return groups;
 }
 
