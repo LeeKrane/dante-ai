@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ANNOUNCE_KINDS, createPending, normalizeKind } from "../lib/announcements.js";
+import { ANNOUNCE_KINDS, createPending, neverStale, normalizeKind } from "../lib/announcements.js";
 
 const NOW = 1_800_000_000_000;
 
@@ -81,4 +81,18 @@ test("an unknown kind is treated as ordinary, not as a watcher's own report", ()
   assert.equal(normalizeKind("something-new"), "other");
   assert.equal(normalizeKind(undefined), "other");
   assert.equal(ANNOUNCE_KINDS.has("other"), true);
+});
+
+test("neverStale is true only for a watch-blocked entry", () => {
+  assert.equal(neverStale({ kind: "watch-blocked" }), true);
+  assert.equal(neverStale({ kind: "watch-idle" }), false);
+  assert.equal(neverStale({ kind: "other" }), false);
+  assert.equal(neverStale(null), false);
+});
+
+test("a meta that carries its own id cannot displace the generated one", () => {
+  const pending = createPending({ ttlMs: 1000, max: 5, now: () => NOW });
+  const offered = pending.offer("jarvis-1 finished, sir.", { id: "not-the-real-id", kind: "other" });
+  assert.equal(offered.entry.id, offered.id);
+  assert.notEqual(offered.entry.id, "not-the-real-id");
 });

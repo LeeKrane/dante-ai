@@ -32,10 +32,10 @@ import {
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import {
-  WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, resumedAmong, unwatchVerdict, watchEvent,
-  watchVerdict,
+  WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, resumedAmong, unwatchVerdict, watchCoverage,
+  watchEvent, watchVerdict,
 } from "./lib/watch.js";
-import { createPending, normalizeKind } from "./lib/announcements.js";
+import { createPending, neverStale, normalizeKind } from "./lib/announcements.js";
 import { recallableSessions } from "./lib/recall.js";
 import {
   DEFAULT_DIR as NOTES_DIR, createNoteTracker, describeContradictions, foldNotes, listNotes,
@@ -289,36 +289,40 @@ async function deliverQueued(record) {
 const reported = createDeduper();
 
 // Sessions a watcher has fired for, and the change it fired on -- keyed by
-// sessionId, not merely a set, so reportComplete below can tell an idle or
-// gone report (which it must not narrate again) apart from a blocked one
-// (completion is still fresh news after that). reportComplete/reportAttention
-// must not repeat the generic line about any entry here. Marked synchronously
-// in onRoster the instant a watch fires -- for every change, not only "gone"
-// -- because ordering within one roster tick (onRoster before onEvents, see
-// the comment on createRosterPoller in lib/agents.js) is not enough by
-// itself: the SessionEnd hook calls reportComplete directly, the moment a
-// session exits, with no roster tick involved at all, so only a synchronous
-// mark can be certain of winning that race. reportComplete deletes its own
-// entry, on every exit path, the instant it runs -- so a watch that fired
-// "idle" keeps its entry here until the session actually leaves the roster
-// and reportComplete's delete finally claims it, which is exactly the case
-// (working -> done while still listed, then closed minutes later) this
-// exists to cover. reportAttention only reads the map and never deletes from
-// it -- the session has not ended, and reportComplete is what will consume
-// the entry when it does.
+// sessionId, not merely a set, so watchCoverage (lib/watch.js) can tell an
+// idle or gone report (which it must not narrate again) apart from a blocked
+// one (completion is still fresh news after that). reportComplete/
+// reportAttention must not repeat the generic line about any entry here.
+// Marked synchronously in onRoster the instant a watch fires -- for every
+// change, not only "gone" -- because ordering within one roster tick
+// (onRoster before onEvents, see the comment on createRosterPoller in
+// lib/agents.js) is not enough by itself: the SessionEnd hook calls
+// reportComplete directly, the moment a session exits, with no roster tick
+// involved at all, so only a synchronous mark can be certain of winning that
+// race. reportComplete marks it too, synchronously at its own top, for the
+// one case onRoster cannot reach first: a watch still PENDING (never fired)
+// when the session's process exits -- cancelled and fired as "gone" right
+// there rather than left for a poller tick that may never come. reportComplete
+// deletes its own entry, on every exit path, the instant it runs -- so a
+// watch that fired "idle" keeps its entry here until the session actually
+// leaves the roster and reportComplete's delete finally claims it, which is
+// exactly the case (working -> done while still listed, then closed minutes
+// later) this exists to cover. reportAttention only reads the map and never
+// deletes from it -- the session has not ended, and reportComplete is what
+// will consume the entry when it does.
 const watchReported = new Map();
 
 // A watcher fires at most once, and this is what "firing" means: read the
 // session back the same way verb=read does -- that answer is the actual
 // point of a watch, not merely noticing the session stopped -- record it in
-// the recap log, and speak it. Not awaited by its caller (see onRoster
-// above), for the same reason reportComplete below is not: a poller tick
-// must not be held open by a read-back call and the announcement behind it.
-// watchReported is already marked for this sessionId by the caller before
-// reportWatch is even invoked (see onRoster above) -- not here, and not only
-// for "gone" -- so that a reportComplete racing in from the SessionEnd hook,
-// which can resolve before this function's own await does, still finds the
-// mark in place.
+// the recap log, and speak it. Not awaited by either caller (onRoster above,
+// or reportComplete below for a watch that was still pending when the
+// session's process exited), for the same reason a poller tick must not be
+// held open by a read-back call and the announcement behind it. watchReported
+// is already marked for this sessionId by the caller before reportWatch is
+// even invoked -- not here, and not only for "gone" -- so that a
+// reportComplete racing in from the SessionEnd hook, which can resolve
+// before this function's own await does, still finds the mark in place.
 async function reportWatch({ watch, change, record }) {
   const { text, reason } = await readSession({
     cwd: watch.cwd, sessionId: watch.sessionId, task: watch.task, question: WATCH_QUESTION,
@@ -345,26 +349,33 @@ async function reportWatch({ watch, change, record }) {
 // this machine, and recording every time somebody closes one would make the
 // recap worthless within a day.
 async function reportComplete(sessionId, context = {}) {
-  // Read before the delete: which change (idle, blocked, gone) a watcher
-  // already reported for this session, if any, decides below whether the
-  // recap entry near the end of this function is ALSO skipped, not only the
-  // spoken line the way it always was.
+  // A watch still PENDING for this session (registered, never fired) can
+  // only ever end one way from here: the session just exited, so reading it
+  // back now and firing "gone" is not a guess, it is the only thing tick()
+  // would ever have found on its next pass. Cancelled and fired
+  // synchronously, right here, rather than left to that next poller tick --
+  // a tick only runs with a page open and dies outright on a restart, so
+  // waiting for one can lose the ending altogether. Not awaited, for the
+  // same reason onRoster does not await reportWatch's own call to it: a
+  // read-back and the announcement behind it must not hold this function,
+  // or the SessionEnd hook that called it, open.
+  const pending = watchers.cancel(sessionId);
+  if (pending) {
+    watchReported.set(sessionId, "gone");
+    reportWatch({ watch: pending, change: "gone", record: null }).catch((err) =>
+      log(`watch report failed for ${pending.name} (${pending.sessionId}): ${err.message}`),
+    );
+  }
+
+  // Read after the cancel above, not before it: a watch that was pending a
+  // moment ago is "gone" now, and watchCoverage (lib/watch.js) must see the
+  // report that was just filed for it, not the pending state it replaced.
   const watchedChange = watchReported.get(sessionId) ?? null;
-  // Captured synchronously right beside watchedChange, before anything below
-  // awaits: a watch that has not fired yet but is still registered can only
-  // ever end one way from here -- reading this same session back and firing
-  // "gone" -- so it is exactly as good a reason to skip the recap entry
-  // below as an already-fired watchedChange of "idle" or "gone" is.
-  const pendingWatch = watchers.has(sessionId);
   // The delete runs unconditionally -- before the two early returns just
   // below it, and on every other exit path this function has -- so the map
-  // can never grow for the life of the process. `watchedChange !== null`
-  // catches a watcher that already fired for this session (idle, blocked or
-  // gone); `pendingWatch` catches one still pending that will fire on the
-  // very next tick and read this same session back itself. Either way the
-  // generic spoken "complete" line near the end of this function is skipped.
+  // can never grow for the life of the process.
   watchReported.delete(sessionId);
-  const watched = watchedChange !== null || pendingWatch;
+  const coverage = watchCoverage(watchedChange);
 
   const remembered = getSessionRecord(memoryStore, sessionId);
   if (!remembered) return;
@@ -405,19 +416,16 @@ async function reportComplete(sessionId, context = {}) {
   // or the "stopped from here" note formatEvent actually chose to say -- so the
   // console line and the recap can never disagree about what happened here.
   //
-  // Skipped entirely when a watcher already reported this session idle or
-  // gone, OR one is still pending (`pendingWatch`): either way reportWatch
-  // already has, or is about to write, its OWN recap entry for this exact
-  // ending (watchEvent, in lib/watch.js), and a second "finished" entry here
-  // would have the recap read the same ending back twice -- a pending watch
-  // on an already-ended session can only ever fire "gone" next tick, so it
-  // is skipped now rather than left to race the same duplicate in on the
-  // SessionEnd hook's own direct call. A blocked change is different -- the
-  // watcher's entry says the session is STILL blocked, and this one
+  // Skipped entirely when watchCoverage says a watcher's own entry already
+  // covers idle or gone: reportWatch already wrote its OWN recap entry for
+  // this exact ending (watchEvent, in lib/watch.js) -- including a watch that
+  // was still pending a moment ago, cancelled and fired as "gone" at the top
+  // of this function -- and a second "finished" entry here would have the
+  // recap read the same ending back twice. A blocked change is different --
+  // the watcher's entry says the session is STILL blocked, and this one
   // finishing afterwards is fresh news the recap has not carried yet, so it
-  // is written regardless; the same is true when nothing fired and nothing
-  // is pending at all.
-  if (watchedChange !== "idle" && watchedChange !== "gone" && !pendingWatch) {
+  // is written regardless; the same is true when nothing fired at all.
+  if (coverage.record) {
     recordEvent(memoryStore, {
       kind: "complete",
       name: remembered.name ?? context.name,
@@ -431,11 +439,11 @@ async function reportComplete(sessionId, context = {}) {
   // the floor comes free before it goes stale; the recap above already has the
   // full detail regardless.
   //
-  // Skipped when a watcher already spoke about this session, or is about to
-  // -- `watched`, decided synchronously at the top of this function, before
-  // reportComplete could race a still-pending watcher. Two announcements
+  // Skipped when watchCoverage says a watcher already spoke about this
+  // session, or just did, at the top of this function -- decided
+  // synchronously before anything above ever awaited. Two announcements
   // about one ending, seconds apart, is a machine reading a list.
-  if (watched) {
+  if (!coverage.spoken) {
     log(`watch already covers ${remembered.name ?? context.name} - skipping the generic line`);
   } else {
     announce(formatSpoken({
@@ -769,13 +777,14 @@ function renumberNow() {
 // one reason: `retain` keeps a watcher's blocked report alive here no matter
 // how long a page is busy, the same never-stale rule the client half of this
 // (public/attention-policy.js's retainAnnouncement) applies to what is
-// already in a page's own queue. Two independent age checks that were
-// supposed to agree is how that rule would eventually drift; one predicate,
-// reused, cannot.
+// already in a page's own queue. Not one predicate shared by both -- public/
+// cannot import from lib/, so this is two copies of the same rule, one per
+// side, kept in step by hand and by the tests pinning each. neverStale here
+// is that rule's server-side copy.
 const pending = createPending({
   max: 10,
   ttlMs: 5 * 60 * 1000,
-  retain: (entry) => entry.kind === "watch-blocked",
+  retain: neverStale,
 });
 
 // announce(text, { kind, sessionId }) -> whether it was spoken right now.
@@ -1820,7 +1829,7 @@ async function dispatchWatch(send, session, preamble, roster) {
     // the same way dispatchRead already does for verb=read.
     task: getSessionRecord(memoryStore, record.sessionId)?.task ?? "",
     state: record.state,
-  }, Date.now());
+  });
   log(`watching ${record.name} (${record.sessionId})`);
   await say(send, joinSpoken(preamble, watchVerdict({ name: record.name })));
 }

@@ -15,6 +15,7 @@ import {
   countWord,
   createRosterPoller,
   endedAtOf,
+  isBlocked,
   isDone,
   stampEnded,
   trackEnded,
@@ -1003,6 +1004,14 @@ test("whether a session can take a follow-up is one question with one answer", (
   assert.equal(isWorking({ state: null, status: "busy" }), true);
   assert.equal(isWorking({ state: null, status: "idle" }), false);
   assert.equal(isWorking({ state: null, status: null }), false);
+});
+
+test("isBlocked is true only for a record sitting on a permission prompt right now", () => {
+  assert.equal(isBlocked({ state: "blocked" }), true);
+  assert.equal(isBlocked({ state: "working" }), false);
+  assert.equal(isBlocked({ state: "done" }), false);
+  assert.equal(isBlocked(null), false);
+  assert.equal(isBlocked("blocked"), false);
 });
 
 test("a session named with its repository in front is still found", () => {
