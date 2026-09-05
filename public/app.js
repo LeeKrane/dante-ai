@@ -9,12 +9,14 @@ import { groupsFromRoster, panelIsVisible, rowsFromRoster } from "./roster-panel
 import {
   canStartListening,
   clearAnnouncements,
+  floorIsFree,
   handoffAfterPreempt,
   queueAnnouncement,
   shouldShowCancel,
   stateAfterClip,
   takeAnnouncement,
 } from "./playback-policy.js";
+import { attentionPending, cueFor, titleFor } from "./attention-policy.js";
 import {
   clampVolume,
   parseStoredVolume,
@@ -323,6 +325,44 @@ function ensureGain() {
   return gainNode;
 }
 
+// ---- Watcher attention cue ----
+//
+// A short two-note chime for a fired watch worth interrupting for
+// (attention-policy.js's cueFor decides which). Played only from
+// pumpAnnouncements, gated there on floorIsFree -- see that function's own
+// comment -- so this never has to guard the mic or a playing clip itself.
+let lastCueAt = null;
+
+function playCue() {
+  // ensureGain() reads audioCtx directly and needs a running context; cueFor
+  // is what already keeps this from ever being called against a suspended or
+  // nonexistent one (audioReady, computed by the caller from the same
+  // audioCtx this reads).
+  const gain = ensureGain();
+  const cueGain = audioCtx.createGain();
+  cueGain.connect(gain);
+  const t0 = audioCtx.currentTime;
+  // 0.0001 rather than 0 at both ends: exponentialRampToValueAtTime throws on
+  // a target (or a starting value) of exactly zero.
+  cueGain.gain.setValueAtTime(0.0001, t0);
+  cueGain.gain.exponentialRampToValueAtTime(0.09, t0 + 0.02);
+  cueGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25);
+  // Two one-shot oscillators, not one retuned mid-flight: a frequency ramp on
+  // a single node would glide between the notes rather than say two of them.
+  // The second starts before the first stops, so the notes overlap by 10ms
+  // instead of leaving a gap of silence between them.
+  for (const [freq, offset] of [[660, 0], [880, 0.12]]) {
+    const osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    osc.connect(cueGain);
+    osc.start(t0 + offset);
+    osc.stop(t0 + offset + 0.13);
+  }
+  lastCueAt = Date.now();
+  dbg("cue: watcher fired");
+}
+
 function renderVolume() {
   if (volLabel) volLabel.textContent = formatVolumePercent(volume);
   // Only touched when it does not already match: dragging is `input` firing on
@@ -590,7 +630,17 @@ let sessionsOpen = true;
 // "session three" refers to.
 function sessionRowEl(row, { showRepo } = {}) {
   const line = document.createElement("div");
-  line.className = `sess ${row.condition}`;
+  // `watched`/`reported` ride as extra classes, not folded into `.sess ${row.condition}`
+  // itself: a session can be watched (or carry a recent report) in any
+  // condition at all, and CSS keys the dot off these independently of the
+  // colour the condition text already gets.
+  const marks = [row.watched && "watched", row.reported && "reported"].filter(Boolean).join(" ");
+  line.className = `sess ${row.condition}${marks ? ` ${marks}` : ""}`;
+  // Reserves its own column whether or not it has anything to show, the same
+  // fixed-width treatment repoHeaderEl's own `.star` uses -- so a row with a
+  // dot and one without still line up under each other.
+  const dot = document.createElement("span");
+  dot.className = "dot";
   const name = document.createElement("span");
   name.className = "name";
   const label = typeof row.number === "number" ? `${row.number}: ${row.name}` : row.name;
@@ -601,7 +651,7 @@ function sessionRowEl(row, { showRepo } = {}) {
   const when = document.createElement("span");
   when.className = "when";
   when.textContent = row.elapsed;
-  line.append(name, cond, when);
+  line.append(dot, name, cond, when);
   return line;
 }
 
@@ -797,6 +847,11 @@ function receiveAnnouncement(msg) {
   // worth telling apart in the diagnostics panel even though both are queued
   // and spoken the same way from here on.
   dbg(msg.reoffered ? `announcement re-offered: ${msg.text}` : `announcement queued: ${msg.text}`);
+  // Set here, not only inside pumpAnnouncements below: a watch kind can sit
+  // queued for a while with the floor busy, and the dot has to appear the
+  // moment it arrives, not only once the floor frees up and pumpAnnouncements
+  // next runs.
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
   pumpAnnouncements();
 }
 
@@ -814,19 +869,34 @@ function receiveClearAnnouncements() {
 // being cancelled, the mic closing, the orb settling. Cheap and idempotent, so
 // calling it too often costs nothing and missing a moment costs a silence.
 function pumpAnnouncements() {
-  const { speak, queue, dropped } = takeAnnouncement(announcements, {
-    state,
-    holding,
-    listening,
-    playing: playbackSource,
-    awaitingAnswer,
-  });
+  const floor = { state, holding, listening, playing: playbackSource, awaitingAnswer };
+  const { speak, queue, dropped, stale } = takeAnnouncement(announcements, floor);
   announcements = queue;
   if (dropped > 0) dbg(`${dropped} announcement(s) dropped as stale`);
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // The cue is decided here, not folded into the `!speak` return below: a
+  // watch report dropped for staleness still deserves its tone even when
+  // nothing is left to speak (see cueFor's own comment on `stale`), so this
+  // has to run whether or not `speak` ended up null. What must never happen
+  // is the cue sounding over an open mic or a clip already playing, and
+  // `speak` being null is not proof of that on its own -- takeAnnouncement
+  // sweeps `stale` before it ever checks the floor, so a long-queued report
+  // can go stale on a call made mid-hold. floorIsFree, on the very floor just
+  // built above, is the actual guarantee: nothing below this line ever runs
+  // while it is false, and that is the whole reason a cue can never land on
+  // top of speech.
+  if (floorIsFree(floor)) {
+    const audioReady = Boolean(audioCtx) && audioCtx.state === "running";
+    if (cueFor({ speak, stale, lastCueAt, now: Date.now(), audioReady })) playCue();
+  }
   if (!speak) return;
   // The server holds the text and does the speaking; this only says when.
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: "announce_ready", id: speak.id }));
 }
+
+document.addEventListener("visibilitychange", () => {
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+});
 
 // ---- Speech-to-text (Chrome Web Speech API, free) ----
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1416,6 +1486,18 @@ function drawOrb(now) {
   ctx.strokeStyle = hsla(p.hue, p.sat, 80, 0.5 + level * 0.3);
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+  // One faint extra ring, outside the rim, while a watcher's own report is
+  // still queued (attentionPending) -- not the orb's ordinary state, so it
+  // rides on top of whatever PALETTE[state] already drew rather than
+  // replacing it. No new ORB_STATES entry or palette colour: the amber here
+  // is its own, fixed hue, unrelated to the state-driven one above it.
+  if (attentionPending(announcements)) {
+    const ringR = R * 1.42 + Math.sin(t * 2.4) * 2;
+    ctx.strokeStyle = hsla(38, 96, 65, 0.28 + Math.sin(t * 3) * 0.08);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI * 2); ctx.stroke();
+  }
 
   requestAnimationFrame(drawOrb);
 }

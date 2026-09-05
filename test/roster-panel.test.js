@@ -24,7 +24,32 @@ test("a row says which session, where, how it is and how long", () => {
     number: 1,
     condition: "working",
     elapsed: "1m 5s",
+    watched: false,
+    reported: false,
   }]);
+});
+
+test("a finished row says finished, not idle or done", () => {
+  const ghost = record({ gone: true, state: "done", status: "idle", number: null });
+  assert.equal(rowsFromRoster([ghost], NOW)[0].condition, "finished");
+});
+
+test("a watched row says so, and an unwatched one says nothing", () => {
+  assert.equal(rowsFromRoster([record({ watched: true })], NOW)[0].watched, true);
+  assert.equal(rowsFromRoster([record()], NOW)[0].watched, false);
+});
+
+test("a session with a recent fire is reported, and one with none is not", () => {
+  assert.equal(rowsFromRoster([record({ firedAt: NOW - 1000 })], NOW)[0].reported, true);
+  assert.equal(rowsFromRoster([record()], NOW)[0].reported, false);
+});
+
+test("a ghost row sorts below every numbered session", () => {
+  const roster = [
+    record({ sessionId: "ghost", gone: true, number: null, startedAt: NOW - 60_000, endedAt: NOW - 10_000 }),
+    record({ sessionId: "one", number: 1 }),
+  ];
+  assert.deepEqual(rowsFromRoster(roster, NOW).map((r) => r.id), ["one", "ghost"]);
 });
 
 test("blocked is its own word, because it is the one you can do something about", () => {

@@ -32,8 +32,8 @@ import {
 } from "./lib/interview.js";
 import { readSession, summarizeSession } from "./lib/transcript.js";
 import {
-  WATCH_QUESTION, cancelTarget, createWatchers, describeFired, refuseWatch, resumedAmong, unwatchVerdict, watchCoverage,
-  watchEvent, watchVerdict,
+  GHOST_MS, WATCH_QUESTION, cancelTarget, createWatchers, describeFired, ghostRecords, pruneFired, refuseWatch,
+  resumedAmong, unwatchVerdict, watchCoverage, watchEvent, watchVerdict,
 } from "./lib/watch.js";
 import { createPending, neverStale, normalizeKind } from "./lib/announcements.js";
 import { recallableSessions } from "./lib/recall.js";
@@ -216,9 +216,26 @@ const rosterPoller = createRosterPoller({
     // the watch stays live instead of firing into silence, and fires on the
     // first tick after a page connects, reading the session back then, as
     // fresh as it can be.
+    // Pruned every tick, whether or not a page is open -- cheap, pure, and the
+    // only thing that ever keeps this map from growing for the life of the
+    // process (see pruneFired's own comment, lib/watch.js).
+    recentlyFired = pruneFired(recentlyFired, Date.now(), GHOST_MS);
     if (!voice) return;
     for (const fired of watchers.tick(roster, Date.now(), { skip })) {
       watchReported.set(fired.watch.sessionId, fired.change);
+      // Filled beside watchReported, not instead of it: watchReported is what
+      // reportComplete/reportAttention read to decide whether the generic
+      // line still needs saying; recentlyFired is what rosterForClient reads
+      // to draw a ghost row once the session leaves the roster outright (a
+      // blocked fire never does, so its row never becomes a ghost -- see
+      // ghostRecords' own comment on why a still-listed sessionId is skipped
+      // there). Both are marked here, synchronously, for the same reason: the
+      // firing has already happened by the time reportWatch's own await
+      // settles, and nothing downstream should have to wait on it to know
+      // that.
+      recentlyFired.set(fired.watch.sessionId, {
+        name: fired.watch.name, alias: fired.watch.alias, startedAt: fired.watch.startedAt, firedAt: Date.now(),
+      });
       reportWatch(fired).catch((e) => log("watch report failed:", e.message || e));
     }
   },
@@ -312,6 +329,21 @@ const reported = createDeduper();
 // will consume the entry when it does.
 const watchReported = new Map();
 
+// Sessions a watcher has fired for, recently -- keyed by sessionId, each entry
+// the little the sessions panel needs to draw a row (rowFromRecord's own
+// fields: name, alias, startedAt) plus the moment it fired, so ghostRecords
+// (lib/watch.js) can synthesise a "finished" row for a fixed window after a
+// gone fire removes the session from the roster outright. Unlike
+// watchReported this is not merely a fact to consult and forget: it is pruned
+// on a schedule (pruneFired, in onRoster above) rather than deleted the
+// instant its news is stale, because the row it feeds is meant to still be
+// there, on the panel, for GHOST_MS after the fire -- not gone the moment
+// reportComplete or the next tick notices the session is gone. Reassigned,
+// not mutated in place, on every prune: pruneFired is a pure function, like
+// everything else in lib/watch.js, and returns a new Map rather than editing
+// the one it was handed.
+let recentlyFired = new Map();
+
 // A watcher fires at most once, and this is what "firing" means: read the
 // session back the same way verb=read does -- that answer is the actual
 // point of a watch, not merely noticing the session stopped -- record it in
@@ -362,6 +394,17 @@ async function reportComplete(sessionId, context = {}) {
   const pending = watchers.cancel(sessionId);
   if (pending) {
     watchReported.set(sessionId, "gone");
+    // Filled here too, not only in onRoster's own tick loop -- this path runs
+    // with no accompanying roster tick at all (the SessionEnd hook calls this
+    // function directly, see /hook above), so nothing else is about to
+    // broadcast a roster that would carry this ghost. broadcastRoster is
+    // called explicitly, right below, for exactly that reason: onRoster's own
+    // fires need no equivalent call because onEvents already broadcasts
+    // unconditionally on the very same tick.
+    recentlyFired.set(sessionId, {
+      name: pending.name, alias: pending.alias, startedAt: pending.startedAt, firedAt: Date.now(),
+    });
+    broadcastRoster(context.roster);
     reportWatch({ watch: pending, change: "gone", record: null }).catch((err) =>
       log(`watch report failed for ${pending.name} (${pending.sessionId}): ${err.message}`),
     );
@@ -705,7 +748,7 @@ function rosterForClient(roster) {
   // over the FULL list, not the slice below, so a hidden sixteenth session
   // still has a number and "stop session sixteen" still resolves even though
   // the panel never draws that row.
-  return roster.slice(0, MAX_LISTED).map((record) => ({
+  const mapped = roster.slice(0, MAX_LISTED).map((record) => ({
     sessionId: record.sessionId,
     name: record.name,
     // The alias rather than the path: a repository is called "jarvis" out loud,
@@ -719,7 +762,22 @@ function rosterForClient(roster) {
     // that moment rather than counting on from startedAt (see trackEnded in
     // lib/agents.js). null for a live one: its age is counted on the page.
     endedAt: endedAtOf(record),
+    // Whether a watch is still live for this session, and the last time a
+    // watch fired for it -- read straight off this module's own registries
+    // rather than anything the poller's diffing produces, because neither is
+    // a fact about the roster itself. A blocked fire leaves the session on
+    // the roster (the one change that does not remove it), so firedAt can be
+    // non-null here too, not only on a ghost row below.
+    watched: watchers.has(record.sessionId),
+    firedAt: recentlyFired.get(record.sessionId)?.firedAt ?? null,
   }));
+  // Appended after the MAX_LISTED slice above, never folded into it: this
+  // function feeds only sendRoster/the sessions panel, never the model's own
+  // view of the roster (recallable, dispatchRead's matching, mentionedSessions
+  // and the rest all read the raw roster this function is handed, not its
+  // return value) -- so a ghost row can never be recalled, numbered, or
+  // matched by name the way a real session can.
+  return mapped.concat(ghostRecords(recentlyFired, roster, Date.now(), GHOST_MS));
 }
 
 function sendRoster(send, roster) {

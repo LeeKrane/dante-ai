@@ -129,7 +129,7 @@
     letter-spacing: .04em; color: var(--muted);
     pointer-events: auto;
   }
-  #sessions .sess { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 1.4ch; align-items: baseline; }
+  #sessions .sess { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; column-gap: 1.4ch; align-items: baseline; }
   #sessions .name { overflow-wrap: anywhere; }          /* wraps, never truncates */
   #sessions .cond, #sessions .when { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* The condition is the only part worth colour: working is alive, blocked is
@@ -138,6 +138,19 @@
   #sessions .working .cond { color: var(--cyan); opacity: 1; }
   #sessions .blocked .cond { color: var(--amber); opacity: 1; }
   #sessions .when { opacity: .55; }
+  /* A session that has left the roster but fired a watch within the last
+     ninety seconds (lib/watch.js's GHOST_MS) -- its own word, not idle or
+     done, because it is not on the roster to be either any more. */
+  #sessions .finished .cond { color: var(--muted); opacity: .75; }
+  /* Reserves its own column whether or not it has anything in it, the same
+     fixed-width treatment .star gets in a repo header, so a row with a dot
+     and one without still line up. Empty unless the row is watched or has a
+     recent report -- reported wins when, briefly, both are true (a watch
+     just fired is no longer `watched`, in practice, but the cascade order
+     below is what would decide it if one ever were). */
+  #sessions .dot { display: inline-block; width: 1.2ch; }
+  #sessions .watched .dot::before { content: "\25CF"; color: var(--cyan); }
+  #sessions .reported .dot::before { content: "\25CF"; color: var(--amber); }
   /* Shown in place of rows when the panel is open and nothing is running --
      otherwise pressing `s` with an empty roster would look like it did nothing. */
   #sessions .none { opacity: .55; }

@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  GHOST_MS,
   MAX_WATCHERS,
   WATCH_QUESTION,
   cancelTarget,
   createWatchers,
   describeFired,
+  ghostRecords,
+  pruneFired,
   refuseWatch,
   resumedAmong,
   unwatchVerdict,
@@ -105,6 +108,14 @@ test("add stores a watch and it is then visible to has, size and names", () => {
   assert.equal(watchers.has("s1"), true);
   assert.equal(watchers.size(), 1);
   assert.deepEqual(watchers.names(), ["jarvis-1"]);
+});
+
+test("a watch remembers where the session ran", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ alias: "jarvis", startedAt: 1000 }));
+  const [watch] = watchers.list();
+  assert.equal(watch.alias, "jarvis");
+  assert.equal(watch.startedAt, 1000);
 });
 
 test("add refuses a non-string or empty sessionId", () => {
@@ -598,4 +609,56 @@ test("WATCH_QUESTION asks what happened, what it produced and what it is waiting
   assert.match(WATCH_QUESTION, /what did this session just do/i);
   assert.match(WATCH_QUESTION, /what did it produce/i);
   assert.match(WATCH_QUESTION, /waiting on now/i);
+});
+
+// ---------------------------------------------------------------------------
+// ghostRecords / pruneFired
+// ---------------------------------------------------------------------------
+
+const NOW = 1_800_000_000_000;
+const fired = (over = {}) => ({ name: "jarvis-1", alias: "jarvis", startedAt: NOW - 60_000, firedAt: NOW, ...over });
+
+test("a finished session is still drawn for a minute, so its row does not vanish while it is spoken about", () => {
+  const recentlyFired = new Map([["s1", fired()]]);
+  const ghosts = ghostRecords(recentlyFired, [], NOW + 30_000, GHOST_MS);
+  assert.equal(ghosts.length, 1);
+  assert.equal(ghosts[0].sessionId, "s1");
+});
+
+test("a ghost carries its repository, so it is not filed under elsewhere", () => {
+  const recentlyFired = new Map([["s1", fired({ alias: "fitness" })]]);
+  const [ghost] = ghostRecords(recentlyFired, [], NOW, GHOST_MS);
+  assert.equal(ghost.alias, "fitness");
+});
+
+test("a ghost's clock stops at the fire", () => {
+  const recentlyFired = new Map([["s1", fired({ startedAt: NOW - 120_000, firedAt: NOW - 10_000 })]]);
+  const [ghost] = ghostRecords(recentlyFired, [], NOW, GHOST_MS);
+  assert.equal(ghost.startedAt, NOW - 120_000);
+  assert.equal(ghost.endedAt, NOW - 10_000);
+  assert.equal(ghost.number, null);
+  assert.equal(ghost.gone, true);
+  assert.equal(ghost.state, "done");
+  assert.equal(ghost.status, "idle");
+});
+
+test("a session back on the roster is no longer a ghost", () => {
+  const recentlyFired = new Map([["s1", fired()]]);
+  const roster = [{ sessionId: "s1", state: "working" }];
+  assert.deepEqual(ghostRecords(recentlyFired, roster, NOW, GHOST_MS), []);
+});
+
+test("a fired record older than the window is forgotten", () => {
+  const recentlyFired = new Map([["s1", fired({ firedAt: NOW - GHOST_MS - 1 })]]);
+  assert.deepEqual(ghostRecords(recentlyFired, [], NOW, GHOST_MS), []);
+});
+
+test("pruneFired drops every entry older than the window and keeps the rest, without mutating its argument", () => {
+  const recentlyFired = new Map([
+    ["old", fired({ firedAt: NOW - GHOST_MS - 1 })],
+    ["fresh", fired({ firedAt: NOW - 1000 })],
+  ]);
+  const pruned = pruneFired(recentlyFired, NOW, GHOST_MS);
+  assert.deepEqual([...pruned.keys()], ["fresh"]);
+  assert.deepEqual([...recentlyFired.keys()], ["old", "fresh"]);
 });
