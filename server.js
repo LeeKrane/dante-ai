@@ -2662,11 +2662,11 @@ wss.on("connection", (ws) => {
           activity(send, "interviewing", { subject: conv.interview.repo || undefined });
           log(`interview asked ${conv.interview.asked} (repo=${conv.interview.repo || "none"}, ` +
               `notes=${conv.interview.notes.length}, covered=${conv.interview.covered.join(",") || "none"})`);
-          // Runs the reply through stripInterviewPreamble -- see its comment
-          // in lib/interview.js for why this is needed at all.
+          // See stripInterviewPreamble in lib/interview.js for why a
+          // model-written lead-in has to be cut here at all.
           const question = stripInterviewPreamble(reply);
-          if (question !== reply) {
-            log(`interview preamble dropped, spoken as ${JSON.stringify(question)}: ${JSON.stringify(reply)}`);
+          if (question && question !== reply) {
+            log(`interview: dropped the model's lead-in ${JSON.stringify(reply.slice(0, reply.length - question.length).trim())}`);
           }
           // A tag with no question in front of it is a model that forgot the
           // question. It still counts -- asked is logged and reported, never

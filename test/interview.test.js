@@ -719,12 +719,11 @@ test("cleanBrief is empty for anything that is not a string", () => {
 
 test("a leading announcement of the interview is dropped and the questions behind it are kept verbatim", () => {
   const reply =
-    'Before I interview, sir: should repos be lettered A, B, C or should they follow repository names? ' +
-    "And should numbering persist across restarts or reset each session?";
+    'Before I interview, sir: should repos be lettered A, B, C? ' +
+    "And should numbering persist?";
   assert.equal(
     stripInterviewPreamble(reply),
-    "should repos be lettered A, B, C or should they follow repository names? " +
-      "And should numbering persist across restarts or reset each session?",
+    "should repos be lettered A, B, C? And should numbering persist?",
   );
 });
 
@@ -732,32 +731,27 @@ test("a reply that is only the announcement becomes nothing to speak", () => {
   assert.equal(stripInterviewPreamble("Before I interview, sir:"), "");
 });
 
-test("a plain question is returned unchanged", () => {
-  assert.equal(stripInterviewPreamble("What is the goal, sir?"), "What is the goal, sir?");
+test("the first-a-question announcement is dropped and the question behind it kept", () => {
+  assert.equal(stripInterviewPreamble("First, a question, sir: what is the goal?"), "what is the goal?");
 });
 
-test("a lead-in that does not mention the interview is left alone", () => {
-  const reply = "Before I ask, sir, one thing: is this the main repository?";
-  assert.equal(stripInterviewPreamble(reply), reply);
+test("the first-a-question announcement is dropped without the sir address too", () => {
+  assert.equal(stripInterviewPreamble("first, a question: what is the goal?"), "what is the goal?");
 });
 
-test("a clause with a question mark before the colon is left alone", () => {
-  const reply = "Really, before I interview, sir? one moment: is this the main repository?";
-  assert.equal(stripInterviewPreamble(reply), reply);
+test("a lower-case interviewing announcement is dropped too", () => {
+  assert.equal(stripInterviewPreamble("before I start interviewing, sir: which repo?"), "which repo?");
 });
 
-test("a clause of exactly eighty characters is stripped", () => {
-  const clause = `Before I interview you, sir, at needlessly great length about this ${"x".repeat(13)}`;
-  assert.equal(clause.length, 80, "the clause under test must be exactly eighty characters");
-  const reply = `${clause}: is this the main repository?`;
-  assert.equal(stripInterviewPreamble(reply), "is this the main repository?");
+test("a full-stop-ended announcement is dropped the same as a colon-ended one", () => {
+  assert.equal(
+    stripInterviewPreamble("Before we begin the interview, sir. What is the goal?"),
+    "What is the goal?",
+  );
 });
 
-test("a clause of eighty-one characters is left alone", () => {
-  const clause = `Before I interview you, sir, at needlessly great length about this ${"x".repeat(14)}`;
-  assert.equal(clause.length, 81, "the clause under test must be exactly eighty-one characters");
-  const reply = `${clause}: is this the main repository?`;
-  assert.equal(stripInterviewPreamble(reply), reply);
+test("a dash-ended announcement naming Krane by name is dropped the same way", () => {
+  assert.equal(stripInterviewPreamble("Before I interview you, Krane - what is the goal?"), "what is the goal?");
 });
 
 test("a colon inside the question itself is not where the strip stops", () => {
@@ -765,17 +759,46 @@ test("a colon inside the question itself is not where the strip stops", () => {
   assert.equal(stripInterviewPreamble(reply), "which repo: jarvis or dante?");
 });
 
+test("a colon or a time sitting inside the announcement itself leaves the reply alone", () => {
+  const reply = "Before I interview you, sir, at 3:15: is now a good time to start?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a ratio written as a colon inside the announcement also leaves the reply alone", () => {
+  const reply = "Before I interview you, sir, one thing (ratio 2:1): what is the goal?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("an option list before the colon is a real question, not the announcement, and is left alone", () => {
+  const reply = "First interview or full build, sir: which do you want?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a lead-in naming the interview as one of two options is left alone", () => {
+  const reply = "Before the interview or after the build: when should I run tests?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
+test("a lead-in that does not mention the interview is left alone", () => {
+  const reply = "Before I ask, sir, one thing: what is the goal?";
+  assert.equal(stripInterviewPreamble(reply), reply);
+});
+
 test("a real question that names the interview and uses a colon list is left alone", () => {
   const reply = "Which interview style: short or long?";
   assert.equal(stripInterviewPreamble(reply), reply);
 });
 
+test("a plain question is returned unchanged", () => {
+  assert.equal(stripInterviewPreamble("What is the goal, sir?"), "What is the goal, sir?");
+});
+
 test("a read-back opener that never mentions the interview is left alone", () => {
-  // lib/interview.js's own readBack() opens with "Before I propose, sir, let
-  // me check I have this right: ..." -- a colon-terminated leading clause,
-  // same shape as the bug, but it never says "interview" so it is untouched
-  // for that reason alone.
-  const reply = "Before I propose, sir, let me check I have this right: is this the main repository?";
+  // lib/interview.js's own readBack() opens with "Before I propose, sir, let me
+  // check I have this right: ..." -- a leading "before" clause, same family as
+  // the announcement this strips, but it neither interviews nor asks a first
+  // question, so it is untouched for that reason alone.
+  const reply = "Before I propose, sir, let me check I have this right: the goal is X.";
   assert.equal(stripInterviewPreamble(reply), reply);
 });
 
@@ -785,8 +808,12 @@ test("a non-string reply is nothing to speak", () => {
   assert.equal(stripInterviewPreamble(42), "");
 });
 
-test("a lower-case interviewing announcement is dropped too", () => {
-  assert.equal(stripInterviewPreamble("before I start interviewing, sir: what is the goal?"), "what is the goal?");
+test("doubled dashes in the announcement are consumed whole", () => {
+  assert.equal(stripInterviewPreamble("First, a question for you, sir--what is the goal?"), "what is the goal?");
+});
+
+test("doubled dots in the announcement are consumed whole", () => {
+  assert.equal(stripInterviewPreamble("Before I interview, sir...what is the goal?"), "what is the goal?");
 });
 
 // ---------------------------------------------------------------------------
