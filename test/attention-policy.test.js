@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  CUE_COOLDOWN_MS, GHOST_MS, WATCH_KINDS, attentionPending, cueFor, isWatchKind, owesCue, retainAnnouncement, titleFor,
+  CUE_COOLDOWN_MS, GHOST_MS, WATCH_KINDS, attentionPending, cueFor, isWatchKind, notifyFor, offerNotifyControl,
+  owesCue, retainAnnouncement, titleFor,
 } from "../public/attention-policy.js";
 import { GHOST_MS as SERVER_GHOST_MS } from "../lib/watch.js";
 
@@ -93,4 +94,42 @@ test("the tab says something only while nobody is looking", () => {
   assert.equal(titleFor("Dante", true, false), "Dante");
   assert.equal(titleFor("Dante", false, true), "Dante");
   assert.equal(titleFor("Dante", false, false), "Dante");
+});
+
+// --- notifyFor ---------------------------------------------------------
+
+test("a blocked watcher's report reaches a tab nobody is looking at", () => {
+  assert.equal(notifyFor({ kind: "watch-blocked", hidden: true, permission: "granted" }), true);
+});
+
+test("nothing is posted to a tab already in front of someone", () => {
+  assert.equal(notifyFor({ kind: "watch-blocked", hidden: false, permission: "granted" }), false);
+});
+
+test("permission never asked for, or refused, means nothing is posted", () => {
+  assert.equal(notifyFor({ kind: "watch-blocked", hidden: true, permission: "default" }), false);
+  assert.equal(notifyFor({ kind: "watch-blocked", hidden: true, permission: "denied" }), false);
+  assert.equal(notifyFor({ kind: "watch-blocked", hidden: true, permission: undefined }), false);
+});
+
+test("an ordinary announcement never becomes a notification", () => {
+  assert.equal(notifyFor({ kind: "watch-idle", hidden: true, permission: "granted" }), false);
+  assert.equal(notifyFor({ kind: "watch-gone", hidden: true, permission: "granted" }), false);
+  assert.equal(notifyFor({ kind: "other", hidden: true, permission: "granted" }), false);
+});
+
+// --- offerNotifyControl -------------------------------------------------
+
+test("the control is offered only when something is actually watched", () => {
+  assert.equal(offerNotifyControl({ watchedCount: 0, permission: "default", supported: true }), false);
+  assert.equal(offerNotifyControl({ watchedCount: 1, permission: "default", supported: true }), true);
+});
+
+test("the control is offered only while permission has never been decided", () => {
+  assert.equal(offerNotifyControl({ watchedCount: 1, permission: "granted", supported: true }), false);
+  assert.equal(offerNotifyControl({ watchedCount: 1, permission: "denied", supported: true }), false);
+});
+
+test("the control is never offered where Notification does not exist", () => {
+  assert.equal(offerNotifyControl({ watchedCount: 1, permission: "default", supported: false }), false);
 });

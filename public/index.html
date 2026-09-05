@@ -180,6 +180,25 @@
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
   }
+  /* The opt-in Web Notification control. A sibling of #sessions rather than a
+     row inside it -- renderSessions rebuilds that node wholesale with
+     replaceChildren on every roster tick, which would tear a control (and any
+     pending click) out from under a person mid-press. Shown only while
+     offerNotifyControl says so: something is actually watched, permission has
+     never been asked, and the browser has the API at all. The bottom-left
+     corner is the one none of the other panels (#dbg top-left, #sessions
+     top-right, #brief bottom-right, #keys bottom-centre) already claim.
+     Styled like the rest of them so it reads as the same chrome. */
+  #notify-toggle {
+    position: fixed; bottom: 10px; left: 10px; z-index: 20;
+    max-width: min(40ch, 92vw);
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: rgba(3,10,16,.72); backdrop-filter: blur(2px);
+    font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: .04em; color: var(--muted);
+    cursor: pointer; pointer-events: auto;
+  }
+  #notify-toggle:hover { color: var(--ink); }
   /* One switch per panel, under the controls: the key that toggles it and
      its name, lit while it is on. Permanent, so the keys can be learned from
      it. Its own row rather than a corner because nothing else is ever there,
@@ -512,6 +531,7 @@
 <body>
   <div id="dbg" class="hidden"></div>
   <div id="sessions" aria-live="off"></div>
+  <button id="notify-toggle" class="hidden" type="button">notify me when a watched session is blocked</button>
   <div id="brief" class="hidden"></div>
   <div id="build-hud" class="hidden" aria-hidden="true">
     <canvas id="bh-record"></canvas>

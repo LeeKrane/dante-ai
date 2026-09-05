@@ -254,6 +254,15 @@ says so and offers nothing to confirm. Watches exist only in memory, five at a t
 not survive a restart — a Dante that just restarted has plainly stopped
 watching whatever it was watching before.
 
+A watcher firing on a permission prompt is also the one report that can post a
+browser notification, if you've opted in. It's opt-in and blocked-only —
+finishing or going idle never does this — because a blocked session is the one
+kind of news that stays true no matter how long the tab sits unread, and the
+only one worth reaching you when you've looked away from it altogether. A
+small button appears once a session is being watched, offering to ask; the
+permission prompt itself only ever appears after that click, never on load
+and never on its own.
+
 The difference between *tell* and *interrupt* is timing and nothing else, and
 when it isn't clear which you meant, it picks *tell*. Neither one forks the
 session or waits for it to go idle — both used to, and the machinery that did

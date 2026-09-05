@@ -108,3 +108,29 @@ export function attentionPending(queue) {
 export function titleFor(base, pending, hidden) {
   return pending && hidden ? `• ${base}` : base;
 }
+
+// notifyFor({ kind, hidden, permission }) -> whether a fired watch report is
+// worth a Web Notification right now. Blocked only: it is the one kind of
+// news that stays actionable no matter how long the tab has been away
+// (retainAnnouncement, above already never lets it go stale), so it is the
+// only kind worth reaching someone who is not even looking at the page.
+// `hidden` keeps a notification from ever popping up on top of the tab
+// already saying the same thing out loud in front of the person reading it.
+// `permission` is read, never requested, by the caller -- this function
+// decides nothing about asking, only about posting once the answer is
+// already "granted".
+export function notifyFor({ kind, hidden, permission } = {}) {
+  return kind === "watch-blocked" && hidden === true && permission === "granted";
+}
+
+// offerNotifyControl({ watchedCount, permission, supported }) -> whether the
+// opt-in control belongs on screen right now. All three have to hold: no
+// watched session makes the offer meaningless (there is nothing it could
+// ever notify about), a permission already decided -- granted or denied --
+// makes asking again either redundant or exactly the silent no-op browsers
+// give a page that re-prompts after a refusal, and a browser with no
+// Notification API at all (`supported`, the caller's own `"Notification" in
+// window`) has nothing to grant in the first place.
+export function offerNotifyControl({ watchedCount, permission, supported } = {}) {
+  return Boolean(supported) && permission === "default" && Number(watchedCount) > 0;
+}

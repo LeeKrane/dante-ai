@@ -16,7 +16,7 @@ import {
   stateAfterClip,
   takeAnnouncement,
 } from "./playback-policy.js";
-import { attentionPending, cueFor, owesCue, titleFor } from "./attention-policy.js";
+import { attentionPending, cueFor, notifyFor, offerNotifyControl, owesCue, titleFor } from "./attention-policy.js";
 import {
   clampVolume,
   parseStoredVolume,
@@ -621,6 +621,10 @@ ws.onmessage = async (ev) => {
 // Only sessions Dante may see reach here: the server filters to the
 // repositories that were named out loud before any of this is sent.
 const sessionsEl = document.getElementById("sessions");
+// The opt-in Web Notification control -- a sibling of #sessions in the DOM
+// (see index.html's own comment) so a click on it survives renderSessions
+// rebuilding the panel wholesale with replaceChildren every second.
+const notifyToggleEl = document.getElementById("notify-toggle");
 let roster = [];
 // The repositories a session can start in, main first -- see
 // lib/memory.js:workspacesForClient. Empty until the "workspaces" message
@@ -721,7 +725,22 @@ function sendSetMain(alias) {
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: "set_main", alias }));
 }
 
+// Toggles the opt-in notification control's visibility from the roster this
+// page already has -- `row.watched` rides straight off the roster message
+// (server.js's rosterForClient), so there is nothing here to compute beyond
+// counting it. Called from renderSessions on every roster tick, and again
+// once a click below resolves the permission prompt, since that is the one
+// other moment the answer offerNotifyControl depends on can change.
+function updateNotifyToggle() {
+  if (!notifyToggleEl) return;
+  const supported = "Notification" in window;
+  const permission = supported ? Notification.permission : undefined;
+  const watchedCount = roster.filter((row) => row.watched).length;
+  notifyToggleEl.classList.toggle("hidden", !offerNotifyControl({ watchedCount, permission, supported }));
+}
+
 function renderSessions() {
+  updateNotifyToggle();
   if (!sessionsEl) return;
   sessionsEl.classList.toggle("hidden", !panelIsVisible(sessionsOpen));
 
@@ -776,6 +795,18 @@ sessionsEl?.addEventListener("keydown", (e) => {
   if (!header) return;
   e.preventDefault();
   sendSetMain(header.dataset.alias);
+});
+
+// The one and only place Notification.requestPermission() is ever called --
+// a page that asks on load or on some unrelated action is the reason browsers
+// throttle or ignore the prompt outright, and offerNotifyControl already
+// keeps this control off screen once the answer is anything but "default".
+// Re-toggles afterwards rather than waiting for the next roster tick, since a
+// click just answered the one question offerNotifyControl asks about
+// permission and the control must not sit there offering it again.
+notifyToggleEl?.addEventListener("click", () => {
+  if (!("Notification" in window)) return;
+  Notification.requestPermission().then(updateNotifyToggle);
 });
 
 // One timer for the whole panel, and only while there is something in it: the
@@ -848,6 +879,13 @@ renderKeys();
 // answer are all things only this page knows.
 let announcements = [];
 
+// The Web Notification a blocked watch just posted, if any -- kept only so a
+// return to the tab (the visibilitychange listener below) can close it. Never
+// more than one at a time: `tag: msg.sessionId` already makes a second post
+// for the same session replace the first at the OS level, and this only
+// tracks whichever the page itself most recently opened.
+let openNotification = null;
+
 // `at` is stamped on arrival rather than taken from the server, so staleness is
 // measured on one clock -- the one the person is standing next to.
 function receiveAnnouncement(msg) {
@@ -862,6 +900,21 @@ function receiveAnnouncement(msg) {
   // moment it arrives, not only once the floor frees up and pumpAnnouncements
   // next runs.
   document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // Notification.permission is read here, never requested -- the only place
+  // that ever asks is notifyToggleEl's click handler above. Guarded by
+  // `"Notification" in window` because a browser without the API has no
+  // `Notification` global to read `.permission` off at all. The constructor
+  // itself can still throw (a browser can refuse for reasons of its own, e.g.
+  // a page that lost focus mid-permission-change), so it's wrapped rather
+  // than trusted.
+  if ("Notification" in window
+      && notifyFor({ kind: msg.kind, hidden: document.hidden, permission: Notification.permission })) {
+    try {
+      openNotification = new Notification(msg.text, { tag: msg.sessionId });
+    } catch (e) {
+      dbg(`notification failed: ${e.message || e}`);
+    }
+  }
   pumpAnnouncements();
 }
 
@@ -923,6 +976,14 @@ function pumpAnnouncements() {
 
 document.addEventListener("visibilitychange", () => {
   document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // A notification posted because nobody was looking has done its job the
+  // moment someone is: left open, it would sit there claiming a blocked
+  // session still needs attention after the tab it was standing in for has
+  // already been read.
+  if (!document.hidden && openNotification) {
+    openNotification.close();
+    openNotification = null;
+  }
 });
 
 // ---- Speech-to-text (Chrome Web Speech API, free) ----
