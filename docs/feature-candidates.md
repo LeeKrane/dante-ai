@@ -20,7 +20,8 @@ daily use is measured yet. The council's first recommendation, local usage count
 event log and diagnostics panel, is not on this list because the owner did not shortlist it, but
 several entries below say they wait on those counters.
 
-Verdict tags: SHIP-NEXT, SOON, LATER, MEASURE-FIRST.
+Verdict tags: SHIP-NEXT, SOON, LATER, MEASURE-FIRST. Implementation plans, one per entry, live in
+`docs/roadmap/`.
 
 ---
 
