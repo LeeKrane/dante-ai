@@ -179,6 +179,9 @@
   #sessions .repo .repo-letter { display: inline-block; width: 2.6ch; color: var(--cyan); }
   @media (max-width: 520px) {
     #sessions { left: 10px; right: 10px; max-width: none; }
+    /* #keys' pills reach this corner at this width -- clear its row instead
+       of sharing the strip with it. */
+    #notify-toggle { bottom: 60px; max-width: min(70vw, 32ch); }
   }
   /* The opt-in Web Notification control. A sibling of #sessions rather than a
      row inside it -- renderSessions rebuilds that node wholesale with
@@ -186,9 +189,11 @@
      pending click) out from under a person mid-press. Shown only while
      offerNotifyControl says so: something is actually watched, permission has
      never been asked, and the browser has the API at all. The bottom-left
-     corner is the one none of the other panels (#dbg top-left, #sessions
-     top-right, #brief bottom-right, #keys bottom-centre) already claim.
-     Styled like the rest of them so it reads as the same chrome. */
+     corner is unclaimed by the other panels (#dbg top-left, #sessions
+     top-right, #brief bottom-right, #keys bottom-centre) at normal widths;
+     at narrow widths #keys grows into wider pills that can reach into this
+     corner too, so the mobile media query below lifts this control clear of
+     that row. Styled like the rest of them so it reads as the same chrome. */
   #notify-toggle {
     position: fixed; bottom: 10px; left: 10px; z-index: 20;
     max-width: min(40ch, 92vw);
@@ -424,7 +429,8 @@
   body.interface-hidden #progress,
   body.interface-hidden #artifact,
   body.interface-hidden #build-hud,
-  body.interface-hidden #controls { display: none; }
+  body.interface-hidden #controls,
+  body.interface-hidden #notify-toggle { display: none; }
 
   /* ---- Build HUD ("the groove") ----
      A full-frame overlay BEHIND #stage that runs only while a build is running.

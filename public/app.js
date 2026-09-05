@@ -735,7 +735,7 @@ function updateNotifyToggle() {
   if (!notifyToggleEl) return;
   const supported = "Notification" in window;
   const permission = supported ? Notification.permission : undefined;
-  const watchedCount = roster.filter((row) => row.watched).length;
+  const watchedCount = roster.filter((row) => row.watched === true).length;
   notifyToggleEl.classList.toggle("hidden", !offerNotifyControl({ watchedCount, permission, supported }));
 }
 
@@ -805,8 +805,12 @@ sessionsEl?.addEventListener("keydown", (e) => {
 // click just answered the one question offerNotifyControl asks about
 // permission and the control must not sit there offering it again.
 notifyToggleEl?.addEventListener("click", () => {
+  notifyToggleEl.blur();
   if (!("Notification" in window)) return;
-  Notification.requestPermission().then(updateNotifyToggle);
+  // Wrapped in Promise.resolve because the older callback-only form of this
+  // API (still what some browsers implement) returns nothing to chain
+  // .then() off, and calling .then() on undefined throws.
+  Promise.resolve(Notification.requestPermission()).then(updateNotifyToggle);
 });
 
 // One timer for the whole panel, and only while there is something in it: the
@@ -879,12 +883,12 @@ renderKeys();
 // answer are all things only this page knows.
 let announcements = [];
 
-// The Web Notification a blocked watch just posted, if any -- kept only so a
-// return to the tab (the visibilitychange listener below) can close it. Never
-// more than one at a time: `tag: msg.sessionId` already makes a second post
-// for the same session replace the first at the OS level, and this only
-// tracks whichever the page itself most recently opened.
-let openNotification = null;
+// The Web Notifications blocked watches have posted, keyed by sessionId, so
+// a return to the tab (the visibilitychange listener below) can close every
+// one of them, not just whichever fired last. `tag: msg.sessionId` already
+// makes a second post for the same session replace the first at the OS
+// level, so this only ever needs one entry per session.
+const openNotifications = new Map();
 
 // `at` is stamped on arrival rather than taken from the server, so staleness is
 // measured on one clock -- the one the person is standing next to.
@@ -910,7 +914,13 @@ function receiveAnnouncement(msg) {
   if ("Notification" in window
       && notifyFor({ kind: msg.kind, hidden: document.hidden, permission: Notification.permission })) {
     try {
-      openNotification = new Notification(msg.text, { tag: msg.sessionId });
+      const n = new Notification("Dante", { body: msg.text, tag: msg.sessionId });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+        openNotifications.delete(msg.sessionId);
+      };
+      openNotifications.set(msg.sessionId, n);
     } catch (e) {
       dbg(`notification failed: ${e.message || e}`);
     }
@@ -979,10 +989,12 @@ document.addEventListener("visibilitychange", () => {
   // A notification posted because nobody was looking has done its job the
   // moment someone is: left open, it would sit there claiming a blocked
   // session still needs attention after the tab it was standing in for has
-  // already been read.
-  if (!document.hidden && openNotification) {
-    openNotification.close();
-    openNotification = null;
+  // already been read. Every entry closes, not just one -- two sessions can
+  // each have blocked and posted their own tagged notification while this
+  // tab was hidden.
+  if (!document.hidden && openNotifications.size > 0) {
+    for (const n of openNotifications.values()) n.close();
+    openNotifications.clear();
   }
 });
 
