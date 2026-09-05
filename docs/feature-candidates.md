@@ -1,11 +1,12 @@
 # Feature candidates
 
-The twelve candidates from the council review of 2026-09-02 that the owner is willing to
-consider, each checked against main at 73d2c40 on 2026-09-05. The other twenty-four entries the
-council scored (instrumentation, the ambient status strip and diff-stat, the transcript overlay,
-the action log, the rejected and conflicting items) were cut from this file on 2026-09-05; the
-last three cut were 13 (interview memoisation), 14 (STT confirm, already implemented) and 15
-(speech throttling, decided against in code). All remain in git history at commit 5fd499d.
+The ten candidates from the council review of 2026-09-02 that the owner is willing to
+consider, each checked against main at 73d2c40 on 2026-09-05. The other twenty-six entries the
+council scored were cut from this file on 2026-09-05: instrumentation, the ambient status strip
+and diff-stat, the transcript overlay, the action log, the rejected and conflicting items, then
+13 (interview memoisation), 14 (STT confirm, already implemented), 15 (speech throttling, decided
+against in code), 7 (batch confirm, one proposal slot means nothing to batch) and 23
+(diff-of-intent tree, builder path only). All remain in git history at commit 51cdbba.
 Numbers are the council's original numbers, kept so
 the plan file and the two council documents still line up.
 
@@ -56,17 +57,6 @@ can answer conversationally. There is no dedicated verb, and `recap` is history 
 ---
 
 ## Soon
-
-### 7. Batch confirm
-**What.** Let several proposals be pending at once and answer them with one "yes", each named in
-the read-back.
-**Why.** With up to five sessions the confirmation cadence, not the feature set, may be the real
-friction; two peer reviewers flagged confirmation fatigue as the thing every advisor ignored.
-Batching keeps the explicit gate and cuts the round trips.
-**What would change.** `conv.proposal` becomes a list; `answerProposal` in `server.js` runs every
-entry on a yes and clears all on a no; `lib/verdict.js` names each entry in the spoken line.
-**On main.** Absent. `conv.proposal` is a single object (`server.js:781`); a second request
-overwrites the first, so a "yes" can only ever answer the newest ask. Score 8. Channel −. Size S.
 
 ### 10. Notes query by voice
 **What.** "What do you know about X" looks a topic up across the whole notes store under
@@ -166,15 +156,4 @@ through a peer frame. Score 5. Channel +. Size S.
 `lib/registry.js`, which holds build primitives, not session kinds.
 **On main.** Partial. Two kinds ship, `review` and `tests`. A `brainstorm` kind exists on the
 unmerged `worktree-brainstorm-kind` branch. Score 5. Channel 0. Size S.
-
-### 23. Diff-of-intent tree for the plan step
-**What.** Before a multi-step build starts, render its whole plan as a tree in the build HUD, the
-way IDE assistants preview before applying.
-**Why.** The plan is Dante's own output, so showing it breaks no read-only rule. But builds are
-now the secondary use, and the HUD already draws the steps as they run.
-**What would change.** A new wire message carrying the full step list before the first progress
-line, and `public/progress-policy.js` seeding the tree from it instead of growing it per line.
-**On main.** Absent. The wire carries only per-line `progress` messages (`server.js:2209`); the
-HUD keeps a five-line window drawn as a tree as lines arrive (`public/progress-policy.js:103`).
-Score 5. Channel 0. Size M.
 
