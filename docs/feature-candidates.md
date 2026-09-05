@@ -1,10 +1,12 @@
 # Feature candidates
 
-The fifteen candidates from the council review of 2026-09-02 that the owner is willing to
-consider, each checked against main at 73d2c40 on 2026-09-05. The other twenty-one entries the
+The twelve candidates from the council review of 2026-09-02 that the owner is willing to
+consider, each checked against main at 73d2c40 on 2026-09-05. The other twenty-four entries the
 council scored (instrumentation, the ambient status strip and diff-stat, the transcript overlay,
-the action log, the rejected and conflicting items) were cut from this file on 2026-09-05; they
-remain in git history at commit 30c030a. Numbers are the council's original numbers, kept so
+the action log, the rejected and conflicting items) were cut from this file on 2026-09-05; the
+last three cut were 13 (interview memoisation), 14 (STT confirm, already implemented) and 15
+(speech throttling, decided against in code). All remain in git history at commit 5fd499d.
+Numbers are the council's original numbers, kept so
 the plan file and the two council documents still line up.
 
 Each entry says what the feature is, why it earned its place, what would change in the code, and
@@ -90,18 +92,6 @@ so no bundler question) and a per-event choice of tone versus sentence in `lib/n
 **On main.** Absent. The only audio element is the TTS clip player (`public/index.html:590`); no
 tone, chime or sound file exists anywhere. Score 7. Channel −. Size S.
 
-### 15. Speech throttling while progress streams
-**What.** Hold non-urgent recap speech while a build or session start is streaming progress.
-**Why.** Car assistants say less while the driver is busy. The council's premise was that Dante
-talks over its own progress.
-**What would change.** Add "working" to the busy states in `public/playback-policy.js` for
-recap-class clips only, with a cap so a long build cannot hold an announcement for minutes.
-**On main.** Absent, and decided against once. `BUSY_STATES` in `public/playback-policy.js:103`
-leaves "working" out on purpose: a background build is not a conversation, and holding an
-announcement until it lands would hold it for minutes. Progress lines go to the HUD, not to
-speech, so the premise is weaker than the council assumed. Downgraded to LATER unless the usage
-counters show announcements colliding with progress. Score 4. Channel −. Size S.
-
 ### 18. State reasons in reports
 **What.** Carry the reason behind "blocked" or "needs attention" (which approval, what it waits
 for) onto the session record so the panel and spoken reports show it.
@@ -141,31 +131,6 @@ traffic, and if expiries are near zero it solves nothing.
 `resumedAmong` in `lib/watch.js` already clears the entry on resume.
 **On main.** Absent. A needs-attention is spoken exactly once per session and detail; it repeats
 only if the session resumes and blocks again. Score 7. Channel +. Size S to M.
-
-### 13. Interview memoisation per workspace
-**What.** Remember the where and constraints answers given for a repository and skip those facets
-when the next interview targets the same one.
-**Why.** Repeated briefs in one repository repeat the same answers. Worth it only if interviews
-repeat their shape, which the counters will show.
-**What would change.** A per-repository facet store beside the notes; `interview` in
-`lib/interview.js` seeds `covered` from it, and the read-back states the reused answers so a
-stale one still gets its yes. `docs/interview.md` and the persona paragraph change with it.
-**On main.** Absent. Only a still-live interview within `INTERVIEW_TTL_MS` carries forward
-(`lib/interview.js:194`); notes are not consulted and `[MEMORY:SET]` holds config keys, not
-facets. Score 7. Channel −. Size M.
-
-### 14. STT confirm and correct before dispatch
-**What.** Read back what was heard and wait for a "yes" before any session command runs.
-**Why.** First Principles named STT reliability the most load-bearing unverified assumption. Two
-extra cycles per command is the highest channel cost on the list.
-**What would change.** Little. The residual gap is the raw transcript of `read`, `recap` and
-`unwatch`, which dispatch without a gate, and a misheard interview answer, which surfaces only
-through the facet read-back. A display-only "what it heard" transcript overlay (council item 8,
-not on this list) would cover both at zero channel cost.
-**On main.** Implemented for everything that acts. `CONFIRMED_VERBS` in `lib/confirm.js:47`
-gates start, tell, interrupt, stop and watch behind a spoken yes, and the confirming phase reads
-all four facets back once (`readBack`, `lib/interview.js:679`). Treat as done.
-Score 7. Channel ++. Size M.
 
 ---
 
