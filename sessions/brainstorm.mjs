@@ -8,6 +8,8 @@
 // command is one line by construction and drops the brief on purpose --
 // see buildStartArgs in lib/spawn-session.js), so `prompt` is what composes
 // the whole thing. See the `prompt` field's comment in sessions/_template.mjs.
+// Verified live on CLI 2.1.259 with `claude --bg`, not just read off its
+// docs -- see test/spawn-session.test.js for the fixture that pins it.
 //
 // This session is not asked to build anything. The council reads a brief the
 // way a build session would read a plan, and the point of running it here,

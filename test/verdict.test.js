@@ -135,3 +135,24 @@ test("a verdict with no name still names something", () => {
   assert.match(tellVerdict({ channel: "peer" }), /^Sent to that session/);
   assert.match(startVerdict({ listed: true }), /^Running as that session/);
 });
+
+test("an ordinary start, with nothing overridden, never mentions a command", () => {
+  assert.equal(startVerdict({ name: "bug-hunt", listed: true }), "Running as bug-hunt.");
+  assert.doesNotMatch(startVerdict({ name: "bug-hunt", listed: true, overriddenKind: null }), /command/);
+});
+
+test("a command that replaced a kind's own prompt is named out loud, not just logged", () => {
+  const spoken = startVerdict({ name: "bug-hunt", listed: true, overriddenKind: "brainstorm" });
+  assert.equal(spoken, "Running as bug-hunt, the command replaced the brainstorm prompt.");
+});
+
+test("the override clause reads as one sentence regardless of which roster branch reported", () => {
+  assert.equal(
+    startVerdict({ name: "bug-hunt", listed: false, overriddenKind: "brainstorm" }),
+    "Started as bug-hunt, sir. It is not on the roster yet, the command replaced the brainstorm prompt.",
+  );
+  assert.equal(
+    startVerdict({ name: "bug-hunt", listed: null, overriddenKind: "brainstorm" }),
+    "Started as bug-hunt, sir, but I could not check the roster, the command replaced the brainstorm prompt.",
+  );
+});

@@ -49,7 +49,7 @@ import {
 import { speakStream } from "./lib/tts.js";
 import { parseAction } from "./lib/action.js";
 import { loadRegistry } from "./lib/registry.js";
-import { loadSessionKinds, buildName, missingSkill, promptFor } from "./lib/sessions.js";
+import { loadSessionKinds, buildName, missingSkill, promptFor, recordedKind } from "./lib/sessions.js";
 import {
   MAX_SESSIONS, newSessionId, refuseStart, startSession, resolveStartedSession, stopSession, tellSession,
   createInFlight, daemonId,
@@ -2074,7 +2074,7 @@ async function dispatchSession(send, session, preamble = "", roster = null, conv
     // The preamble is the model's own confirmation, which is usually the whole
     // sentence. The name is added because it is how every later command refers to
     // this session, and hearing it once is what makes "stop jarvis three" possible.
-    await say(send, joinSpoken(preamble, startVerdict({ name: started.name, listed })));
+    await say(send, joinSpoken(preamble, startVerdict({ name: started.name, listed, overriddenKind: started.overriddenKind })));
   } finally {
     activity(send, null);
   }
@@ -2102,16 +2102,24 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     (Array.isArray(taken) ? taken : []).map((r) => r.name),
   );
 
+  // Composed once, here, rather than inline further down: missingSkill just
+  // below needs the same composed prompt startSession is handed, so a kind
+  // whose `prompt` hook opens with a slash command but never wrote that name
+  // down in its own `skill` field can still be checked against what it is
+  // actually about to run -- see leadingSkill in lib/sessions.js.
+  const composedPrompt = promptFor(kind, { task, brief, alias: workspace.alias });
+
   // A kind whose `prompt` hook opens with a slash command (brainstorm's
   // /council-review) is refused here, before anything is spawned, when its
-  // declared `skill` is not among the skills loadCommands actually found on
-  // disk (lib/commands.js) -- the same allow-list vetCommand already checked
-  // a spoken command= against, at the message-tag stage, before this ever
-  // ran. Skipped when `command` is present: an explicit command REPLACES the
-  // kind's own prompt outright (see buildStartArgs in lib/spawn-session.js),
-  // so the kind's own skill never runs and there is nothing to refuse.
+  // declared or composed skill is not among the skills loadCommands actually
+  // found on disk (lib/commands.js) -- the same allow-list vetCommand already
+  // checked a spoken command= against, at the message-tag stage, before this
+  // ever ran. Skipped when `command` is present: an explicit command
+  // REPLACES the kind's own prompt outright (see buildStartArgs in lib/spawn-
+  // session.js), so the kind's own skill never runs and there is nothing to
+  // refuse.
   if (!command) {
-    const missing = missingSkill(kind, knownCommands);
+    const missing = missingSkill(kind, knownCommands, composedPrompt);
     if (missing) {
       const error = `the ${missing} skill is not installed`;
       log(`session start refused name=${name} kind=${kindId} ${error}`);
@@ -2124,8 +2132,10 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   // The one case buildStartArgs's own silent choice (a command present wins
   // over a brief) is worth a line about: a kind whose whole point is its own
   // composed prompt just had that prompt thrown away in favour of whatever
-  // command= named instead.
-  if (command && kind?.prompt) {
+  // command= named instead. Also carried into the spoken confirmation below
+  // (see startVerdict's own comment for why), not just logged.
+  const overriddenKind = command && kind?.prompt ? kindId : null;
+  if (overriddenKind) {
     log(`command ${JSON.stringify(command)} replaced ${kindId}'s own prompt for ${name}`);
   }
 
@@ -2140,7 +2150,7 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
     // entirely -- see promptFor's own comment in lib/sessions.js for why. A
     // kind with no hook gets the brief back unchanged, so this is a no-op
     // for every kind but the ones that ask for it.
-    brief: promptFor(kind, { task, brief, alias: workspace.alias }),
+    brief: composedPrompt,
     command,
     systemPrompt: kind?.systemPrompt?.({ task, alias: workspace.alias }),
     model: kind?.model,
@@ -2190,16 +2200,15 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   // lately", and ten sessions would push every build out of that answer.
   rememberSession(memoryStore, liveSessionId, {
     name, alias: workspace.alias, cwd: workspace.path, task,
-    // Not kindId unconditionally: a command= present means buildStartArgs
-    // (lib/spawn-session.js) ran that command instead of the kind's own
-    // prompt -- see the log line above -- so a kind whose speaksVerdict is
-    // true (lib/sessions.js) never actually asked the council for anything
-    // here. Remembering null keeps reportComplete's and reportWatch's
-    // speaksVerdict gate closed for a session that ran an arbitrary command
-    // under a brainstorm-shaped kind; dispatchWatch's own kindId (see
-    // dispatchWatch below) reads this same stored field, so it follows the
-    // same rule for free.
-    kind: command ? null : (kindId ?? null),
+    // recordedKind (lib/sessions.js): null whenever a command= replaced
+    // whatever the kind would have composed, so a kind whose speaksVerdict is
+    // true (lib/sessions.js) is never trusted for a session that never
+    // actually asked the council for anything. Remembering null keeps
+    // reportComplete's and reportWatch's speaksVerdict gate closed for a
+    // session that ran an arbitrary command under a brainstorm-shaped kind;
+    // dispatchWatch's own kindId (see dispatchWatch below) reads this same
+    // stored field, so it follows the same rule for free.
+    kind: recordedKind({ kindId, command }),
     // daemonId(), not the record's `.id` read straight off it: everything the
     // roster carries came from the CLI, but a stored shortId is later handed
     // to `claude stop <id>` as an argument, and this is what makes sure it
@@ -2214,7 +2223,7 @@ async function beginSession({ workspace, task, kind: kindId, taken = [], then = 
   saveStore(memoryStore);
   log(`session started name=${name} id=${liveSessionId} cwd=${workspace.path}${then ? " then=" + JSON.stringify(then) : ""}`);
 
-  return { ok: true, name, sessionId: liveSessionId };
+  return { ok: true, name, sessionId: liveSessionId, overriddenKind };
 }
 
 async function dispatchAction(send, conv, action, preamble = "") {

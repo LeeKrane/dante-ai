@@ -349,6 +349,72 @@ test("single-marker emphasis is only stripped when it hugs a real word", () => {
   assert.equal(extractDoThisFirst(text), "Fix the retry loop.");
 });
 
+test("a blank line between the heading and its body is markdown convention, not an empty section", () => {
+  // The bug: the colon form's own regex stops before the newline, so `after`
+  // began with the blank line markdown puts under a heading, and
+  // NEXT_BLANK_LINE matched that blank line at index 0 -- indistinguishable,
+  // to the old code, from a section with nothing under it at all.
+  const colon = "### Do This First:\n\nRestart the daemon before deploying anything else.\n\n**How to verify:** check the logs.";
+  assert.equal(extractDoThisFirst(colon), "Restart the daemon before deploying anything else.");
+
+  const noColon = "### Do This First\n\nRestart the daemon before deploying anything else.\n\n**How to verify:** check the logs.";
+  assert.equal(extractDoThisFirst(noColon), "Restart the daemon before deploying anything else.");
+
+  // The inline form this fix must not disturb: a colon followed directly by
+  // the body on the heading's own line, no blank line involved at all.
+  assert.equal(
+    extractDoThisFirst("### Do This First: restart the daemon before deploying anything else."),
+    "restart the daemon before deploying anything else.",
+  );
+});
+
+test("a later, empty repeat of the heading does not discard the real section that came before it", () => {
+  // A recap or a table-of-contents echo can repeat the heading with nothing
+  // under it. Taking the textually LAST match unconditionally used to lose
+  // the real verdict to that empty repeat; the fix is to keep looking
+  // backward until a section that actually says something is found.
+  const text = [
+    "### Do This First",
+    "Restart the daemon before deploying anything else.",
+    "",
+    "### Summary of sections",
+    "1. Do This First",
+    "2. How to verify",
+    "",
+    "### Do This First",
+    "",
+  ].join("\n");
+  assert.equal(extractDoThisFirst(text), "Restart the daemon before deploying anything else.");
+});
+
+test("a heading with no word boundary after \"first\" is not a Do This First heading", () => {
+  // DO_THIS_FIRST_HEADING used to have nothing stopping "first" from running
+  // straight into more letters or a hyphen with no space between them.
+  assert.equal(extractDoThisFirst("### Do This First-Draft Notes\nRestart the daemon."), "");
+  assert.equal(extractDoThisFirst("### Do This Firstly\nRestart the daemon."), "");
+});
+
+test("a docstring filename keeps its double underscores", () => {
+  // /__([^_]+)__/g used to have no boundary check at all, so "__init__.py"
+  // read as emphasis around "init" and came back "init.py".
+  assert.equal(
+    extractDoThisFirst("### Do This First\nAdd a docstring to __init__.py."),
+    "Add a docstring to __init__.py.",
+  );
+  assert.equal(extractDoThisFirst("### Do This First\n__really__ do it."), "really do it.");
+});
+
+test("a filename that only looks like single-underscore emphasis is left alone", () => {
+  // The closing lookahead used to accept a bare "." unconditionally, so
+  // "_config_.json" -- a real filename, not emphasis followed by a sentence's
+  // closing period -- came back "config.json".
+  assert.equal(
+    extractDoThisFirst("### Do This First\nRename _config_.json to config.yaml."),
+    "Rename _config_.json to config.yaml.",
+  );
+  assert.equal(extractDoThisFirst("### Do This First\nThis is _important_."), "This is important.");
+});
+
 // ---------------------------------------------------------------------------
 // doThisFirstAmong
 // ---------------------------------------------------------------------------

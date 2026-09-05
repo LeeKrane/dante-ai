@@ -8,9 +8,11 @@ import { MAX_BRIEF_CHARS } from "../lib/spawn-session.js";
 import {
   MAX_NAME_CHARS,
   buildName,
+  leadingSkill,
   loadSessionKinds,
   missingSkill,
   promptFor,
+  recordedKind,
   slugify,
   speaksVerdict,
   validateSessionKind,
@@ -244,6 +246,62 @@ test("a known that is not a Map is treated as no skills known, not silently gues
   assert.equal(missingSkill({ skill: "council-review" }, null), "council-review");
   assert.equal(missingSkill({ skill: "council-review" }, new Set(["council-review"])), "council-review");
   assert.equal(missingSkill({ skill: "council-review" }, { has: () => true, get: () => true }), "council-review");
+});
+
+// ---------------------------------------------------------------------------
+// leadingSkill
+// ---------------------------------------------------------------------------
+
+test("a prompt whose first line is a slash command names the skill", () => {
+  assert.equal(leadingSkill("/council-review\n\nBrainstorm the brief."), "council-review");
+  assert.equal(leadingSkill("/review high"), "review");
+});
+
+test("a prompt with no leading slash, or no prompt at all, names no skill", () => {
+  assert.equal(leadingSkill("Just an ordinary sentence."), null);
+  assert.equal(leadingSkill("brainstorm the brief\n/council-review"), null);
+  assert.equal(leadingSkill(""), null);
+  assert.equal(leadingSkill(undefined), null);
+  assert.equal(leadingSkill(null), null);
+  assert.equal(leadingSkill(42), null);
+});
+
+test("missingSkill checks what the composed prompt actually opens with when the kind names no skill of its own", () => {
+  const known = new Map([["council-review", { name: "council-review", source: "/home/krane" }]]);
+  assert.equal(missingSkill({}, known, "/council-review\n\nBrainstorm the brief."), null);
+  assert.equal(missingSkill({}, known, "/no-such-skill\n\nBody"), "no-such-skill");
+  // No prompt at all, and no declared skill either, is nothing to check.
+  assert.equal(missingSkill({}, known), null);
+});
+
+test("a kind's own declared skill wins over whatever the prompt opens with", () => {
+  const known = new Map([["council-review", { name: "council-review", source: "/home/krane" }]]);
+  // The declared field names a real skill; the prompt's own first line is
+  // left unchecked once that field is set.
+  assert.equal(missingSkill({ skill: "council-review" }, known, "/something-else\n\nBody"), null);
+  // The declared field names a fake one; the prompt's real skill does not
+  // save it, because the declared field is what is trusted once it is set.
+  assert.equal(missingSkill({ skill: "fake" }, known, "/council-review\n\nBody"), "fake");
+});
+
+// ---------------------------------------------------------------------------
+// recordedKind
+// ---------------------------------------------------------------------------
+
+test("a session that ran its kind's own composed prompt is remembered under that kind", () => {
+  assert.equal(recordedKind({ kindId: "brainstorm", command: undefined }), "brainstorm");
+  assert.equal(recordedKind({ kindId: "brainstorm" }), "brainstorm");
+});
+
+test("an explicit command that overrode the kind's prompt is remembered as no kind at all", () => {
+  // The verdict gate (speaksVerdict) must stay closed for a session whose
+  // prompt the kind did not actually compose -- see recordedKind's own
+  // comment in lib/sessions.js for why.
+  assert.equal(recordedKind({ kindId: "brainstorm", command: "/review high" }), null);
+  // No kindId at all is still null either way.
+  assert.equal(recordedKind({ command: "/review high" }), null);
+  assert.equal(recordedKind({}), null);
+  assert.equal(recordedKind(), null);
 });
 
 // ---------------------------------------------------------------------------

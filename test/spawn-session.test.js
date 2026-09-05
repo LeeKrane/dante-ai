@@ -24,6 +24,9 @@ import {
   tellSession,
 } from "../lib/spawn-session.js";
 import { MAX_LISTED } from "../lib/agents.js";
+import { loadSessionKinds, promptFor } from "../lib/sessions.js";
+
+const SESSIONS = new URL("../sessions/", import.meta.url);
 
 const ID = "abcd1234-0000-4000-8000-000000000000";
 
@@ -81,6 +84,22 @@ test("a kind's model, effort and prompt reach the command line", () => {
     "--",
     "fix the failing builder test",
   ]);
+});
+
+test("a brainstorm start hands the CLI a positional prompt whose first line is the council-review slash command, which is the only place the CLI expands it", async () => {
+  // What server.js's beginSession actually sends, end to end: promptFor
+  // composes brainstorm.mjs's own prompt (see sessions/brainstorm.mjs's
+  // comment on why this cannot be a systemPrompt or a command=), and that
+  // composed prompt is exactly what buildStartArgs puts after the `--`
+  // terminator, untouched. Confirmed live on CLI 2.1.259 with `claude --bg`.
+  const kinds = await loadSessionKinds(SESSIONS);
+  const brief = "Goal: ship the widget.\nConstraints: no new deps.\nDone when: tests pass.";
+  const prompt = promptFor(kinds.get("brainstorm"), { task: "brainstorm the widget plan", brief, alias: "jarvis" });
+
+  const args = buildStartArgs(spec({ brief: prompt }));
+  const positional = args[args.length - 1];
+  assert.match(positional, /^\/council-review\n/);
+  assert.ok(positional.includes(brief), "the brief should reach the command line unchanged");
 });
 
 test("nothing on this path can ever remove a session's guardrails", () => {
