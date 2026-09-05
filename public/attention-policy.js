@@ -60,22 +60,33 @@ export const GHOST_MS = 90_000;
 // asked for.
 export const CUE_COOLDOWN_MS = 60_000;
 
-// cueFor({ speak, stale, lastCueAt, now, audioReady, cooldownMs }) -> whether
-// this pump of the queue is worth a sound.
+// owesCue(stale) -> whether a batch just swept out as stale contains a watch
+// kind -- the same test cueFor applies to `stale` below, pulled out on its
+// own so app.js can ask it of a batch swept while the floor was busy (and
+// cueFor had no chance to run at all), not only of one swept on a pump where
+// the floor happened to be free.
+export function owesCue(stale) {
+  const staleList = Array.isArray(stale) ? stale : [];
+  return staleList.some((item) => isWatchKind(item?.kind));
+}
+
+// cueFor({ speak, stale, owed, lastCueAt, now, audioReady, cooldownMs }) ->
+// whether this pump of the queue is worth a sound.
 //
 // Worth ringing for: the thing about to be spoken is a blocked report (it is
-// the one kind of news nothing else on the page will ever say), or one of the
+// the one kind of news nothing else on the page will ever say), one of the
 // entries just swept out as stale was a watch kind -- a dropped idle or gone
 // report still has its tone, because by the time it is dropped the tone is
-// all that is left of it; the recap log has the words. Never played without a
+// all that is left of it; the recap log has the words -- or `owed` is true,
+// meaning an earlier pump swept a watch kind while the floor was busy and
+// never got to ring for it (see app.js's `cueOwed`). Never played without a
 // real AudioContext running (`audioReady` -- see app.js's own comment on why
 // three creation sites exist and only one of them is a user gesture), and
 // never twice inside `cooldownMs` of the last time, however much is waiting.
-export function cueFor({ speak, stale, lastCueAt, now, audioReady, cooldownMs = CUE_COOLDOWN_MS } = {}) {
+export function cueFor({ speak, stale, owed, lastCueAt, now, audioReady, cooldownMs = CUE_COOLDOWN_MS } = {}) {
   if (!audioReady) return false;
   if (Number.isFinite(lastCueAt) && Number.isFinite(now) && now - lastCueAt < cooldownMs) return false;
-  const staleList = Array.isArray(stale) ? stale : [];
-  return speak?.kind === "watch-blocked" || staleList.some((item) => isWatchKind(item?.kind));
+  return speak?.kind === "watch-blocked" || owesCue(stale) || Boolean(owed);
 }
 
 // attentionPending(queue) -> whether anything still queued is a watcher's own

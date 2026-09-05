@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  CUE_COOLDOWN_MS, GHOST_MS, WATCH_KINDS, attentionPending, cueFor, isWatchKind, retainAnnouncement, titleFor,
+  CUE_COOLDOWN_MS, GHOST_MS, WATCH_KINDS, attentionPending, cueFor, isWatchKind, owesCue, retainAnnouncement, titleFor,
 } from "../public/attention-policy.js";
 import { GHOST_MS as SERVER_GHOST_MS } from "../lib/watch.js";
 
@@ -60,6 +60,21 @@ test("a second cue within the minute is one too many", () => {
   assert.equal(cueFor(recent), false);
   const justOutside = { ...audible, lastCueAt: NOW - CUE_COOLDOWN_MS - 1, speak: { kind: "watch-blocked" } };
   assert.equal(cueFor(justOutside), true);
+});
+
+// --- owesCue ---------------------------------------------------------------
+
+test("a watch line swept while the floor is busy still owes its tone", () => {
+  assert.equal(owesCue([{ kind: "watch-idle" }]), true);
+  assert.equal(owesCue([{ kind: "watch-gone" }]), true);
+  assert.equal(owesCue([{ kind: "other" }]), false);
+  assert.equal(owesCue([]), false);
+  assert.equal(owesCue(null), false);
+});
+
+test("an owed cue rings even when nothing was swept or spoken on this pump", () => {
+  assert.equal(cueFor({ ...audible, speak: null, stale: [], owed: true }), true);
+  assert.equal(cueFor({ ...audible, speak: null, stale: [], owed: false }), false);
 });
 
 // --- attentionPending ------------------------------------------------------

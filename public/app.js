@@ -16,7 +16,7 @@ import {
   stateAfterClip,
   takeAnnouncement,
 } from "./playback-policy.js";
-import { attentionPending, cueFor, titleFor } from "./attention-policy.js";
+import { attentionPending, cueFor, owesCue, titleFor } from "./attention-policy.js";
 import {
   clampVolume,
   parseStoredVolume,
@@ -332,6 +332,11 @@ function ensureGain() {
 // pumpAnnouncements, gated there on floorIsFree -- see that function's own
 // comment -- so this never has to guard the mic or a playing clip itself.
 let lastCueAt = null;
+// Set when pumpAnnouncements sweeps a watch kind as stale while the floor is
+// busy -- see that function's own comment on why the sweep and the cue
+// decision do not happen on the same pump in that case, and cleared once a
+// later pump with a free floor has folded it into cueFor.
+let cueOwed = false;
 
 function playCue() {
   // ensureGain() reads audioCtx directly and needs a running context; cueFor
@@ -351,14 +356,19 @@ function playCue() {
   // a single node would glide between the notes rather than say two of them.
   // The second starts before the first stops, so the notes overlap by 10ms
   // instead of leaving a gap of silence between them.
-  for (const [freq, offset] of [[660, 0], [880, 0.12]]) {
+  const notes = [[660, 0], [880, 0.12]];
+  notes.forEach(([freq, offset], i) => {
     const osc = audioCtx.createOscillator();
     osc.type = "sine";
     osc.frequency.value = freq;
     osc.connect(cueGain);
     osc.start(t0 + offset);
     osc.stop(t0 + offset + 0.13);
-  }
+    // Only the last oscillator disconnects cueGain -- once, when the cue is
+    // actually done playing -- so this node and its gain ramp do not linger
+    // in the graph for the life of a long-open tab.
+    if (i === notes.length - 1) osc.onended = () => cueGain.disconnect();
+  });
   lastCueAt = Date.now();
   dbg("cue: watcher fired");
 }
@@ -863,6 +873,10 @@ function receiveClearAnnouncements() {
   const { queue, dropped } = clearAnnouncements(announcements);
   announcements = queue;
   if (dropped > 0) dbg(`${dropped} announcement(s) cleared by a recap`);
+  // The tab dot was lit for whatever just got cleared -- left alone, a recap
+  // that ran while this tab was hidden leaves the title reading "• Dante"
+  // with nothing left in the queue to explain it.
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
 }
 
 // Called wherever the floor might have just been given up: a clip ending or
@@ -884,10 +898,23 @@ function pumpAnnouncements() {
   // can go stale on a call made mid-hold. floorIsFree, on the very floor just
   // built above, is the actual guarantee: nothing below this line ever runs
   // while it is false, and that is the whole reason a cue can never land on
-  // top of speech.
+  // top of speech. A `stale` swept on a pump where the floor is NOT free
+  // takes the else branch below instead of falling silently off the end of
+  // this function -- `cueOwed` carries its tone forward to the next pump
+  // that does find the floor free, rather than losing it for good.
   if (floorIsFree(floor)) {
     const audioReady = Boolean(audioCtx) && audioCtx.state === "running";
-    if (cueFor({ speak, stale, lastCueAt, now: Date.now(), audioReady })) playCue();
+    // `owed` folds in a stale watch kind swept on some earlier pump where the
+    // floor was busy -- that pump never got to sound a cue for it at all, so
+    // without this the tone would be lost for good rather than merely late.
+    // Cleared unconditionally once folded in, whether or not cueFor actually
+    // rings for it (cooldown or a not-yet-ready AudioContext can still say
+    // no) -- an owed cue gets one shot at the next free floor, not a retry
+    // loop.
+    if (cueFor({ speak, stale, owed: cueOwed, lastCueAt, now: Date.now(), audioReady })) playCue();
+    cueOwed = false;
+  } else if (owesCue(stale)) {
+    cueOwed = true;
   }
   if (!speak) return;
   // The server holds the text and does the speaking; this only says when.

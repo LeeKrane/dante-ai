@@ -112,7 +112,20 @@ test("add stores a watch and it is then visible to has, size and names", () => {
 
 test("a watch remembers where the session ran", () => {
   const watchers = createWatchers();
-  watchers.add(working({ alias: "jarvis", startedAt: 1000 }));
+  // Built the way dispatchWatch (server.js) builds it -- a roster record with
+  // alias and startedAt on it, spread field-by-field into the add() literal --
+  // rather than through the watch-shaped `working()` helper, so this test
+  // would fail if that call site ever stopped passing the two fields through.
+  const record = { sessionId: "s1", name: "jarvis-1", cwd: "/repo", state: "working", alias: "jarvis", startedAt: 1000 };
+  watchers.add({
+    sessionId: record.sessionId,
+    name: record.name,
+    cwd: record.cwd,
+    task: "",
+    state: record.state,
+    alias: record.alias,
+    startedAt: record.startedAt,
+  });
   const [watch] = watchers.list();
   assert.equal(watch.alias, "jarvis");
   assert.equal(watch.startedAt, 1000);
@@ -653,7 +666,7 @@ test("a fired record older than the window is forgotten", () => {
   assert.deepEqual(ghostRecords(recentlyFired, [], NOW, GHOST_MS), []);
 });
 
-test("pruneFired drops every entry older than the window and keeps the rest, without mutating its argument", () => {
+test("a fire nobody has looked at in a minute and a half is forgotten, and the map it came from is left alone", () => {
   const recentlyFired = new Map([
     ["old", fired({ firedAt: NOW - GHOST_MS - 1 })],
     ["fresh", fired({ firedAt: NOW - 1000 })],

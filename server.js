@@ -221,7 +221,8 @@ const rosterPoller = createRosterPoller({
     // process (see pruneFired's own comment, lib/watch.js).
     recentlyFired = pruneFired(recentlyFired, Date.now(), GHOST_MS);
     if (!voice) return;
-    for (const fired of watchers.tick(roster, Date.now(), { skip })) {
+    const fires = watchers.tick(roster, Date.now(), { skip });
+    for (const fired of fires) {
       watchReported.set(fired.watch.sessionId, fired.change);
       // Filled beside watchReported, not instead of it: watchReported is what
       // reportComplete/reportAttention read to decide whether the generic
@@ -238,6 +239,13 @@ const rosterPoller = createRosterPoller({
       });
       reportWatch(fired).catch((e) => log("watch report failed:", e.message || e));
     }
+    // A BLOCKED fire changes nothing diffRoster (lib/agents.js) treats as
+    // worth an event -- isWorking() counts blocked as still working, so the
+    // session's state looks unchanged to it -- which means onEvents never
+    // runs this tick and its own unconditional broadcastRoster call never
+    // happens either. Called explicitly here so a page still gets the
+    // "reported" dot for a fire that just went out.
+    if (fires.length > 0) broadcastRoster(roster);
   },
 
   onEvents: (events, roster) => {
@@ -404,7 +412,18 @@ async function reportComplete(sessionId, context = {}) {
     recentlyFired.set(sessionId, {
       name: pending.name, alias: pending.alias, startedAt: pending.startedAt, firedAt: Date.now(),
     });
-    broadcastRoster(context.roster);
+    // context.roster on the hook path (the /hook call above) is
+    // rosterPoller.current() -- the previous tick's roster, taken before this
+    // session actually left it, so broadcasting it unfiltered would still
+    // list the session and ghostRecords (lib/agents.js) would skip drawing a
+    // ghost for it on the strength of that stale entry. Filtered here so the
+    // broadcast looks like what is actually true right now: this session is
+    // gone. current() can also be null this early (no tick has ever run) --
+    // rosterForClient(null) would render an empty panel, which is worse than
+    // sending nothing, so the call is skipped outright rather than fed [].
+    if (Array.isArray(context.roster)) {
+      broadcastRoster(context.roster.filter((record) => record.sessionId !== sessionId));
+    }
     reportWatch({ watch: pending, change: "gone", record: null }).catch((err) =>
       log(`watch report failed for ${pending.name} (${pending.sessionId}): ${err.message}`),
     );
@@ -1887,6 +1906,11 @@ async function dispatchWatch(send, session, preamble, roster) {
     // the same way dispatchRead already does for verb=read.
     task: getSessionRecord(memoryStore, record.sessionId)?.task ?? "",
     state: record.state,
+    // Carried through so a later ghost row (ghostRecords, once this session
+    // has left the roster) knows where it ran and how long -- see add()'s
+    // own comment in lib/watch.js for why these two are held at all.
+    alias: record.alias,
+    startedAt: record.startedAt,
   });
   log(`watching ${record.name} (${record.sessionId})`);
   await say(send, joinSpoken(preamble, watchVerdict({ name: record.name })));
