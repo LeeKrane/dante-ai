@@ -177,8 +177,36 @@ test("stale announcements are swept even when the floor is busy", () => {
 });
 
 test("an empty queue is not an announcement", () => {
-  assert.deepEqual(takeAnnouncement([], { state: "idle" }, NOW), { speak: null, queue: [], dropped: 0 });
+  assert.deepEqual(
+    takeAnnouncement([], { state: "idle" }, NOW),
+    { speak: null, queue: [], dropped: 0, stale: [] },
+  );
   assert.equal(takeAnnouncement(null, { state: "idle" }, NOW).speak, null);
+});
+
+test("dropped words are handed back, not just counted", () => {
+  const queue = [announcement("old", NOW - ANNOUNCEMENT_TTL_MS)];
+  const result = takeAnnouncement(queue, { state: "idle" }, NOW);
+  assert.equal(result.stale.length, 1);
+  assert.equal(result.stale[0].id, "old");
+});
+
+test("a blocked report survives a conversation long enough to drop everything else", () => {
+  const queue = [
+    { id: "blocked", text: "jarvis-1 is blocked, sir.", at: NOW - ANNOUNCEMENT_TTL_MS * 5, kind: "watch-blocked" },
+    announcement("old", NOW - ANNOUNCEMENT_TTL_MS),
+  ];
+  const result = takeAnnouncement(queue, { state: "idle" }, NOW);
+  assert.equal(result.speak.id, "blocked");
+  assert.equal(result.stale.length, 1);
+  assert.equal(result.stale[0].id, "old");
+});
+
+test("an entry that is not an announcement is dropped without being handed back as stale", () => {
+  const result = takeAnnouncement([null, undefined, announcement("a")], { state: "idle" }, NOW);
+  assert.equal(result.speak.id, "a");
+  assert.equal(result.dropped, 2);
+  assert.deepEqual(result.stale, []);
 });
 
 test("an entry with no timestamp cannot go stale, so it is not kept", () => {

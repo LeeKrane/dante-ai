@@ -137,13 +137,19 @@ repository's header there makes it the new main.
 (title, summary, a one-line description, created/updated timestamps, and any
 facts it holds) followed by dated sections, oldest first. What goes in: every
 session read, and the conversation that follows it for the next half hour —
-after that the topic goes stale and later chat is just chat again. What comes
-back: the four most recently updated notes ride along with every turn, so
-*"what did it decide"* still has an answer after a restart. Capacity defaults
-to 50 MB or 500 files, whichever comes first — the oldest-updated note is
-pruned first on every write, and the newest is never pruned even alone over
-the cap. Say *"keep your notes under a hundred megabytes"* and the model
-appends `[MEMORY:SET memory-max-mb=100]`; file count works the same way via
+after that the topic goes stale and later chat is just chat again. Reading a
+session again replaces its earlier read rather than piling up — one section
+per distinct question, and the newest plain read-back if there was no
+question. What comes back, two notes in all, every turn: the note for the
+session you just read and the one for any session you name come first, and
+the most recently updated notes fill whatever seats are left — so *"what did
+it decide"* still has an answer after a restart even when something else was
+touched more recently, though a fresher unrelated note can lose its seat to
+one you actually named. Capacity defaults to 50 MB or 500
+files, whichever comes first — the oldest-updated note is pruned first on
+every write, and the newest is never pruned even alone over the cap. Say
+*"keep your notes under a hundred megabytes"* and the model appends
+`[MEMORY:SET memory-max-mb=100]`; file count works the same way via
 `memory-max-files`. When two notes about the same session disagree on a fact
 — a task that changed, a status that moved on — Dante says so once per
 conversation and goes with the newer.
@@ -233,16 +239,32 @@ to whoever is listening then, so it goes through the same *"Shall I, sir?"*
 as the rest. It watches exactly the one session you named, and fires exactly
 once: the moment that session stops working — finishes, goes idle, or gets
 blocked on a permission prompt — Dante reads its transcript back, the same
-way a *read* does, and says what it produced, what state it's in now, and
-*"Ready for the next step, sir?"* Then the watch is gone; it never fires
-twice for the same ending. *"Never mind, stop watching that"* cancels one
-at once, with no confirmation needed — a watch touches no process, so
-cancelling one is the same kind of thing as reading one is. Watching a
+way a *read* does, and says what it produced and what state it's in now.
+That read-back lands in the recap log too, once it fires. Then the watch
+is gone; it never fires twice for the same ending. *"Never mind, stop
+watching that"* cancels one at once, with no confirmation needed — a
+watch touches no process, so cancelling one is the same kind of thing as
+reading one is. Watching a
 session that isn't currently working is refused outright: it would never
 cross the line a watcher fires on, and confirming it would be a promise
-nothing could keep. Watches exist only in memory, five at a time, and do
+nothing could keep. So is watching a session already sitting on a permission
+prompt — a watcher only ever fires on a *fresh* transition into blocked, so
+one that's already blocked is not news to it and would never fire; Dante
+says so and offers nothing to confirm. Watches exist only in memory, five at a time, and do
 not survive a restart — a Dante that just restarted has plainly stopped
 watching whatever it was watching before.
+
+A watcher firing on a permission prompt is also the one report that can post a
+browser notification, if you've opted in. It's opt-in and blocked-only —
+finishing or going idle never does this — because a blocked session is the one
+kind of news that stays true no matter how long the tab sits unread, and the
+only one worth reaching you when you've looked away from it altogether. A
+small button appears once a session is being watched, offering to ask; the
+permission prompt itself only ever appears after that click, never on load
+and never on its own. The notification only ever posts while the tab is not
+in front of you — return to it and there's nothing left to see. And once
+permission is denied, the button does not come back; the only way to ask
+again is a fresh page load, same as any other site.
 
 The difference between *tell* and *interrupt* is timing and nothing else, and
 when it isn't clear which you meant, it picks *tell*. Neither one forks the
@@ -444,6 +466,7 @@ Claude Code will still use a tool you leave off the list, which is why
 | Key | Does |
 |---|---|
 | **Space** (hold) | push-to-talk — the page must have focus |
+| **← / →** | step back and forward through this tab's messages, timestamped; gone when the tab closes |
 | **d** | diagnostics panel (live pipeline readout; off by default) |
 | **s** | sessions panel (grouped by repository, main starred first; what is running, where, for how long; on by default) |
 | **t** | the caption line |
@@ -453,6 +476,12 @@ Toggles are ignored while Space is held, so a stray key mid-sentence can't blank
 the screen. If part of the UI "disappeared," press the key again. All four are
 also on screen as switches under the controls, lit while on -- on a phone,
 where there are no keys, tapping those is how the panels are toggled.
+
+The arrows step one line at a time -- what you said, what Dante said, a question
+it asked, an error -- with the time under each. The view returns to the newest
+line the moment Space is pressed and whenever a new line arrives, so a question
+Dante asks while you are reading something older is never missed. On a phone
+the two arrows sit under the caption.
 
 ## How it's put together
 

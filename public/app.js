@@ -1,5 +1,6 @@
 import { applyResults, interimOf, isFatalSpeechError, mergeTranscript } from "./stt-policy.js";
 import { getVisibilityToggle, panelToggles } from "./visibility-policy.js";
+import { append, createHistory, formatTime, historyStep, snapToNewest, stepNewer, stepOlder, view } from "./history-policy.js";
 import { describeActivity } from "./activity-policy.js";
 import { createBuildHud } from "./build-hud.js";
 import { createAppendQueue } from "./clip-stream.js";
@@ -8,12 +9,14 @@ import { groupsFromRoster, panelIsVisible, rowsFromRoster } from "./roster-panel
 import {
   canStartListening,
   clearAnnouncements,
+  floorIsFree,
   handoffAfterPreempt,
   queueAnnouncement,
   shouldShowCancel,
   stateAfterClip,
   takeAnnouncement,
 } from "./playback-policy.js";
+import { attentionPending, cueFor, notifyFor, offerNotifyControl, owesCue, titleFor } from "./attention-policy.js";
 import {
   clampVolume,
   parseStoredVolume,
@@ -35,6 +38,10 @@ const statusEl = document.getElementById("status");
 const activityEl = document.getElementById("activity");
 const briefEl = document.getElementById("brief");
 const capEl = document.getElementById("caption");
+const navEl = document.getElementById("caption-nav");
+const olderBtn = document.getElementById("older");
+const newerBtn = document.getElementById("newer");
+const whenEl = document.getElementById("caption-when");
 const micBtn = document.getElementById("mic");
 const cancelBtn = document.getElementById("cancel");
 const canvas = document.getElementById("orb");
@@ -163,6 +170,45 @@ function setState(nextState) {
 }
 function setCaption(text, who) { capEl.textContent = text; capEl.dataset.who = who || ""; }
 
+// ---- What was said in this tab ----
+// The finished lines -- the text sent on release, every reply, every question,
+// every error the caption showed -- so a person can step back through them.
+// Interim transcription is not a finished line and writes the caption directly
+// through setCaption above; every finished line goes through record() instead,
+// which remembers it and then paints it. The rules (which way the cursor
+// moves, that a new line always pulls the view back) are in history-policy.js.
+let timeline = createHistory();
+
+function renderHistory() {
+  const v = view(timeline);
+  // A step back to live must restore the newest line, and after a record the
+  // write repeats the text the caller just showed, which costs nothing.
+  if (v.entry) setCaption(v.entry.text, v.entry.who);
+  // visibility, not display: the row keeps its height, so the orb laid out
+  // against #hud does not move on a step.
+  olderBtn.style.visibility = v.canOlder ? "" : "hidden";
+  newerBtn.style.visibility = v.canNewer ? "" : "hidden";
+  whenEl.textContent = v.live ? "" : `${formatTime(v.entry.at)} · ${v.index} / ${v.total}`;
+  return v;
+}
+
+function record(who, text) {
+  timeline = append(timeline, { who, text, at: Date.now() });
+  renderHistory();
+}
+
+// Not while the talk key is down. The keyboard path is already gated in
+// historyStep; this covers a mouse click on the arrows mid-hold, which would
+// otherwise step away from the line the release is about to record over.
+function stepHistory(direction) {
+  if (holding) return;
+  timeline = direction === "older" ? stepOlder(timeline) : stepNewer(timeline);
+  const v = renderHistory();
+  dbg(`history: ${v.live ? "live" : `${v.index}/${v.total}`}`);
+}
+// An empty tab has nothing to step to, so the buttons start hidden.
+renderHistory();
+
 // Shows a finished build in a NEW TAB. Navigating this tab instead would tear
 // down the WebSocket, the audio context and the whole conversation, so the app
 // must never point itself at the artifact.
@@ -200,7 +246,12 @@ function openArtifact(url) {
 }
 
 function toggleVisibility(target) {
-  if (target === "caption") capEl.classList.toggle("hidden");
+  if (target === "caption") {
+    // The row under the caption is part of the caption: hiding the line
+    // hides the way to step through it.
+    capEl.classList.toggle("hidden");
+    navEl.classList.toggle("hidden", capEl.classList.contains("hidden"));
+  }
   else if (target === "interface") {
     document.body.classList.toggle("interface-hidden");
     // CSS hides the HUD with the rest of the chrome; telling it as well lets it
@@ -272,6 +323,54 @@ function ensureGain() {
   gainNode.gain.value = volume;
   gainNode.connect(audioCtx.destination);
   return gainNode;
+}
+
+// ---- Watcher attention cue ----
+//
+// A short two-note chime for a fired watch worth interrupting for
+// (attention-policy.js's cueFor decides which). Played only from
+// pumpAnnouncements, gated there on floorIsFree -- see that function's own
+// comment -- so this never has to guard the mic or a playing clip itself.
+let lastCueAt = null;
+// Set when pumpAnnouncements sweeps a watch kind as stale while the floor is
+// busy -- see that function's own comment on why the sweep and the cue
+// decision do not happen on the same pump in that case, and cleared once a
+// later pump with a free floor has folded it into cueFor.
+let cueOwed = false;
+
+function playCue() {
+  // ensureGain() reads audioCtx directly and needs a running context; cueFor
+  // is what already keeps this from ever being called against a suspended or
+  // nonexistent one (audioReady, computed by the caller from the same
+  // audioCtx this reads).
+  const gain = ensureGain();
+  const cueGain = audioCtx.createGain();
+  cueGain.connect(gain);
+  const t0 = audioCtx.currentTime;
+  // 0.0001 rather than 0 at both ends: exponentialRampToValueAtTime throws on
+  // a target (or a starting value) of exactly zero.
+  cueGain.gain.setValueAtTime(0.0001, t0);
+  cueGain.gain.exponentialRampToValueAtTime(0.09, t0 + 0.02);
+  cueGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25);
+  // Two one-shot oscillators, not one retuned mid-flight: a frequency ramp on
+  // a single node would glide between the notes rather than say two of them.
+  // The second starts before the first stops, so the notes overlap by 10ms
+  // instead of leaving a gap of silence between them.
+  const notes = [[660, 0], [880, 0.12]];
+  notes.forEach(([freq, offset], i) => {
+    const osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    osc.connect(cueGain);
+    osc.start(t0 + offset);
+    osc.stop(t0 + offset + 0.13);
+    // Only the last oscillator disconnects cueGain -- once, when the cue is
+    // actually done playing -- so this node and its gain ramp do not linger
+    // in the graph for the life of a long-open tab.
+    if (i === notes.length - 1) osc.onended = () => cueGain.disconnect();
+  });
+  lastCueAt = Date.now();
+  dbg("cue: watcher fired");
 }
 
 function renderVolume() {
@@ -421,14 +520,14 @@ ws.onclose = () => {
   // any other and a socket that closes mid-clip would leave the element waiting
   // for bytes forever, with the orb speaking and the Stop button still offered.
   stopPlayback();
-  setCaption("connection closed — restart the server and refresh", "error");
+  record("error", "connection closed — restart the server and refresh");
 };
 ws.onerror = () => dbg("ws: error");
 ws.onmessage = async (ev) => {
   let msg; try { msg = JSON.parse(ev.data); } catch { return; }
   if (msg.type === "state") setState(msg.value);
   else if (msg.type === "reply_text") {
-    setCaption(msg.text, "dante");
+    record("dante", msg.text);
     dbg(`reply: ${msg.text}`);
   }
   else if (msg.type === "progress") pushProgress(msg.line);
@@ -444,7 +543,10 @@ ws.onmessage = async (ev) => {
   }
   else if (msg.type === "ask") {
     // A build needs a detail Dante doesn't have yet; the question is spoken as
-    // well, so the caption just mirrors it.
+    // well, so the caption just mirrors it. Not recorded here: the spoken
+    // version arrives as the very next reply_text, fused to its "of course,
+    // sir", and that is the line worth stepping back to. Recording both put
+    // the same question in the timeline twice.
     setCaption(msg.text, "dante");
     // Whatever is said next answers this question rather than starting a new
     // request, which is how the HUD tells the two apart.
@@ -471,7 +573,7 @@ ws.onmessage = async (ev) => {
     dbg(`srv ${msg.stage || ""}: ${msg.msg || ""}${timing}`);
   }
   else if (msg.type === "error") {
-    setCaption("⚠ " + msg.message, "error");
+    record("error", "⚠ " + msg.message);
     dbg(`srv ERROR: ${msg.message}`);
     // Before setState, so the HUD knows how this ended by the time it settles. A
     // build that failed must never retire wearing the styling of one that worked.
@@ -489,7 +591,7 @@ ws.onmessage = async (ev) => {
     try {
       await startClip(msg);
     } catch (e) {
-      setCaption("⚠ audio: " + (e.message || e), "error");
+      record("error", "⚠ audio: " + (e.message || e));
       dbg(`audio start failed: ${e.message || e}`);
       level = 0;
       setState("idle");
@@ -500,7 +602,7 @@ ws.onmessage = async (ev) => {
     try {
       await endClip(msg);
     } catch (e) {
-      setCaption("⚠ audio: " + (e.message || e), "error");
+      record("error", "⚠ audio: " + (e.message || e));
       dbg(`audio decode failed: ${e.message || e}`);
       level = 0;
       setState("idle");
@@ -519,6 +621,10 @@ ws.onmessage = async (ev) => {
 // Only sessions Dante may see reach here: the server filters to the
 // repositories that were named out loud before any of this is sent.
 const sessionsEl = document.getElementById("sessions");
+// The opt-in Web Notification control -- a sibling of #sessions in the DOM
+// (see index.html's own comment) so a click on it survives renderSessions
+// rebuilding the panel wholesale with replaceChildren every second.
+const notifyToggleEl = document.getElementById("notify-toggle");
 let roster = [];
 // The repositories a session can start in, main first -- see
 // lib/memory.js:workspacesForClient. Empty until the "workspaces" message
@@ -538,7 +644,17 @@ let sessionsOpen = true;
 // "session three" refers to.
 function sessionRowEl(row, { showRepo } = {}) {
   const line = document.createElement("div");
-  line.className = `sess ${row.condition}`;
+  // `watched`/`reported` ride as extra classes, not folded into `.sess ${row.condition}`
+  // itself: a session can be watched (or carry a recent report) in any
+  // condition at all, and CSS keys the dot off these independently of the
+  // colour the condition text already gets.
+  const marks = [row.watched && "watched", row.reported && "reported"].filter(Boolean).join(" ");
+  line.className = `sess ${row.condition}${marks ? ` ${marks}` : ""}`;
+  // Reserves its own column whether or not it has anything to show, the same
+  // fixed-width treatment repoHeaderEl's own `.star` uses -- so a row with a
+  // dot and one without still line up under each other.
+  const dot = document.createElement("span");
+  dot.className = "dot";
   const name = document.createElement("span");
   name.className = "name";
   const label = typeof row.number === "number" ? `${row.number}: ${row.name}` : row.name;
@@ -549,7 +665,7 @@ function sessionRowEl(row, { showRepo } = {}) {
   const when = document.createElement("span");
   when.className = "when";
   when.textContent = row.elapsed;
-  line.append(name, cond, when);
+  line.append(dot, name, cond, when);
   return line;
 }
 
@@ -609,7 +725,22 @@ function sendSetMain(alias) {
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: "set_main", alias }));
 }
 
+// Toggles the opt-in notification control's visibility from the roster this
+// page already has -- `row.watched` rides straight off the roster message
+// (server.js's rosterForClient), so there is nothing here to compute beyond
+// counting it. Called from renderSessions on every roster tick, and again
+// once a click below resolves the permission prompt, since that is the one
+// other moment the answer offerNotifyControl depends on can change.
+function updateNotifyToggle() {
+  if (!notifyToggleEl) return;
+  const supported = "Notification" in window;
+  const permission = supported ? Notification.permission : undefined;
+  const watchedCount = roster.filter((row) => row.watched === true).length;
+  notifyToggleEl.classList.toggle("hidden", !offerNotifyControl({ watchedCount, permission, supported }));
+}
+
 function renderSessions() {
+  updateNotifyToggle();
   if (!sessionsEl) return;
   sessionsEl.classList.toggle("hidden", !panelIsVisible(sessionsOpen));
 
@@ -664,6 +795,22 @@ sessionsEl?.addEventListener("keydown", (e) => {
   if (!header) return;
   e.preventDefault();
   sendSetMain(header.dataset.alias);
+});
+
+// The one and only place Notification.requestPermission() is ever called --
+// a page that asks on load or on some unrelated action is the reason browsers
+// throttle or ignore the prompt outright, and offerNotifyControl already
+// keeps this control off screen once the answer is anything but "default".
+// Re-toggles afterwards rather than waiting for the next roster tick, since a
+// click just answered the one question offerNotifyControl asks about
+// permission and the control must not sit there offering it again.
+notifyToggleEl?.addEventListener("click", () => {
+  notifyToggleEl.blur();
+  if (!("Notification" in window)) return;
+  // Wrapped in Promise.resolve because the older callback-only form of this
+  // API (still what some browsers implement) returns nothing to chain
+  // .then() off, and calling .then() on undefined throws.
+  Promise.resolve(Notification.requestPermission()).then(updateNotifyToggle);
 });
 
 // One timer for the whole panel, and only while there is something in it: the
@@ -736,11 +883,57 @@ renderKeys();
 // answer are all things only this page knows.
 let announcements = [];
 
+// The Web Notifications blocked watches have posted, keyed by sessionId, so
+// a return to the tab (the visibilitychange listener below) can close every
+// one of them, not just whichever fired last. `tag: msg.sessionId` already
+// makes a second post for the same session replace the first at the OS
+// level, so this only ever needs one entry per session.
+const openNotifications = new Map();
+
 // `at` is stamped on arrival rather than taken from the server, so staleness is
 // measured on one clock -- the one the person is standing next to.
 function receiveAnnouncement(msg) {
-  announcements = queueAnnouncement(announcements, { id: msg.id, text: msg.text, at: Date.now() });
-  dbg(`announcement queued: ${msg.text}`);
+  // `cue` defaults true -- an ordinary fresh announcement never sets the wire
+  // field at all -- and is false only for a re-offer the server knows
+  // another socket might already hold and have chimed for once (server.js's
+  // connect handler, `cue: sessions.size <= 1`). Carried onto the queued item
+  // itself so cueFor (public/attention-policy.js) can tell the two apart
+  // whenever this item is the one about to be spoken.
+  announcements = queueAnnouncement(
+    announcements,
+    { id: msg.id, text: msg.text, at: Date.now(), kind: msg.kind, cue: msg.cue !== false },
+  );
+  // `reoffered` is the connect handler's own flag (server.js) for something
+  // still live from before this page connected, rather than fresh news --
+  // worth telling apart in the diagnostics panel even though both are queued
+  // and spoken the same way from here on.
+  dbg(msg.reoffered ? `announcement re-offered: ${msg.text}` : `announcement queued: ${msg.text}`);
+  // Set here, not only inside pumpAnnouncements below: a watch kind can sit
+  // queued for a while with the floor busy, and the dot has to appear the
+  // moment it arrives, not only once the floor frees up and pumpAnnouncements
+  // next runs.
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // Notification.permission is read here, never requested -- the only place
+  // that ever asks is notifyToggleEl's click handler above. Guarded by
+  // `"Notification" in window` because a browser without the API has no
+  // `Notification` global to read `.permission` off at all. The constructor
+  // itself can still throw (a browser can refuse for reasons of its own, e.g.
+  // a page that lost focus mid-permission-change), so it's wrapped rather
+  // than trusted.
+  if ("Notification" in window
+      && notifyFor({ kind: msg.kind, hidden: document.hidden, permission: Notification.permission })) {
+    try {
+      const n = new Notification("Dante", { body: msg.text, tag: msg.sessionId });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+        openNotifications.delete(msg.sessionId);
+      };
+      openNotifications.set(msg.sessionId, n);
+    } catch (e) {
+      dbg(`notification failed: ${e.message || e}`);
+    }
+  }
   pumpAnnouncements();
 }
 
@@ -752,25 +945,80 @@ function receiveClearAnnouncements() {
   const { queue, dropped } = clearAnnouncements(announcements);
   announcements = queue;
   if (dropped > 0) dbg(`${dropped} announcement(s) cleared by a recap`);
+  // The tab dot was lit for whatever just got cleared -- left alone, a recap
+  // that ran while this tab was hidden leaves the title reading "• Dante"
+  // with nothing left in the queue to explain it.
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // A recap just said everything this cue would have been ringing for --
+  // left set, the next pump that finds the floor free would sound a cue for
+  // news that has already been spoken in full.
+  cueOwed = false;
+  // Same reasoning, for the Web Notifications this page posted on its own
+  // behalf: a recap just covered whatever a blocked watch's notification was
+  // standing in for, so every open one is stale the instant it lands, not
+  // only the ones the visibilitychange listener below would eventually
+  // close.
+  if (openNotifications.size > 0) {
+    for (const n of openNotifications.values()) n.close();
+    openNotifications.clear();
+  }
 }
 
 // Called wherever the floor might have just been given up: a clip ending or
 // being cancelled, the mic closing, the orb settling. Cheap and idempotent, so
 // calling it too often costs nothing and missing a moment costs a silence.
 function pumpAnnouncements() {
-  const { speak, queue, dropped } = takeAnnouncement(announcements, {
-    state,
-    holding,
-    listening,
-    playing: playbackSource,
-    awaitingAnswer,
-  });
+  const floor = { state, holding, listening, playing: playbackSource, awaitingAnswer };
+  const { speak, queue, dropped, stale } = takeAnnouncement(announcements, floor);
   announcements = queue;
   if (dropped > 0) dbg(`${dropped} announcement(s) dropped as stale`);
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // The cue is decided here, not folded into the `!speak` return below: a
+  // watch report dropped for staleness still deserves its tone even when
+  // nothing is left to speak (see cueFor's own comment on `stale`), so this
+  // has to run whether or not `speak` ended up null. What must never happen
+  // is the cue sounding over an open mic or a clip already playing, and
+  // `speak` being null is not proof of that on its own -- takeAnnouncement
+  // sweeps `stale` before it ever checks the floor, so a long-queued report
+  // can go stale on a call made mid-hold. floorIsFree, on the very floor just
+  // built above, is the actual guarantee: nothing below this line ever runs
+  // while it is false, and that is the whole reason a cue can never land on
+  // top of speech. A `stale` swept on a pump where the floor is NOT free
+  // takes the else branch below instead of falling silently off the end of
+  // this function -- `cueOwed` carries its tone forward to the next pump
+  // that does find the floor free, rather than losing it for good.
+  if (floorIsFree(floor)) {
+    const audioReady = Boolean(audioCtx) && audioCtx.state === "running";
+    // `owed` folds in a stale watch kind swept on some earlier pump where the
+    // floor was busy -- that pump never got to sound a cue for it at all, so
+    // without this the tone would be lost for good rather than merely late.
+    // Cleared unconditionally once folded in, whether or not cueFor actually
+    // rings for it (cooldown or a not-yet-ready AudioContext can still say
+    // no) -- an owed cue gets one shot at the next free floor, not a retry
+    // loop.
+    if (cueFor({ speak, stale, owed: cueOwed, lastCueAt, now: Date.now(), audioReady })) playCue();
+    cueOwed = false;
+  } else if (owesCue(stale)) {
+    cueOwed = true;
+  }
   if (!speak) return;
   // The server holds the text and does the speaking; this only says when.
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: "announce_ready", id: speak.id }));
 }
+
+document.addEventListener("visibilitychange", () => {
+  document.title = titleFor("Dante", attentionPending(announcements), document.hidden);
+  // A notification posted because nobody was looking has done its job the
+  // moment someone is: left open, it would sit there claiming a blocked
+  // session still needs attention after the tab it was standing in for has
+  // already been read. Every entry closes, not just one -- two sessions can
+  // each have blocked and posted their own tagged notification while this
+  // tab was hidden.
+  if (!document.hidden && openNotifications.size > 0) {
+    for (const n of openNotifications.values()) n.close();
+    openNotifications.clear();
+  }
+});
 
 // ---- Speech-to-text (Chrome Web Speech API, free) ----
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -803,7 +1051,7 @@ if (SR) {
       holding = false;
       listening = false;
       micBtn.classList.remove("pressed");
-      setCaption("microphone blocked — allow it in the browser's site settings", "error");
+      record("error", "microphone blocked — allow it in the browser's site settings");
       setState("idle");
     }
   };
@@ -829,21 +1077,28 @@ if (SR) {
     if (text) {
       dbg(`release → sending "${text}"`);
       noteSpokenTurn(text);
+      // The caption already shows this text from the last interim result, so
+      // the repeat paint is invisible; what changes is that it is now a line.
+      record("you", text);
       setState("thinking");
       ws.send(JSON.stringify({ type: "say", text }));
     } else {
       dbg("release → nothing captured");
-      setCaption("No transcript captured — hold the button while speaking. Speech recognition works best in Google Chrome.", "error");
+      record("error", "No transcript captured — hold the button while speaking. Speech recognition works best in Google Chrome.");
       if (state === "listening") setState("idle");
     }
   };
 } else {
-  setCaption("This browser has no speech recognition — open the app in Google Chrome.", "error");
+  record("error", "This browser has no speech recognition — open the app in Google Chrome.");
   dbg("no Web Speech API in this browser");
 }
 
 function startListening() {
   if (!canStartListening(state, holding, Boolean(rec))) return;
+  // The interim text about to stream in overwrites the caption, and it must
+  // overwrite the newest line, not an older one the person was reading.
+  timeline = snapToNewest(timeline);
+  renderHistory();
   // Whatever is being said is now beside the point. The handoff this clip
   // carried is deliberately DROPPED here: setState("listening") happens two
   // lines down, and applying the handoff first would flip the orb through
@@ -887,9 +1142,24 @@ window.addEventListener("keydown", (e) => {
     micBtn.classList.add("pressed");
     startListening();
   } else if (!e.repeat) {
+    // The volume slider answers arrow keys itself, and an arrow with text
+    // selected in the caption or the log collapses the selection, as it does
+    // everywhere else: neither is a step.
+    const modified = e.altKey || e.ctrlKey || e.metaKey || e.shiftKey;
+    const claimed = document.activeElement?.tagName === "INPUT" || !window.getSelection()?.isCollapsed;
+    const step = claimed ? null : historyStep(e.key, holding, modified);
+    if (step) {
+      e.preventDefault();
+      stepHistory(step);
+      return;
+    }
     toggleVisibility(getVisibilityToggle(e.key, holding));
   }
 });
+// Blur first, for the same reason the keys panel does: a button left focused
+// would take the next Space as a click, and Space is push-to-talk.
+olderBtn.addEventListener("click", () => { olderBtn.blur(); stepHistory("older"); });
+newerBtn.addEventListener("click", () => { newerBtn.blur(); stepHistory("newer"); });
 window.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListening(); } });
 
 // Silence without starting a turn. Unlike the record button this one DOES apply
@@ -1338,6 +1608,18 @@ function drawOrb(now) {
   ctx.strokeStyle = hsla(p.hue, p.sat, 80, 0.5 + level * 0.3);
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+  // One faint extra ring, outside the rim, while a watcher's own report is
+  // still queued (attentionPending) -- not the orb's ordinary state, so it
+  // rides on top of whatever PALETTE[state] already drew rather than
+  // replacing it. No new ORB_STATES entry or palette colour: the amber here
+  // is its own, fixed hue, unrelated to the state-driven one above it.
+  if (attentionPending(announcements)) {
+    const ringR = R * 1.42 + Math.sin(t * 2.4) * 2;
+    ctx.strokeStyle = hsla(38, 96, 65, 0.28 + Math.sin(t * 3) * 0.08);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI * 2); ctx.stroke();
+  }
 
   requestAnimationFrame(drawOrb);
 }

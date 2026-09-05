@@ -5,6 +5,8 @@
 // DOM on its first line and can never be unit-tested, so every decision that
 // can be phrased as a function is phrased here instead.
 
+import { retainAnnouncement } from "./attention-policy.js";
+
 // The five states the orb knows. Exported because the handoff a clip carries
 // arrives off the wire and has to be checked against something.
 export const ORB_STATES = new Set(["idle", "listening", "thinking", "working", "speaking"]);
@@ -125,20 +127,39 @@ export function queueAnnouncement(queue, item, max = MAX_QUEUED_ANNOUNCEMENTS) {
   return list.length > max ? list.slice(list.length - max) : list;
 }
 
-// takeAnnouncement(queue, floor, now) -> { speak, queue, dropped }
+// takeAnnouncement(queue, floor, now) -> { speak, queue, dropped, stale }
 //
 // `speak` is the one to say now, or null. `queue` is what is left, always --
-// callers assign it back unconditionally, because stale entries are swept here
-// whether or not anything is spoken. `dropped` is how many went stale, so the
-// diagnostics panel can say so rather than leaving a silence unexplained.
+// callers assign it back unconditionally, because stale entries are swept
+// here whether or not anything is spoken. Staleness is decided by
+// retainAnnouncement (attention-policy.js), not a bare age check, so a
+// watcher's blocked report survives here exactly as long as it survives on
+// the server -- one rule, not two that could drift. `dropped` is how many
+// went stale and `stale` is those entries themselves, so a cue can still be
+// played for one of them even after it is gone from the queue (Commit 2).
 export function takeAnnouncement(queue, floor = {}, now = Date.now(), ttlMs = ANNOUNCEMENT_TTL_MS) {
   const list = Array.isArray(queue) ? queue : [];
-  const live = list.filter((item) => item && Number.isFinite(item.at) && now - item.at < ttlMs);
-  const dropped = list.length - live.length;
+  const live = [];
+  const stale = [];
+  let droppedFalsy = 0;
+  for (const item of list) {
+    // A falsy entry is not "a stale announcement" -- there is nothing there
+    // for a cue to play for -- so it is only counted, never handed back in
+    // `stale` for a caller to iterate as if it were one.
+    if (!item) {
+      droppedFalsy++;
+      continue;
+    }
+    if (retainAnnouncement(item, now, ttlMs)) live.push(item);
+    else stale.push(item);
+  }
+  const dropped = stale.length + droppedFalsy;
 
-  if (!floorIsFree(floor)) return { speak: null, queue: live, dropped };
+  if (!floorIsFree(floor)) return { speak: null, queue: live, dropped, stale };
   const [next, ...rest] = live;
-  return next ? { speak: next, queue: rest, dropped } : { speak: null, queue: live, dropped };
+  return next
+    ? { speak: next, queue: rest, dropped, stale }
+    : { speak: null, queue: live, dropped, stale };
 }
 
 // clearAnnouncements(queue) -> { queue: [], dropped }

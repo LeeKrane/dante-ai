@@ -723,6 +723,27 @@ test("a second run for a key still in flight is skipped rather than started", as
   assert.equal(third, true);
 });
 
+test("a key is reported in flight exactly while its run is unresolved", async () => {
+  const guard = createInFlight();
+  let resolveFirst;
+  const gate = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  assert.equal(guard.has("a"), false);
+  assert.deepEqual(guard.ids(), []);
+
+  const first = guard.run("a", async () => {
+    await gate;
+  });
+  assert.equal(guard.has("a"), true);
+  assert.deepEqual(guard.ids(), ["a"]);
+
+  resolveFirst();
+  await first;
+  assert.equal(guard.has("a"), false);
+  assert.deepEqual(guard.ids(), []);
+});
+
 test("a run whose function throws still releases its key", async () => {
   const guard = createInFlight();
   await assert.rejects(

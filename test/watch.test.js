@@ -2,18 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  GHOST_MS,
   MAX_WATCHERS,
   WATCH_QUESTION,
   cancelTarget,
   createWatchers,
   describeFired,
+  ghostRecords,
+  pruneFired,
   refuseWatch,
   resumedAmong,
   unwatchVerdict,
+  watchCoverage,
+  watchEvent,
+  watchSkip,
   watchVerdict,
   watchingLine,
 } from "../lib/watch.js";
 import { MAX_READ_CHARS } from "../lib/transcript.js";
+import { MAX_DETAIL_CHARS } from "../lib/notify.js";
 
 const working = (over = {}) => ({
   sessionId: "s1", name: "jarvis-1", cwd: "/repo", state: "working", ...over,
@@ -30,7 +37,7 @@ test("a session that is no longer running refuses a watch before anything else i
 
 test("a session already being watched refuses a second watch on it", () => {
   const watchers = createWatchers();
-  watchers.add(working(), Date.now());
+  watchers.add(working());
   assert.equal(refuseWatch(working(), watchers), "I am already watching jarvis-1, sir.");
 });
 
@@ -58,7 +65,7 @@ test("a record with no usable name refuses before anything else is checked, even
 test("a full watch list refuses one more, and cancelling frees a slot", () => {
   const watchers = createWatchers();
   for (let i = 0; i < MAX_WATCHERS; i++) {
-    watchers.add(working({ sessionId: `s${i}`, name: `session-${i}` }), Date.now());
+    watchers.add(working({ sessionId: `s${i}`, name: `session-${i}` }));
   }
   const refusal = refuseWatch(working({ sessionId: "sN", name: "session-new" }), watchers);
   assert.equal(refusal, "I am already watching five sessions, sir. Cancel one first.");
@@ -67,14 +74,28 @@ test("a full watch list refuses one more, and cancelling frees a slot", () => {
   assert.equal(refuseWatch(working({ sessionId: "sN", name: "session-new" }), watchers), null);
 });
 
-test("the checks run in order: an already-watched session is refused as already-watched, even if it later went idle", () => {
-  // watchers.has() is checked before isWorking() -- so a session that is
-  // both already watched and no longer working still gets the
-  // already-watching sentence, not the nothing-to-wait-for one.
+test("the checks run in order: an already-watched session is refused as already-watched, whatever state it is now in", () => {
+  // watchers.has() is checked before isWorking() and before the blocked
+  // check below it -- so a session that is already watched and either no
+  // longer working or freshly blocked still gets the already-watching
+  // sentence, not one of the reasons further down the list.
   const watchers = createWatchers();
   const idle = working({ state: "done" });
-  watchers.add(idle, Date.now());
+  watchers.add(idle);
   assert.equal(refuseWatch(idle, watchers), "I am already watching jarvis-1, sir.");
+  assert.equal(
+    refuseWatch(working({ state: "blocked" }), watchers),
+    "I am already watching jarvis-1, sir.",
+  );
+});
+
+test("a session already blocked refuses a watch, so a fresh transition is not confused with an old one", () => {
+  const watchers = createWatchers();
+  const blocked = working({ state: "blocked" });
+  assert.equal(
+    refuseWatch(blocked, watchers),
+    "jarvis-1 is already blocked, sir, waiting on a permission prompt.",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -83,40 +104,61 @@ test("the checks run in order: an already-watched session is refused as already-
 
 test("add stores a watch and it is then visible to has, size and names", () => {
   const watchers = createWatchers();
-  const ok = watchers.add(working(), 1000);
+  const ok = watchers.add(working());
   assert.equal(ok, true);
   assert.equal(watchers.has("s1"), true);
   assert.equal(watchers.size(), 1);
   assert.deepEqual(watchers.names(), ["jarvis-1"]);
 });
 
+test("a watch remembers where the session ran", () => {
+  const watchers = createWatchers();
+  // Built the way dispatchWatch (server.js) builds it -- a roster record with
+  // alias and startedAt on it, spread field-by-field into the add() literal --
+  // rather than through the watch-shaped `working()` helper, so this test
+  // would fail if that call site ever stopped passing the two fields through.
+  const record = { sessionId: "s1", name: "jarvis-1", cwd: "/repo", state: "working", alias: "jarvis", startedAt: 1000 };
+  watchers.add({
+    sessionId: record.sessionId,
+    name: record.name,
+    cwd: record.cwd,
+    task: "",
+    state: record.state,
+    alias: record.alias,
+    startedAt: record.startedAt,
+  });
+  const [watch] = watchers.list();
+  assert.equal(watch.alias, "jarvis");
+  assert.equal(watch.startedAt, 1000);
+});
+
 test("add refuses a non-string or empty sessionId", () => {
   const watchers = createWatchers();
   for (const sessionId of [undefined, null, 42, "", {}]) {
-    assert.equal(watchers.add({ ...working(), sessionId }, Date.now()), false, String(sessionId));
+    assert.equal(watchers.add({ ...working(), sessionId }), false, String(sessionId));
   }
   assert.equal(watchers.size(), 0);
 });
 
 test("add refuses a sessionId that is already watched", () => {
   const watchers = createWatchers();
-  assert.equal(watchers.add(working(), Date.now()), true);
-  assert.equal(watchers.add(working(), Date.now()), false);
+  assert.equal(watchers.add(working()), true);
+  assert.equal(watchers.add(working()), false);
   assert.equal(watchers.size(), 1);
 });
 
 test("add never exceeds MAX_WATCHERS", () => {
   const watchers = createWatchers();
   for (let i = 0; i < MAX_WATCHERS; i++) {
-    assert.equal(watchers.add(working({ sessionId: `s${i}`, name: `session-${i}` }), Date.now()), true);
+    assert.equal(watchers.add(working({ sessionId: `s${i}`, name: `session-${i}` })), true);
   }
-  assert.equal(watchers.add(working({ sessionId: "sN", name: "session-new" }), Date.now()), false);
+  assert.equal(watchers.add(working({ sessionId: "sN", name: "session-new" })), false);
   assert.equal(watchers.size(), MAX_WATCHERS);
 });
 
 test("cancel removes a watch and returns it, and returns null for one that was never there", () => {
   const watchers = createWatchers();
-  watchers.add(working(), 1234);
+  watchers.add(working());
   const removed = watchers.cancel("s1");
   assert.equal(removed.sessionId, "s1");
   assert.equal(removed.name, "jarvis-1");
@@ -127,16 +169,16 @@ test("cancel removes a watch and returns it, and returns null for one that was n
 
 test("names come back in insertion order", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "first" }), 1);
-  watchers.add(working({ sessionId: "s2", name: "second" }), 2);
-  watchers.add(working({ sessionId: "s3", name: "third" }), 3);
+  watchers.add(working({ sessionId: "s1", name: "first" }));
+  watchers.add(working({ sessionId: "s2", name: "second" }));
+  watchers.add(working({ sessionId: "s3", name: "third" }));
   assert.deepEqual(watchers.names(), ["first", "second", "third"]);
 });
 
 test("names falls back to a generic subject for a watch with no name, so the WATCHING line never lists a blank item", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: null }), 1);
-  watchers.add(working({ sessionId: "s2", name: "second" }), 2);
+  watchers.add(working({ sessionId: "s1", name: null }));
+  watchers.add(working({ sessionId: "s2", name: "second" }));
   assert.deepEqual(watchers.names(), ["that session", "second"]);
 });
 
@@ -146,7 +188,7 @@ test("names falls back to a generic subject for a watch with no name, so the WAT
 
 test("a non-array roster fires nothing and keeps every watch, the same rule diffRoster follows", () => {
   const watchers = createWatchers();
-  watchers.add(working(), Date.now());
+  watchers.add(working());
   for (const roster of [null, undefined, "not a roster", {}]) {
     assert.deepEqual(watchers.tick(roster, Date.now()), [], String(roster));
   }
@@ -155,7 +197,7 @@ test("a non-array roster fires nothing and keeps every watch, the same rule diff
 
 test("a session still working keeps the watcher waiting, and it is not fired", () => {
   const watchers = createWatchers();
-  watchers.add(working(), Date.now());
+  watchers.add(working());
   const fired = watchers.tick([working()], Date.now());
   assert.deepEqual(fired, []);
   assert.equal(watchers.has("s1"), true);
@@ -163,7 +205,7 @@ test("a session still working keeps the watcher waiting, and it is not fired", (
 
 test("an idle session fires once and removes the watch", () => {
   const watchers = createWatchers();
-  watchers.add(working(), Date.now());
+  watchers.add(working());
   const roster = [working({ state: "done" })];
   const fired = watchers.tick(roster, Date.now());
   assert.equal(fired.length, 1);
@@ -178,7 +220,7 @@ test("an idle session fires once and removes the watch", () => {
 
 test("a session gone from the roster fires with a null record", () => {
   const watchers = createWatchers();
-  watchers.add(working(), Date.now());
+  watchers.add(working());
   const fired = watchers.tick([], Date.now());
   assert.equal(fired.length, 1);
   assert.equal(fired[0].change, "gone");
@@ -188,7 +230,7 @@ test("a session gone from the roster fires with a null record", () => {
 
 test("a fresh transition into blocked fires once, and is not fired again because it was removed", () => {
   const watchers = createWatchers();
-  watchers.add(working({ state: "working" }), Date.now());
+  watchers.add(working({ state: "working" }));
   const blockedRoster = [working({ state: "blocked" })];
   const fired = watchers.tick(blockedRoster, Date.now());
   assert.equal(fired.length, 1);
@@ -202,7 +244,7 @@ test("a fresh transition into blocked fires once, and is not fired again because
 
 test("a watch created while the session is already blocked does not fire on that same blocked state", () => {
   const watchers = createWatchers();
-  watchers.add(working({ state: "blocked" }), Date.now());
+  watchers.add(working({ state: "blocked" }));
   const stillBlocked = [working({ state: "blocked" })];
   assert.deepEqual(watchers.tick(stillBlocked, Date.now()), []);
   assert.equal(watchers.has("s1"), true);
@@ -215,9 +257,9 @@ test("a watch created while the session is already blocked does not fire on that
 
 test("several watches fire independently in one tick", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "one" }), Date.now());
-  watchers.add(working({ sessionId: "s2", name: "two" }), Date.now());
-  watchers.add(working({ sessionId: "s3", name: "three" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "one" }));
+  watchers.add(working({ sessionId: "s2", name: "two" }));
+  watchers.add(working({ sessionId: "s3", name: "three" }));
 
   const roster = [
     working({ sessionId: "s1", name: "one", state: "done" }), // idle
@@ -230,6 +272,84 @@ test("several watches fire independently in one tick", () => {
   assert.equal(watchers.has("s1"), false);
   assert.equal(watchers.has("s2"), false);
   assert.equal(watchers.has("s3"), true);
+});
+
+test("a session with a tell waiting has not stopped working so its watch keeps waiting", () => {
+  const watchers = createWatchers();
+  watchers.add(working());
+  const roster = [working({ state: "done" })];
+  const fired = watchers.tick(roster, Date.now(), { skip: new Set(["s1"]) });
+  assert.deepEqual(fired, []);
+  assert.equal(watchers.has("s1"), true);
+});
+
+test("a skipped watch fires on the next tick once the queue is empty", () => {
+  const watchers = createWatchers();
+  watchers.add(working());
+  const roster = [working({ state: "done" })];
+  assert.deepEqual(watchers.tick(roster, Date.now(), { skip: new Set(["s1"]) }), []);
+  const fired = watchers.tick(roster, Date.now());
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "idle");
+  assert.equal(watchers.has("s1"), false);
+});
+
+test("a skip list naming nothing on the roster changes no outcome", () => {
+  const watchers = createWatchers();
+  watchers.add(working());
+  const roster = [working({ state: "done" })];
+  const fired = watchers.tick(roster, Date.now(), { skip: new Set(["unrelated-id"]) });
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "idle");
+});
+
+test("a session that vanished while a tell was in flight still fires gone; the skip only holds for one still listed", () => {
+  const watchers = createWatchers();
+  watchers.add(working());
+  const fired = watchers.tick([], Date.now(), { skip: new Set(["s1"]) });
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "gone");
+  assert.equal(watchers.has("s1"), false);
+});
+
+test("a permission prompt raised by the tell being delivered is still reported, skip or no skip", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ state: "working" }));
+  const roster = [working({ state: "blocked" })];
+  // skip names this exact session -- the same one the tell is being
+  // delivered to -- and the block must still fire: skip exists to hold back
+  // an "idle" report the delivery is about to undo, and a fresh permission
+  // prompt raised by that very delivery is not that, and must not sit
+  // unreported for the rest of the drain.
+  const fired = watchers.tick(roster, Date.now(), { skip: new Set(["s1"]) });
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].change, "blocked");
+  assert.equal(watchers.has("s1"), false);
+});
+
+// ---------------------------------------------------------------------------
+// watchSkip
+// ---------------------------------------------------------------------------
+
+test("watchSkip unions idle sessions with a queued tell and whatever is still in flight", () => {
+  const roster = [working({ sessionId: "s1", state: "done" }), working({ sessionId: "s2", state: "working" })];
+  assert.deepEqual([...watchSkip(roster, new Set(["s1"]), [])], ["s1"]);
+  assert.deepEqual([...watchSkip(roster, new Set(), ["s2"])].sort(), ["s2"]);
+  assert.deepEqual([...watchSkip(roster, new Set(["s1"]), ["s2"])].sort(), ["s1", "s2"]);
+});
+
+test("a session still mid-delivery stays skipped after its queue entry has been drained", () => {
+  const roster = [working({ sessionId: "s1", state: "done" })];
+  // takeQueued deletes the queue entry synchronously the moment a drain
+  // starts, so queuedIds no longer names s1 from the very next tick even
+  // though tellSession can still be running against it -- inFlightIds is
+  // what keeps the watch skipped for the rest of the drain.
+  assert.deepEqual([...watchSkip(roster, new Set(), ["s1"])], ["s1"]);
+});
+
+test("a working session named by a queued id is not skipped -- it has not stopped working yet", () => {
+  const roster = [working({ sessionId: "s1", state: "working" })];
+  assert.deepEqual([...watchSkip(roster, new Set(["s1"]), [])], []);
 });
 
 // ---------------------------------------------------------------------------
@@ -262,8 +382,8 @@ test("a working session nobody reported on is left alone, and a failed listing f
 
 test("cancelTarget resolves by sessionId when one is given and matches", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "one" }), Date.now());
-  watchers.add(working({ sessionId: "s2", name: "two" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "one" }));
+  watchers.add(working({ sessionId: "s2", name: "two" }));
   const { watch, refusal } = cancelTarget(watchers, { sessionId: "s2" });
   assert.equal(refusal, null);
   assert.equal(watch.sessionId, "s2");
@@ -273,7 +393,7 @@ test("cancelTarget refuses outright when sessionId is given but matches no watch
   // A stale id must not silently fall through to no-name resolution and
   // cancel the one live watch that happens to be unrelated to it.
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "one" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "one" }));
   const { watch, refusal } = cancelTarget(watchers, { sessionId: "stale-id" });
   assert.equal(watch, null);
   assert.equal(refusal, "That session is no longer being watched, sir.");
@@ -282,8 +402,8 @@ test("cancelTarget refuses outright when sessionId is given but matches no watch
 
 test("cancelTarget's Which one join never speaks a blank item for a nameless watch", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: null }), Date.now());
-  watchers.add(working({ sessionId: "s2", name: "named" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: null }));
+  watchers.add(working({ sessionId: "s2", name: "named" }));
   const { watch, refusal } = cancelTarget(watchers, {});
   assert.equal(watch, null);
   assert.match(refusal, /^Which one, sir\?/);
@@ -293,8 +413,8 @@ test("cancelTarget's Which one join never speaks a blank item for a nameless wat
 
 test("cancelTarget matches a named watch via matchSessions", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "fix-tests" }), Date.now());
-  watchers.add(working({ sessionId: "s2", name: "landing-page" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "fix-tests" }));
+  watchers.add(working({ sessionId: "s2", name: "landing-page" }));
   const { watch, refusal } = cancelTarget(watchers, { name: "fix-tests" });
   assert.equal(refusal, null);
   assert.equal(watch.sessionId, "s1");
@@ -302,7 +422,7 @@ test("cancelTarget matches a named watch via matchSessions", () => {
 
 test("cancelTarget refuses a name matching nothing being watched", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "fix-tests" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "fix-tests" }));
   const { watch, refusal } = cancelTarget(watchers, { name: "landing-page" });
   assert.equal(watch, null);
   assert.equal(refusal, "I am not watching landing-page, sir.");
@@ -310,8 +430,8 @@ test("cancelTarget refuses a name matching nothing being watched", () => {
 
 test("cancelTarget asks which one when a name matches more than one watch", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "jarvis-1-fix-tests" }), Date.now());
-  watchers.add(working({ sessionId: "s2", name: "jarvis-1-landing-page" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "jarvis-1-fix-tests" }));
+  watchers.add(working({ sessionId: "s2", name: "jarvis-1-landing-page" }));
   const { watch, refusal } = cancelTarget(watchers, { name: "jarvis-1" });
   assert.equal(watch, null);
   assert.match(refusal, /^Which one, sir\?/);
@@ -321,7 +441,7 @@ test("cancelTarget asks which one when a name matches more than one watch", () =
 
 test("cancelTarget with no name and exactly one watch resolves it on its own", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "only-one" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "only-one" }));
   const { watch, refusal } = cancelTarget(watchers, {});
   assert.equal(refusal, null);
   assert.equal(watch.sessionId, "s1");
@@ -334,10 +454,19 @@ test("cancelTarget with no name and nothing watched refuses plainly", () => {
   assert.equal(refusal, "I am not watching anything, sir.");
 });
 
+test("both which-one failures use the same words", () => {
+  const watchers = createWatchers();
+  watchers.add(working({ sessionId: "s1", name: "jarvis-1-fix-tests" }));
+  watchers.add(working({ sessionId: "s2", name: "jarvis-1-landing-page" }));
+  const byAmbiguousName = cancelTarget(watchers, { name: "jarvis-1" }).refusal;
+  const byNoNameGiven = cancelTarget(watchers, {}).refusal;
+  assert.equal(byAmbiguousName, byNoNameGiven);
+});
+
 test("cancelTarget with no name and several watches asks which one", () => {
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "one" }), Date.now());
-  watchers.add(working({ sessionId: "s2", name: "two" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "one" }));
+  watchers.add(working({ sessionId: "s2", name: "two" }));
   const { watch, refusal } = cancelTarget(watchers, {});
   assert.equal(watch, null);
   assert.match(refusal, /^Which one, sir\?/);
@@ -350,7 +479,7 @@ test("cancelTarget ignores a number-only tag, treating it as no name given", () 
   // no longer have one -- see the module comment on why unwatch never
   // consults it.
   const watchers = createWatchers();
-  watchers.add(working({ sessionId: "s1", name: "only-one" }), Date.now());
+  watchers.add(working({ sessionId: "s1", name: "only-one" }));
   const { watch, refusal } = cancelTarget(watchers, { number: "3" });
   assert.equal(refusal, null);
   assert.equal(watch.sessionId, "s1");
@@ -383,38 +512,28 @@ test("unwatchVerdict names the session that is no longer being watched", () => {
 // describeFired
 // ---------------------------------------------------------------------------
 
-test("a gone watcher reads the transcript back and asks for the next step", () => {
+test("a gone watcher reads the transcript back and stops there, without asking for an instruction", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "It fixed the failing test." });
-  assert.equal(
-    spoken,
-    "jarvis-1 has finished, sir. It fixed the failing test. Ready for the next step, sir?",
-  );
+  assert.equal(spoken, "jarvis-1 has finished, sir. It fixed the failing test.");
 });
 
 test("a blocked watcher says it is waiting on a permission prompt", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "blocked", text: "It wants to run npm install." });
   assert.equal(
     spoken,
-    "jarvis-1 is blocked, sir, waiting on a permission prompt. It wants to run npm install. Ready for the next step, sir?",
+    "jarvis-1 is blocked, sir, waiting on a permission prompt. It wants to run npm install.",
   );
 });
 
 test("an idle watcher names the new state when it is a plain, known word", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "idle", state: "done", text: "It shipped the feature." });
-  assert.equal(
-    spoken,
-    "jarvis-1 has stopped working, sir; it is done now. It shipped the feature. Ready for the next step, sir?",
-  );
+  assert.equal(spoken, "jarvis-1 has stopped working, sir; it is done now. It shipped the feature.");
 });
 
 test("an idle watcher omits the state clause when the state is missing or not printable", () => {
   for (const state of [undefined, null, "", "Some Weird State!!", "x".repeat(30)]) {
     const spoken = describeFired({ name: "jarvis-1", change: "idle", state, text: "It did the thing." });
-    assert.equal(
-      spoken,
-      "jarvis-1 has stopped working, sir. It did the thing. Ready for the next step, sir?",
-      String(state),
-    );
+    assert.equal(spoken, "jarvis-1 has stopped working, sir. It did the thing.", String(state));
   }
 });
 
@@ -428,8 +547,7 @@ test("a fired watch appends the council's do-this-first line, exactly as formatS
   assert.equal(
     spoken,
     "jarvis-1 has finished, sir. It fixed the failing test. " +
-      "The council says, do this first: Restart the daemon before deploying anything else. " +
-      "Ready for the next step, sir?",
+      "The council says, do this first: Restart the daemon before deploying anything else.",
   );
 });
 
@@ -437,23 +555,19 @@ test("no do-this-first line reads exactly as it did before that field existed", 
   const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "It fixed the failing test.", doThisFirst: "" });
   assert.equal(
     spoken,
-    "jarvis-1 has finished, sir. It fixed the failing test. Ready for the next step, sir?",
+    "jarvis-1 has finished, sir. It fixed the failing test.",
   );
 });
 
 test("empty text with reason no-transcript says nothing was left to read", () => {
   const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "", reason: "no-transcript" });
-  assert.equal(spoken, "jarvis-1 has finished, sir. It left nothing I can read. Ready for the next step, sir?");
+  assert.equal(spoken, "jarvis-1 has finished, sir. It left nothing I can read.");
 });
 
 test("empty text with any other reason says the read failed, never a generic state line", () => {
   for (const reason of ["failed", "", undefined, "something-unexpected"]) {
     const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "", reason });
-    assert.equal(
-      spoken,
-      "jarvis-1 has finished, sir. I could not read what it produced. Ready for the next step, sir?",
-      String(reason),
-    );
+    assert.equal(spoken, "jarvis-1 has finished, sir. I could not read what it produced.", String(reason));
   }
 });
 
@@ -463,7 +577,7 @@ test("unprintable characters are stripped from the name and the text", () => {
     change: "gone",
     text: "It did‏ the thing.",
   });
-  assert.equal(spoken, "jarvis-1 has finished, sir. It did the thing. Ready for the next step, sir?");
+  assert.equal(spoken, "jarvis-1 has finished, sir. It did the thing.");
 });
 
 test("the text is capped at MAX_READ_CHARS", () => {
@@ -475,7 +589,74 @@ test("the text is capped at MAX_READ_CHARS", () => {
 
 test("a nameless fired watch still reads as a sentence", () => {
   const spoken = describeFired({ name: null, change: "gone", text: "Done." });
-  assert.equal(spoken, "that session has finished, sir. Done. Ready for the next step, sir?");
+  assert.equal(spoken, "that session has finished, sir. Done.");
+});
+
+// ---------------------------------------------------------------------------
+// watchEvent
+// ---------------------------------------------------------------------------
+
+test("the spoken report and the recap entry are built from one read-back, so they cannot drift", () => {
+  const spoken = describeFired({ name: "jarvis-1", change: "gone", text: "It fixed the failing test." });
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text: "It fixed the failing test." });
+  assert.equal(spoken, `jarvis-1 has finished, sir. ${event.detail}`);
+});
+
+test("a blocked change is recorded as needs-attention, and a finished one as complete", () => {
+  assert.equal(
+    watchEvent({ name: "jarvis-1", change: "blocked", text: "It wants npm install." }).kind,
+    "needs-attention",
+  );
+  assert.equal(watchEvent({ name: "jarvis-1", change: "idle", text: "It shipped." }).kind, "complete");
+  assert.equal(watchEvent({ name: "jarvis-1", change: "gone", text: "It shipped." }).kind, "complete");
+});
+
+test("a long read-back is shortened to whole sentences before the recap's own cap ever cuts it", () => {
+  const text = "It fixed the failing test. It also updated the README. It ran the full suite one more time to be sure.";
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "It fixed the failing test. It also updated the README.");
+  assert.equal(event.detail.length <= MAX_DETAIL_CHARS, true);
+});
+
+test("a read-back with no sentence break is still cut to the recap's limit", () => {
+  const text = "x".repeat(MAX_DETAIL_CHARS + 50);
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "x".repeat(MAX_DETAIL_CHARS));
+});
+
+test("a dot inside a filename or a decimal is not read as a sentence end", () => {
+  const text = "It edited server.js and lib/watch.js. Then it ran tests. Then it committed.";
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "It edited server.js and lib/watch.js. Then it ran tests.");
+});
+
+test("a decimal number does not split a sentence in two", () => {
+  const text = "It took 3.5 hours. Then it pushed.";
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "It took 3.5 hours. Then it pushed.");
+});
+
+test("e.g. followed by a space still reads as a boundary, cutting one sentence short -- a known limitation", () => {
+  const text = "It ran e.g. the suite and passed. Then stopped. Then more.";
+  const event = watchEvent({ name: "jarvis-1", change: "gone", text });
+  assert.equal(event.detail, "It ran e.g. the suite and passed.");
+});
+
+// ---------------------------------------------------------------------------
+// watchCoverage
+// ---------------------------------------------------------------------------
+
+test("idle and gone are both fully covered by the watcher's own report, so the generic recap and speech are skipped", () => {
+  assert.deepEqual(watchCoverage("idle"), { record: false, spoken: false });
+  assert.deepEqual(watchCoverage("gone"), { record: false, spoken: false });
+});
+
+test("a blocked report leaves the recap entry to fire, since completing afterwards is fresh news, but still yields the spoken line", () => {
+  assert.deepEqual(watchCoverage("blocked"), { record: true, spoken: false });
+});
+
+test("nothing fired at all leaves both the recap entry and the spoken line to happen here, same as before watchers existed", () => {
+  assert.deepEqual(watchCoverage(null), { record: true, spoken: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -504,4 +685,58 @@ test("WATCH_QUESTION asks what happened, what it produced and what it is waiting
   assert.match(WATCH_QUESTION, /what did this session just do/i);
   assert.match(WATCH_QUESTION, /what did it produce/i);
   assert.match(WATCH_QUESTION, /waiting on now/i);
+});
+
+// ---------------------------------------------------------------------------
+// ghostRecords / pruneFired
+// ---------------------------------------------------------------------------
+
+const NOW = 1_800_000_000_000;
+const fired = (over = {}) => ({ name: "jarvis-1", alias: "jarvis", startedAt: NOW - 60_000, firedAt: NOW, ...over });
+
+test("a finished session is still drawn for a minute, so its row does not vanish while it is spoken about", () => {
+  const recentlyFired = new Map([["s1", fired()]]);
+  const ghosts = ghostRecords(recentlyFired, [], NOW + 30_000, GHOST_MS);
+  assert.equal(ghosts.length, 1);
+  assert.equal(ghosts[0].sessionId, "s1");
+});
+
+test("a ghost carries its repository, so it is not filed under elsewhere", () => {
+  const recentlyFired = new Map([["s1", fired({ alias: "fitness" })]]);
+  const [ghost] = ghostRecords(recentlyFired, [], NOW, GHOST_MS);
+  assert.equal(ghost.alias, "fitness");
+});
+
+test("a ghost's clock stops at the fire", () => {
+  const recentlyFired = new Map([["s1", fired({ startedAt: NOW - 120_000, firedAt: NOW - 10_000 })]]);
+  const [ghost] = ghostRecords(recentlyFired, [], NOW, GHOST_MS);
+  assert.equal(ghost.startedAt, NOW - 120_000);
+  assert.equal(ghost.endedAt, NOW - 10_000);
+  assert.equal(ghost.number, null);
+  assert.equal(ghost.gone, true);
+  assert.equal(ghost.state, "done");
+  assert.equal(ghost.status, "idle");
+});
+
+test("a session back on the roster is no longer a ghost", () => {
+  const recentlyFired = new Map([["s1", fired()]]);
+  const roster = [{ sessionId: "s1", state: "working" }];
+  assert.deepEqual(ghostRecords(recentlyFired, roster, NOW, GHOST_MS), []);
+});
+
+test("a fired record older than the window is forgotten", () => {
+  const recentlyFired = new Map([["s1", fired({ firedAt: NOW - GHOST_MS - 1 })]]);
+  assert.deepEqual(ghostRecords(recentlyFired, [], NOW, GHOST_MS), []);
+});
+
+test("a fire for a session that has left the roster is forgotten after the window; one still listed is kept", () => {
+  const recentlyFired = new Map([
+    ["gone", fired({ firedAt: NOW - GHOST_MS - 1 })],
+    ["fresh", fired({ firedAt: NOW - 1000 })],
+    ["stillListed", fired({ firedAt: NOW - GHOST_MS - 1 })],
+  ]);
+  const roster = [{ sessionId: "stillListed", state: "blocked" }];
+  const pruned = pruneFired(recentlyFired, roster, NOW, GHOST_MS);
+  assert.deepEqual([...pruned.keys()].sort(), ["fresh", "stillListed"]);
+  assert.deepEqual([...recentlyFired.keys()], ["gone", "fresh", "stillListed"]);
 });

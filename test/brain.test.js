@@ -272,6 +272,15 @@ test("the sessions block teaches the watch tag as a proposal that fires once and
   assert.match(persona, /never on your own initiative/);
 });
 
+test("the sessions block refuses to propose a watch on a session the machine-state line already shows as blocked", () => {
+  const persona = brain.buildPersona(registry, null, kinds);
+  assert.match(
+    persona,
+    /When the machine-state line already shows that session as blocked,\s+do not propose a watch on it/,
+  );
+  assert.match(persona, /say it is already blocked and waiting on a permission/);
+});
+
 test("the sessions block teaches the unwatch tag as running at once, like read", () => {
   const persona = brain.buildPersona(registry, null, kinds);
   assert.match(persona, /\[ACTION:SESSION verb=unwatch name="<session name>"\]/);

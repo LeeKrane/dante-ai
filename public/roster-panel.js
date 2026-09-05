@@ -40,7 +40,14 @@ export function elapsedLabel(ms) {
 
 // A session's one-word condition. "blocked" is its own word rather than folded
 // into working, because it is the one a person can do something about.
+// "finished" is checked before any of the state/status fields below it: a
+// ghost row (server.js's rosterForClient, via lib/watch.js's ghostRecords)
+// sets state: "done" to make every other reader of a record happy, but this
+// panel has a truer word for a row that is not merely done, it is not on the
+// roster at all any more -- and `gone` is the one field nothing else could
+// set by accident.
 function condition(record) {
+  if (record.gone) return "finished";
   if (record.state === "blocked") return "blocked";
   if (record.state === "working") return "working";
   if (record.state === "done") return "done";
@@ -69,6 +76,21 @@ function rowFromRecord(record, now) {
     // A local copy of lib/agents.js's completedIn, for the same reason
     // elapsedLabel above is a local copy: public/ cannot import from lib/.
     elapsed: elapsedLabel((Number.isFinite(record.endedAt) ? record.endedAt : now) - record.startedAt),
+    // A watcher still live for this session -- server.js's own watchers.has(),
+    // ridden straight through. false for a ghost row: a watch fires at most
+    // once and is gone from that registry the instant it does, well before
+    // its row ever becomes a ghost.
+    watched: Boolean(record.watched),
+    // Whether a watch has fired for this session recently enough that
+    // server.js still has it in recentlyFired -- but server.js's own
+    // rosterForClient only ever puts a number here for a BLOCKED fire, never
+    // an idle or gone one, even though all three leave an entry in
+    // recentlyFired and idle (like blocked) leaves the session listed too: an
+    // idle session needs no further attention, so lighting this dot for one
+    // would say the opposite of what is true. A ghost row carries no firedAt
+    // of its own at all, and reads false here, because condition() above
+    // already says "finished" for it without any help from this field.
+    reported: Number.isFinite(record.firedAt),
   };
 }
 
@@ -81,7 +103,11 @@ function rowFromRecord(record, now) {
 // this is what keeps the panel correct even so -- a session with no number
 // (a wire message from an older server, or a row the caller built by hand for
 // a test) sorts last rather than first, the same posture every other missing-
-// value sort in this codebase takes.
+// value sort in this codebase takes. A ghost row (server.js's rosterForClient,
+// appended after every real session, always carrying number: null) is exactly
+// this case: it already sorts below every numbered session with no change
+// needed here, and it is therefore the first row the MAX_ROWS cut below
+// removes once the panel is full.
 function liveSorted(roster) {
   const list = Array.isArray(roster) ? roster : [];
   return list

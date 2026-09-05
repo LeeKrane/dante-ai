@@ -15,6 +15,7 @@ import {
   countWord,
   createRosterPoller,
   endedAtOf,
+  isBlocked,
   isDone,
   stampEnded,
   trackEnded,
@@ -22,6 +23,7 @@ import {
   idleAmong,
   isWorking,
   matchSessions,
+  mentionedSessions,
   matchStarted,
   diffRoster,
   listAgents,
@@ -1004,6 +1006,14 @@ test("whether a session can take a follow-up is one question with one answer", (
   assert.equal(isWorking({ state: null, status: null }), false);
 });
 
+test("isBlocked is true only for a record sitting on a permission prompt right now", () => {
+  assert.equal(isBlocked({ state: "blocked" }), true);
+  assert.equal(isBlocked({ state: "working" }), false);
+  assert.equal(isBlocked({ state: "done" }), false);
+  assert.equal(isBlocked(null), false);
+  assert.equal(isBlocked("blocked"), false);
+});
+
 test("a session named with its repository in front is still found", () => {
   // describeRoster reads a hand-started session out loud as "jarvis: Empty
   // Session", so that is what comes back in the tag.
@@ -1018,6 +1028,51 @@ test("a name that merely shares a word is not a match", () => {
   const roster = rosterOf(session({ sessionId: "a", name: "review" }));
   assert.deepEqual(matchSessions(roster, "review-the-changes"), []);
   assert.deepEqual(matchSessions(roster, "code review please"), []);
+});
+
+// ---------------------------------------------------------------------------
+// mentionedSessions
+// ---------------------------------------------------------------------------
+
+test("mentionedSessions finds a candidate named exactly in the text", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions is punctuation-insensitive, the same as matchSessions", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  assert.deepEqual(mentionedSessions("what is Jarvis 3 doing", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions finds a collided session by the shorthand matchSessions' prefix tier accepts", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "review-2" }));
+  assert.deepEqual(mentionedSessions("what did review decide", roster), ["review-2"]);
+});
+
+test("mentionedSessions still does not match jarvis-30 by prefix when jarvis-3 is what was actually said and both exist", () => {
+  // The full run "jarvis-3" is always tried before the shorter, vaguer
+  // "jarvis" prefix of it -- matchSessions' own exact tier resolves it to
+  // jarvis-3 alone, and that stops mentionedSessions from ever falling back
+  // to a shorter run that would have pulled in jarvis-30 too via prefix.
+  const roster = rosterOf(
+    session({ sessionId: "a", name: "jarvis-3" }),
+    session({ sessionId: "b", name: "jarvis-30" }),
+  );
+  assert.deepEqual(mentionedSessions("jarvis-3", roster), ["jarvis-3"]);
+});
+
+test("mentionedSessions returns nothing for an empty candidate list", () => {
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", []), []);
+  assert.deepEqual(mentionedSessions("what is jarvis-3 doing", null), []);
+});
+
+test("mentionedSessions finds a name spoken well past the 100-char clip normalizeName applies to a single name", () => {
+  const roster = rosterOf(session({ sessionId: "a", name: "jarvis-3" }));
+  const rambling =
+    "Right, before anything else this morning, and I appreciate this is a slightly rambling " +
+    "question, what on earth is jarvis-3 actually up to";
+  assert.ok(rambling.indexOf("jarvis-3") > 100, "the fixture must actually exercise the clip");
+  assert.deepEqual(mentionedSessions(rambling, roster), ["jarvis-3"]);
 });
 
 // ---------------------------------------------------------------------------
